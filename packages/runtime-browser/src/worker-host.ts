@@ -6,7 +6,11 @@ import {
 
 export interface CoreCommandHandler {
   handle(command: ViewerCommand): Promise<void>;
-  reportProtocolError(message: string, requestId?: string): void;
+  reportHostError(
+    code: "invalid_command" | "command_failed",
+    message: string,
+    requestId?: string,
+  ): void;
 }
 
 export interface WorkerHost {
@@ -23,12 +27,16 @@ export function attachWorkerHost(
     try {
       command = parseViewerCommand(message.data);
     } catch (error) {
-      core.reportProtocolError(toErrorMessage(error, "Invalid command."));
+      core.reportHostError(
+        "invalid_command",
+        toErrorMessage(error, "Invalid command."),
+      );
       return;
     }
 
     void core.handle(command).catch((error: unknown) => {
-      core.reportProtocolError(
+      core.reportHostError(
+        "command_failed",
         toErrorMessage(error, "The browser core could not handle the command."),
         command.request_id,
       );

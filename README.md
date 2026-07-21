@@ -1,21 +1,42 @@
-# Researchbox
+# ResearchBox
 
-Researchbox is a browser-native workspace for Pi agents. The application keeps
-the viewer, agent runtime, model transport, and storage adapters behind explicit
-boundaries so the same core can later run in a browser, native shell, or remote
-host.
+ResearchBox is a browser-native workspace for Pi agents. Its viewer, protocol,
+agent runtime, model transport, and virtual filesystem are independent workspace
+packages so the same core contracts can support browsers, native shells, and
+remote hosts.
 
 ## Current vertical slice
 
 - ChatGPT-style responsive conversation viewer
-- Real `@earendil-works/pi-agent-core` agent loop in a Web Worker
-- Versioned and runtime-validated JSON command/event protocol
-- Mock streaming model endpoint with a real tool-result continuation loop
-- In-memory virtual filesystem with `list_files` and `read_file` agent tools
+- Real `@earendil-works/pi-agent-core` loop inside a Web Worker
+- Versioned, runtime-validated JSON commands and events
+- Streaming mock-model service with a real tool-result continuation loop
+- In-memory virtual filesystem with `list_files` and `read_file` tools
 - Interactive workspace browser and text-file preview
 
-The browser worker imports Pi directly. The UI communicates only through
-serializable protocol messages and never imports the agent runtime.
+## Repository structure
+
+```text
+apps/
+  web/                 Vinext application and browser composition root
+  mock-server/         Framework-neutral mock model request handler
+
+packages/
+  protocol/            Serialized viewer/core contract and validators
+  agent-core/          Pi agent orchestration and tools
+  viewer/              React conversation and workspace UI
+  model-transport/     Model request/stream contract and HTTP adapter
+  runtime-browser/     Generic Web Worker host
+  vfs/                 Filesystem contract, errors, and adapters
+
+platforms/
+  ios/                 Future iOS storage/runtime composition
+  desktop/             Future desktop folder/runtime composition
+```
+
+The web app is the composition root. Reusable packages do not import Next.js,
+Vinext, or application files. See [ARCHITECTURE.md](./ARCHITECTURE.md) for the
+dependency rules.
 
 ## Requirements
 
@@ -35,23 +56,17 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ```bash
 pnpm typecheck
+pnpm lint
 pnpm test
 ```
 
-## Architecture
+## Deployment policy
 
-```text
-Viewer ── JSON commands/events ── Web Worker host
-                                      │
-                                      ▼
-                                  Pi Agent core
-                                   ╱        ╲
-                          Model transport   VFS interface
-                                │                │
-                          Mock endpoint      Memory adapter
-```
+Keep this repository local unless the user explicitly selects and authorizes a
+deployment target. Never publish ResearchBox to `chatgpt.site`.
 
-The next storage milestone is an OPFS adapter with the memory implementation
-retained as the deterministic conformance-test backend. Native folder and iOS
-application-storage adapters can then implement the same `VirtualFileSystem`
-contract.
+## Next storage milestone
+
+Add an OPFS adapter while retaining the memory adapter as the deterministic
+conformance-test backend. ZIP, native-folder, and iOS application-storage
+adapters will implement the same `VirtualFileSystem` contract.

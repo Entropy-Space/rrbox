@@ -10,6 +10,9 @@ const eslintConfig = defineConfig([
       next: {
         rootDir: "apps/web",
       },
+      react: {
+        version: "19.2",
+      },
     },
   },
   // Override default ignores of eslint-config-next.

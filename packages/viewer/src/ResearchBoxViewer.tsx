@@ -31,50 +31,22 @@ import {
   X,
 } from "lucide-react";
 import {
-  createCommand,
-  parseCoreEvent,
   type ChatMessage,
-  type CoreEvent,
   type FileEntry,
   type ToolActivity,
-  type ViewerCommand,
 } from "@researchbox/protocol";
 import {
   useCallback,
   useEffect,
   useMemo,
-  useReducer,
   useRef,
   useState,
 } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
+import { useAgentSession } from "./use-agent-session.ts";
 
 export type ResearchBoxViewerProps = {
   createWorker: () => Worker;
-};
-
-type CoreState = {
-  session_id: string | null;
-  messages: ChatMessage[];
-  files: FileEntry[];
-  current_path: string;
-  selected_file: { path: string; content: string } | null;
-  activities: ToolActivity[];
-  is_ready: boolean;
-  is_running: boolean;
-  error_message: string | null;
-};
-
-const initialCoreState: CoreState = {
-  session_id: null,
-  messages: [],
-  files: [],
-  current_path: "/",
-  selected_file: null,
-  activities: [],
-  is_ready: false,
-  is_running: false,
-  error_message: null,
 };
 
 const recentChats = [
@@ -102,117 +74,20 @@ const suggestions = [
   },
 ];
 
-function coreReducer(state: CoreState, event: CoreEvent): CoreState {
-  switch (event.type) {
-    case "ready":
-      return {
-        ...state,
-        session_id: event.payload.session_id,
-        messages: event.payload.messages,
-        files: event.payload.files,
-        is_ready: true,
-      };
-    case "run_state":
-      return { ...state, is_running: event.payload.is_running };
-    case "message_added":
-      return {
-        ...state,
-        error_message: null,
-        messages: [...state.messages, event.payload.message],
-      };
-    case "message_delta":
-      return {
-        ...state,
-        messages: state.messages.map((message) =>
-          message.id === event.payload.message_id
-            ? { ...message, content: message.content + event.payload.text_delta }
-            : message,
-        ),
-      };
-    case "message_finished":
-      return {
-        ...state,
-        error_message: event.payload.error_message ?? state.error_message,
-        messages: state.messages.map((message) =>
-          message.id === event.payload.message_id
-            ? { ...message, status: event.payload.status }
-            : message,
-        ),
-      };
-    case "tool_activity": {
-      const exists = state.activities.some(
-        (activity) =>
-          activity.tool_call_id === event.payload.activity.tool_call_id,
-      );
-      return {
-        ...state,
-        activities: exists
-          ? state.activities.map((activity) =>
-              activity.tool_call_id === event.payload.activity.tool_call_id
-                ? event.payload.activity
-                : activity,
-            )
-          : [...state.activities, event.payload.activity],
-      };
-    }
-    case "files_snapshot":
-      return {
-        ...state,
-        current_path: event.payload.path,
-        files: event.payload.files,
-        selected_file: null,
-      };
-    case "file_content":
-      return {
-        ...state,
-        selected_file: event.payload,
-      };
-    case "session_reset":
-      return {
-        ...state,
-        messages: [],
-        activities: [],
-        is_running: false,
-        error_message: null,
-      };
-    case "error":
-      return { ...state, error_message: event.payload.message };
-  }
-}
-
 export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
-  const [coreState, dispatch] = useReducer(coreReducer, initialCoreState);
+  const {
+    coreState,
+    transportError,
+    submitPrompt,
+    startNewChat,
+    abortRun,
+    openFile,
+    navigateToParent,
+  } = useAgentSession(createWorker);
   const [draft, setDraft] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
-  const [transportError, setTransportError] = useState<string | null>(null);
-  const workerRef = useRef<Worker | null>(null);
   const conversationEndRef = useRef<HTMLDivElement | null>(null);
-
-  const sendCommand = useCallback((command: ViewerCommand) => {
-    workerRef.current?.postMessage(command);
-  }, []);
-
-  useEffect(() => {
-    const worker = createWorker();
-    workerRef.current = worker;
-    worker.onmessage = (message: MessageEvent<unknown>) => {
-      try {
-        dispatch(parseCoreEvent(message.data));
-      } catch {
-        setTransportError("The browser core sent an invalid event.");
-      }
-    };
-    worker.onerror = () => {
-      setTransportError("The browser core could not start. Refresh to try again.");
-    };
-    worker.postMessage(createCommand("bootstrap", {}));
-
-    return () => {
-      worker.terminate();
-      workerRef.current = null;
-    };
-  }, [createWorker]);
 
   useEffect(() => {
     conversationEndRef.current?.scrollIntoView({
@@ -229,63 +104,28 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
     [coreState.messages],
   );
 
-  const submitPrompt = useCallback(
+  const submitDraft = useCallback(
     (prompt: string) => {
-      const text = prompt.trim();
-      if (!text || !coreState.session_id || coreState.is_running) return;
-      sendCommand(
-        createCommand("prompt", {
-          session_id: coreState.session_id,
-          text,
-        }),
-      );
-      setDraft("");
+      if (submitPrompt(prompt)) setDraft("");
     },
-    [coreState.is_running, coreState.session_id, sendCommand],
+    [submitPrompt],
   );
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    submitPrompt(draft);
+    submitDraft(draft);
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      submitPrompt(draft);
+      submitDraft(draft);
     }
   }
 
-  function startNewChat() {
-    if (!coreState.session_id) return;
-    sendCommand(
-      createCommand("session_reset", { session_id: coreState.session_id }),
-    );
+  function resetConversation() {
+    startNewChat();
     setSidebarOpen(false);
-  }
-
-  function abortRun() {
-    if (!coreState.session_id) return;
-    sendCommand(createCommand("abort", { session_id: coreState.session_id }));
-  }
-
-  function openFile(entry: FileEntry) {
-    if (entry.kind === "directory") {
-      sendCommand(createCommand("fs_list", { path: entry.path }));
-      return;
-    }
-    sendCommand(createCommand("fs_read", { path: entry.path }));
-  }
-
-  function navigateToParent() {
-    if (coreState.current_path === "/") return;
-    const segments = coreState.current_path.split("/").filter(Boolean);
-    segments.pop();
-    sendCommand(
-      createCommand("fs_list", {
-        path: segments.length > 0 ? `/${segments.join("/")}` : "/",
-      }),
-    );
   }
 
   const hasConversation = coreState.messages.length > 0;
@@ -308,7 +148,7 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
             className="brand-button"
             type="button"
             aria-label="ResearchBox home"
-            onClick={startNewChat}
+            onClick={resetConversation}
           >
             <span className="brand-mark">R</span>
           </button>
@@ -323,7 +163,7 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
         </div>
 
         <nav className="primary-nav" aria-label="Primary navigation">
-          <button type="button" onClick={startNewChat}>
+          <button type="button" onClick={resetConversation}>
             <SquarePen size={18} />
             <span>New chat</span>
           </button>
@@ -410,7 +250,7 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
             {!hasConversation ? (
               <EmptyConversation
                 isReady={coreState.is_ready}
-                onSelectPrompt={submitPrompt}
+                onSelectPrompt={submitDraft}
               />
             ) : (
               <div className="message-list" aria-live="polite">

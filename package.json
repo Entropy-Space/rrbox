@@ -10,7 +10,7 @@
     "dev": "pnpm --filter @researchbox/web dev",
     "build": "pnpm --filter @researchbox/web build",
     "start": "pnpm --filter @researchbox/web start",
-    "test": "pnpm run typecheck && pnpm run build && node --experimental-strip-types --test apps/web/test/*.test.mjs packages/*/test/*.test.mjs",
+    "test": "pnpm run typecheck && pnpm run build && node --experimental-strip-types --test apps/*/test/*.test.mjs packages/*/test/*.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint apps packages --ignore-pattern dist --ignore-pattern .next"
   },

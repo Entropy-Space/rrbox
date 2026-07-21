@@ -93,8 +93,12 @@ export class AgentCore {
     }
   }
 
-  reportProtocolError(message: string, requestId?: string): void {
-    this.emit("error", { code: "invalid_command", message }, requestId);
+  reportHostError(
+    code: "invalid_command" | "command_failed",
+    message: string,
+    requestId?: string,
+  ): void {
+    this.emit("error", { code, message }, requestId);
   }
 
   private async runPrompt(
@@ -159,6 +163,33 @@ export class AgentCore {
             code: "model_transport_failed",
             message: errorMessage ?? "The model transport failed.",
           },
+          command.request_id,
+        );
+      }
+    } catch (error) {
+      if (this.activeRun?.run_id !== runId) return;
+
+      const errorMessage =
+        error instanceof Error ? error.message : "The agent run failed.";
+      const status =
+        latestAssistantStopReason(this.agent) === "aborted" ||
+        isAbortError(error)
+          ? "aborted"
+          : "error";
+      assistantMessage.status = status;
+      this.emit(
+        "message_finished",
+        {
+          message_id: assistantMessage.id,
+          status,
+          ...(status === "error" ? { error_message: errorMessage } : {}),
+        },
+        command.request_id,
+      );
+      if (status === "error") {
+        this.emit(
+          "error",
+          { code: "agent_run_failed", message: errorMessage },
           command.request_id,
         );
       }
@@ -351,6 +382,10 @@ function latestAssistantStopReason(agent: Agent): string | undefined {
   return [...agent.state.messages]
     .reverse()
     .find((message) => message.role === "assistant")?.stopReason;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 function createMessage(

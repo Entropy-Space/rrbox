@@ -6,13 +6,19 @@ import {
 } from "./model-transport.ts";
 
 export class HttpNdjsonModelTransport implements ModelTransport {
-  constructor(private readonly endpoint: string) {}
+  private readonly endpoint: string;
+  private readonly fetchRequest: typeof fetch;
+
+  constructor(endpoint: string, fetchRequest: typeof fetch = fetch) {
+    this.endpoint = endpoint;
+    this.fetchRequest = fetchRequest;
+  }
 
   async *stream(
     request: ModelRequest,
     signal: AbortSignal,
   ): AsyncIterable<ModelStreamEvent> {
-    const response = await fetch(this.endpoint, {
+    const response = await this.fetchRequest(this.endpoint, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(request),
@@ -25,25 +31,39 @@ export class HttpNdjsonModelTransport implements ModelTransport {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let sourceEnded = false;
 
     try {
       while (true) {
         const { done, value } = await reader.read();
+        sourceEnded = done;
         buffer += decoder.decode(value, { stream: !done });
 
         let newlineIndex = buffer.indexOf("\n");
         while (newlineIndex >= 0) {
           const line = buffer.slice(0, newlineIndex).trim();
           buffer = buffer.slice(newlineIndex + 1);
-          if (line) yield parseLine(line);
+          if (line) {
+            const event = parseLine(line);
+            yield event;
+            if (event.type === "done") return;
+          }
           newlineIndex = buffer.indexOf("\n");
         }
 
-        if (done) break;
+        if (done) {
+          if (buffer.trim()) {
+            const event = parseLine(buffer.trim());
+            yield event;
+            if (event.type === "done") return;
+          }
+          throw new Error("Model stream ended before a done event.");
+        }
       }
-
-      if (buffer.trim()) yield parseLine(buffer.trim());
     } finally {
+      if (!sourceEnded) {
+        await reader.cancel().catch(() => undefined);
+      }
       reader.releaseLock();
     }
   }

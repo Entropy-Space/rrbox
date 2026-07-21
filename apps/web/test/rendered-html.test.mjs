@@ -34,15 +34,19 @@ test("server-renders the ResearchBox application shell", async () => {
   assert.match(html, /Message ResearchBox/);
   assert.match(html, /Virtual filesystem/);
   assert.match(html, /og\.png/);
-  assert.doesNotMatch(html, /Researchbox/);
+  assert.doesNotMatch(html, /Researchb[o]x/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
 });
 
 test("keeps package boundaries explicit", async () => {
-  const [app, viewer, worker, core, protocol] = await Promise.all([
+  const [app, viewer, session, worker, core, protocol] = await Promise.all([
     readFile(new URL("../app/ResearchBoxApp.tsx", import.meta.url), "utf8"),
     readFile(
       new URL("../../../packages/viewer/src/ResearchBoxViewer.tsx", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../../../packages/viewer/src/use-agent-session.ts", import.meta.url),
       "utf8",
     ),
     readFile(new URL("../browser/core.worker.ts", import.meta.url), "utf8"),
@@ -58,7 +62,8 @@ test("keeps package boundaries explicit", async () => {
 
   assert.match(app, /new Worker\(new URL\(/);
   assert.doesNotMatch(viewer, /new Worker\(/);
-  assert.match(viewer, /createCommand\("bootstrap"/);
+  assert.match(session, /createCommand\("bootstrap"/);
+  assert.match(session, /parseCoreEvent/);
   assert.doesNotMatch(viewer, /from "@earendil-works\/pi-agent-core"/);
   assert.match(worker, /attachWorkerHost/);
   assert.match(worker, /new AgentCore/);

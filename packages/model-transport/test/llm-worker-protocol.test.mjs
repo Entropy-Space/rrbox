@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   LLM_WORKER_PROTOCOL_VERSION,
+  createLlmModelsAbort,
+  createLlmModelsRequest,
   createLlmStreamEvent,
   createLlmStreamFinished,
   createLlmStreamStart,
@@ -11,8 +13,11 @@ import {
 
 const modelRequest = {
   session_id: "session-1",
-  prompt: "inspect the workspace",
-  tool_results: [],
+  provider_id: "researchbox-mock",
+  model_id: "researchbox-mock",
+  system_prompt: "Help with the workspace.",
+  messages: [{ role: "user", content: "inspect the workspace" }],
+  tools: [],
 };
 
 test("round-trips versioned LLM worker messages", () => {
@@ -22,10 +27,14 @@ test("round-trips versioned LLM worker messages", () => {
     text_delta: "hello",
   });
   const finished = createLlmStreamFinished("stream-1", "complete");
+  const modelsRequest = createLlmModelsRequest("request-1", "local-openai");
+  const modelsAbort = createLlmModelsAbort("request-1");
 
   assert.deepEqual(parseLlmWorkerCommand(command), command);
   assert.deepEqual(parseLlmWorkerEvent(event), event);
   assert.deepEqual(parseLlmWorkerEvent(finished), finished);
+  assert.deepEqual(parseLlmWorkerCommand(modelsRequest), modelsRequest);
+  assert.deepEqual(parseLlmWorkerCommand(modelsAbort), modelsAbort);
 });
 
 test("rejects malformed nested model events", () => {

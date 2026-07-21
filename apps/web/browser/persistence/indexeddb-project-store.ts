@@ -19,7 +19,7 @@ import {
 
 type CatalogRecord = {
   key: "catalog";
-  schema_version: 1 | typeof PROJECT_STORE_SCHEMA_VERSION;
+  schema_version: 1 | 2 | typeof PROJECT_STORE_SCHEMA_VERSION;
   state_revision: number;
   active_project_id: string;
   active_session_id: string | null;

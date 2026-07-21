@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 3 as const;
+export const PROTOCOL_VERSION = 4 as const;
 
 export type MessageRole = "user" | "assistant";
 
@@ -42,10 +42,32 @@ export type SessionSummary = {
   message_count: number;
 };
 
+export type ModelSelection = {
+  provider_id: string;
+  model_id: string;
+};
+
+export type ModelSummary = ModelSelection & {
+  display_name: string;
+  availability: "ready" | "unavailable";
+  status_message?: string;
+};
+
+export type ProviderSummary = {
+  provider_id: string;
+  display_name: string;
+  kind: "mock" | "openai_compatible";
+  availability: "loading" | "ready" | "unavailable";
+  status_message?: string;
+  models: ModelSummary[];
+};
+
 export type CoreStateSnapshot = {
   state_revision: number;
   projects: ProjectSummary[];
   sessions: SessionSummary[];
+  providers: ProviderSummary[];
+  active_model: ModelSelection;
   active_project_id: string;
   active_session_id: string | null;
   input_draft: string;
@@ -69,6 +91,16 @@ export type ViewerCommand =
   | CommandEnvelope<"project_delete", { project_id: string }>
   | CommandEnvelope<"project_select", { project_id: string }>
   | CommandEnvelope<"new_chat", { project_id: string }>
+  | CommandEnvelope<
+      "model_select",
+      {
+        project_id: string;
+        session_id: string | null;
+        provider_id: string;
+        model_id: string;
+      }
+    >
+  | CommandEnvelope<"provider_refresh", { provider_id: string }>
   | CommandEnvelope<
       "session_update",
       { project_id: string; session_id: string; title: string }
@@ -204,6 +236,17 @@ export function parseViewerCommand(value: unknown): ViewerCommand {
     case "new_chat":
       return commandEnvelope("new_chat", requestId, {
         project_id: requireString(payload, "project_id"),
+      });
+    case "model_select":
+      return commandEnvelope("model_select", requestId, {
+        project_id: requireString(payload, "project_id"),
+        session_id: requireNullableString(payload, "session_id"),
+        provider_id: requireString(payload, "provider_id"),
+        model_id: requireString(payload, "model_id"),
+      });
+    case "provider_refresh":
+      return commandEnvelope("provider_refresh", requestId, {
+        provider_id: requireString(payload, "provider_id"),
       });
     case "session_update":
       return commandEnvelope("session_update", requestId, {
@@ -443,6 +486,8 @@ function parseCoreStateSnapshot(value: unknown): CoreStateSnapshot {
     state_revision: requireNonNegativeInteger(value, "state_revision"),
     projects: requireArray(value, "projects").map(parseProjectSummary),
     sessions: requireArray(value, "sessions").map(parseSessionSummary),
+    providers: requireArray(value, "providers").map(parseProviderSummary),
+    active_model: parseModelSelection(value.active_model),
     active_project_id: requireString(value, "active_project_id"),
     active_session_id: requireNullableString(value, "active_session_id"),
     input_draft: requireString(value, "input_draft", true),
@@ -475,6 +520,23 @@ function assertCoreStateInvariants(snapshot: CoreStateSnapshot): void {
   }
   if (!projects.has(snapshot.active_project_id)) {
     throw new Error("active_project_id does not exist.");
+  }
+  const providers = new Map(
+    snapshot.providers.map((provider) => [provider.provider_id, provider]),
+  );
+  if (providers.size !== snapshot.providers.length) {
+    throw new Error("Duplicate provider_id.");
+  }
+  const activeProvider = providers.get(snapshot.active_model.provider_id);
+  if (!activeProvider) {
+    throw new Error("active_model references an unknown provider_id.");
+  }
+  if (
+    !activeProvider.models.some(
+      (model) => model.model_id === snapshot.active_model.model_id,
+    )
+  ) {
+    throw new Error("active_model references an unknown model_id.");
   }
   if (snapshot.active_session_id === null) {
     if (snapshot.messages.length > 0 || snapshot.activities.length > 0) {
@@ -514,6 +576,65 @@ function parseSessionSummary(value: unknown): SessionSummary {
     created_at: requireString(value, "created_at"),
     updated_at: requireString(value, "updated_at"),
     message_count: requireNonNegativeInteger(value, "message_count"),
+  };
+}
+
+export function parseModelSelection(value: unknown): ModelSelection {
+  if (!isRecord(value)) throw new Error("Model selection must be an object.");
+  return {
+    provider_id: requireString(value, "provider_id"),
+    model_id: requireString(value, "model_id"),
+  };
+}
+
+function parseModelSummary(value: unknown): ModelSummary {
+  const selection = parseModelSelection(value);
+  if (!isRecord(value)) throw new Error("Model summary must be an object.");
+  const availability = value.availability;
+  if (availability !== "ready" && availability !== "unavailable") {
+    throw new Error("Invalid model availability.");
+  }
+  const statusMessage = optionalString(value, "status_message", true);
+  return {
+    ...selection,
+    display_name: requireString(value, "display_name"),
+    availability,
+    ...(statusMessage === undefined ? {} : { status_message: statusMessage }),
+  };
+}
+
+function parseProviderSummary(value: unknown): ProviderSummary {
+  if (!isRecord(value)) throw new Error("Provider summary must be an object.");
+  const kind = value.kind;
+  const availability = value.availability;
+  if (kind !== "mock" && kind !== "openai_compatible") {
+    throw new Error("Invalid provider kind.");
+  }
+  if (
+    availability !== "loading" &&
+    availability !== "ready" &&
+    availability !== "unavailable"
+  ) {
+    throw new Error("Invalid provider availability.");
+  }
+  const providerId = requireString(value, "provider_id");
+  const statusMessage = optionalString(value, "status_message", true);
+  const models = requireArray(value, "models").map(parseModelSummary);
+  const modelIds = new Set<string>();
+  for (const model of models) {
+    if (model.provider_id !== providerId) {
+      throw new Error("Model provider_id does not match its provider.");
+    }
+    if (modelIds.has(model.model_id)) throw new Error("Duplicate model_id.");
+    modelIds.add(model.model_id);
+  }
+  return {
+    provider_id: providerId,
+    display_name: requireString(value, "display_name"),
+    kind,
+    availability,
+    ...(statusMessage === undefined ? {} : { status_message: statusMessage }),
+    models,
   };
 }
 

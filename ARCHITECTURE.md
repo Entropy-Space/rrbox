@@ -22,18 +22,21 @@ apps/web
             ▼
           browser/llm.worker.ts
             ├─ packages/runtime-browser LLM host
-            └─ HTTP model transport → /api/mock
+            ├─ mock NDJSON transport → /api/mock
+            └─ OpenAI-compatible SSE transport
+                  └─ same-origin bridge → localhost:4141/v1
 ```
 
-The viewer and core worker exchange only protocol-v3 JSON values. A
+The viewer and core worker exchange only protocol-v4 JSON values. A
 `project_id` plus nullable `session_id` scopes the active composer: `null`
 identifies that project's single virtual new chat, while incremental run events
 always identify a durable session. Filesystem and draft acknowledgements use a
 required request identifier, while authoritative snapshots use a monotonic
 state revision. Together these prevent late work from replacing a newer
 project, chat, draft, or file-navigation result. The core and LLM workers use a
-separate versioned protocol so provider I/O, cancellation, and future
-credentials stay outside the agent runtime. The viewer never imports Pi,
+separate protocol-v2 JSON contract so provider discovery, full conversation
+requests, provider I/O, cancellation, and future credentials stay outside the
+agent runtime. The viewer never imports Pi,
 filesystem implementations, model transports, or either worker runtime.
 
 The LLM worker is an isolation and lifecycle boundary, not a security boundary
@@ -67,12 +70,21 @@ identifier.
 
 ## Provider boundary
 
-The LLM worker currently owns only the deterministic mock HTTP transport. This
-split moves model I/O out of the core worker but does not yet constitute real
-provider support. Pi transcripts are restored into the session runtime, but the
-mock-oriented `ModelRequest` currently forwards only the latest turn and tool
-results. Before adding providers, it must grow to preserve complete Pi context,
-tool schemas, model selection, options, and usage.
+The LLM worker routes the deterministic mock provider and an OpenAI-compatible
+provider whose models are discovered dynamically from `localhost:4141`. A model
+request contains the selected provider/model, system prompt, complete Pi text
+history, assistant tool calls, tool results, and tool schemas. OpenAI SSE tool
+call fragments are assembled in the LLM worker before compact model events are
+returned to the core. The viewer receives only validated provider/model
+summaries.
+
+Provider URLs are application configuration, never viewer input. For the
+current local web runtime, two narrow same-origin server routes bridge model
+discovery and chat completions to `127.0.0.1:4141`; this avoids relying on CORS
+without turning the route into a general proxy. No provider credentials are
+stored yet. A future fully browser-only composition can replace the bridge with
+a CORS-capable local gateway or an in-browser/Wasm provider adapter without
+changing the core/viewer protocol.
 
 ## Project and session persistence
 
@@ -84,8 +96,9 @@ the origin-wide exclusive Web Lock that gives one browser core write ownership
 while another tab waits. Session documents persist the existing-session input
 draft, viewer messages, and a versioned snake-case codec of the canonical Pi
 transcript, including tool calls and results. Projects persist their virtual
-new-chat draft. Incomplete streams are recovered as interrupted only after the
-prior writer has released its lease.
+new-chat draft and model selection; durable sessions persist their own model
+selection. Incomplete streams are recovered as interrupted only after the prior
+writer has released its lease.
 
 A project owns one virtual filesystem and zero or more durable sessions.
 Switching a project restores its last selected session or its virtual new chat.

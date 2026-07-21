@@ -12,6 +12,8 @@ remote hosts.
 - One virtual new-chat state per project; a session is created on first send
 - Real `@earendil-works/pi-agent-core` loop inside a Web Worker
 - Dedicated LLM Web Worker for multiplexed model requests and cancellation
+- Chat-scoped provider/model picker with a built-in mock and dynamic
+  OpenAI-compatible discovery at `localhost:4141`
 - Versioned, runtime-validated JSON commands and events
 - Streaming mock-model service with a real tool-result continuation loop
 - Project-isolated IndexedDB virtual filesystems with `list_files` and
@@ -58,6 +60,13 @@ pnpm dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+The OpenAI-compatible provider expects `GET /v1/models` and streaming
+`POST /v1/chat/completions` on `http://127.0.0.1:4141`. The local web server
+exposes only those two calls through same-origin routes because the browser
+cannot assume the gateway enables CORS. The mock provider remains available
+when the local gateway is stopped. Set `RESEARCHBOX_LOCAL_OPENAI_BASE_URL` to
+override the local base URL during development.
+
 ## Validation
 
 ```bash
@@ -76,8 +85,9 @@ deployment target. Never publish ResearchBox to `chatgpt.site`.
 The browser composition stores project metadata, drafts, session documents,
 canonical Pi transcripts, and project files in one versioned IndexedDB
 database. A new chat remains project-scoped draft state until its first prompt;
-that prompt, its session, and its staged messages commit atomically before model
-transport starts. One origin-wide Web Lock gives the browser core exclusive
+its selected model, that prompt, its session, and its staged messages commit
+atomically before model transport starts. Existing chats retain their own model
+selection. One origin-wide Web Lock gives the browser core exclusive
 write ownership; another tab waits until the active core closes. The memory
 project store and filesystem provider remain deterministic test backends. ZIP
 import/export, native folders, iOS application storage, and an optional OPFS

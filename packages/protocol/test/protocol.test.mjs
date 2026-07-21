@@ -7,7 +7,7 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v3 command", () => {
+test("round-trips every protocol-v4 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("project_create", { name: "Docs" }),
@@ -15,6 +15,13 @@ test("round-trips every protocol-v3 command", () => {
     createCommand("project_delete", { project_id: "p1" }),
     createCommand("project_select", { project_id: "p1" }),
     createCommand("new_chat", { project_id: "p1" }),
+    createCommand("model_select", {
+      project_id: "p1",
+      session_id: "s1",
+      provider_id: "local-openai",
+      model_id: "gpt-5.4",
+    }),
+    createCommand("provider_refresh", { provider_id: "local-openai" }),
     createCommand("session_update", {
       project_id: "p1",
       session_id: "s1",
@@ -89,6 +96,11 @@ test("validates authoritative state snapshots with persisted sessions", () => {
   assert.equal(event.payload.state.active_project_id, "project-1");
   assert.equal(event.payload.state.active_session_id, "session-1");
   assert.equal(event.payload.state.input_draft, "draft reply");
+  assert.equal(event.payload.state.providers[0]?.provider_id, "researchbox");
+  assert.deepEqual(event.payload.state.active_model, {
+    provider_id: "researchbox",
+    model_id: "researchbox-mock",
+  });
   assert.equal(event.payload.state.sessions[0]?.message_count, 0);
   assert.equal(event.payload.state.files[0]?.path, "/README.md");
 });
@@ -315,6 +327,50 @@ test("rejects malformed nested state and mismatched active scope", () => {
   );
 });
 
+test("validates provider inventories and the active model selection", () => {
+  const unknownProvider = createPersistedState();
+  unknownProvider.active_model = {
+    provider_id: "missing-provider",
+    model_id: "researchbox-mock",
+  };
+  assert.throws(
+    () =>
+      parseCoreEvent(
+        coreEvent("state_snapshot", { state: unknownProvider }),
+      ),
+    /active_model references an unknown provider_id/,
+  );
+
+  const unknownModel = createPersistedState();
+  unknownModel.active_model = {
+    provider_id: "researchbox",
+    model_id: "missing-model",
+  };
+  assert.throws(
+    () => parseCoreEvent(coreEvent("state_snapshot", { state: unknownModel })),
+    /active_model references an unknown model_id/,
+  );
+
+  const mismatchedModelProvider = createPersistedState();
+  mismatchedModelProvider.providers[0].models[0].provider_id = "local-openai";
+  assert.throws(
+    () =>
+      parseCoreEvent(
+        coreEvent("state_snapshot", { state: mismatchedModelProvider }),
+      ),
+    /Model provider_id does not match its provider/,
+  );
+
+  const duplicateModel = createPersistedState();
+  duplicateModel.providers[0].models.push({
+    ...duplicateModel.providers[0].models[0],
+  });
+  assert.throws(
+    () => parseCoreEvent(coreEvent("state_snapshot", { state: duplicateModel })),
+    /Duplicate model_id/,
+  );
+});
+
 test("rejects runtime state on virtual new chat", () => {
   assert.throws(
     () =>
@@ -361,6 +417,11 @@ function createPersistedState() {
         message_count: 0,
       },
     ],
+    providers: [createMockProvider()],
+    active_model: {
+      provider_id: "researchbox",
+      model_id: "researchbox-mock",
+    },
     active_project_id: "project-1",
     active_session_id: "session-1",
     input_draft: "draft reply",
@@ -383,6 +444,11 @@ function createVirtualState() {
     state_revision: 1,
     projects: [createProject()],
     sessions: [],
+    providers: [createMockProvider()],
+    active_model: {
+      provider_id: "researchbox",
+      model_id: "researchbox-mock",
+    },
     active_project_id: "project-1",
     active_session_id: null,
     input_draft: "  unfinished message\n",
@@ -390,6 +456,23 @@ function createVirtualState() {
     activities: [],
     files: [],
     is_running: false,
+  };
+}
+
+function createMockProvider() {
+  return {
+    provider_id: "researchbox",
+    display_name: "ResearchBox",
+    kind: "mock",
+    availability: "ready",
+    models: [
+      {
+        provider_id: "researchbox",
+        model_id: "researchbox-mock",
+        display_name: "ResearchBox Mock",
+        availability: "ready",
+      },
+    ],
   };
 }
 

@@ -2,7 +2,7 @@ import {
   parseModelRequest,
   type ModelRequest,
   type ModelStreamEvent,
-  type ModelToolResult,
+  type ModelConversationMessage,
 } from "@researchbox/model-transport";
 
 export async function handleMockModelRequest(
@@ -52,12 +52,25 @@ export async function handleMockModelRequest(
 }
 
 function createMockResponse(request: ModelRequest): ModelStreamEvent[] {
-  const normalizedPrompt = request.prompt.toLowerCase();
+  const lastUserIndex = request.messages.findLastIndex(
+    (message) => message.role === "user",
+  );
+  const prompt =
+    lastUserIndex < 0 ? "" : request.messages[lastUserIndex]?.content ?? "";
+  const toolResults = request.messages
+    .slice(lastUserIndex + 1)
+    .filter(
+      (message): message is Extract<
+        ModelConversationMessage,
+        { role: "tool" }
+      > => message.role === "tool",
+    );
+  const normalizedPrompt = prompt.toLowerCase();
   const shouldInspectFiles = ["file", "workspace", "readme", "project"].some(
     (term) => normalizedPrompt.includes(term),
   );
 
-  if (shouldInspectFiles && request.tool_results.length === 0) {
+  if (shouldInspectFiles && toolResults.length === 0) {
     return [
       {
         type: "tool_call",
@@ -74,7 +87,7 @@ function createMockResponse(request: ModelRequest): ModelStreamEvent[] {
   }
 
   const response = shouldInspectFiles
-    ? responseFromToolResult(request.tool_results[0])
+    ? responseFromToolResult(toolResults[0])
     : "This prototype is running through a versioned JSON boundary. The viewer only renders events; the agent core owns the conversation and tools inside a Web Worker. That gives us a clean path from today’s mock model to Pi without coupling the interface to either one.";
 
   return [
@@ -88,7 +101,11 @@ function createMockResponse(request: ModelRequest): ModelStreamEvent[] {
   ];
 }
 
-function responseFromToolResult(result: ModelToolResult | undefined): string {
+function responseFromToolResult(
+  result:
+    | Extract<ModelConversationMessage, { role: "tool" }>
+    | undefined,
+): string {
   if (!result) {
     return "The workspace tool returned no result, so I could not inspect it.";
   }

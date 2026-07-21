@@ -1,10 +1,13 @@
 import {
+  createLlmModelsError,
+  createLlmModelsResult,
   createLlmProtocolError,
   createLlmStreamEvent,
   createLlmStreamFinished,
   parseLlmWorkerCommand,
   readLlmStreamId,
   type LlmWorkerEvent,
+  type ModelDescriptor,
   type ModelTransport,
 } from "@researchbox/model-transport";
 
@@ -17,11 +20,20 @@ type ActiveStream = {
   controller: AbortController;
 };
 
+export type LlmWorkerModelCatalog = {
+  listModels(
+    providerId: string,
+    signal: AbortSignal,
+  ): Promise<ModelDescriptor[]>;
+};
+
 export function attachLlmWorkerHost(
   host: LlmWorkerHost,
   transport: ModelTransport,
+  modelCatalog?: LlmWorkerModelCatalog,
 ): { close(): void } {
   const activeStreams = new Map<string, ActiveStream>();
+  const activeModelRequests = new Map<string, AbortController>();
 
   function finish(
     streamId: string,
@@ -80,6 +92,35 @@ export function attachLlmWorkerHost(
     }
   }
 
+  async function listModels(
+    requestId: string,
+    providerId: string,
+    controller: AbortController,
+  ): Promise<void> {
+    try {
+      if (!modelCatalog) {
+        throw new Error("Model discovery is not configured in the LLM worker.");
+      }
+      const models = await modelCatalog.listModels(
+        providerId,
+        controller.signal,
+      );
+      if (activeModelRequests.get(requestId) !== controller) return;
+      activeModelRequests.delete(requestId);
+      host.postMessage(createLlmModelsResult(requestId, providerId, models));
+    } catch (error) {
+      if (activeModelRequests.get(requestId) !== controller) return;
+      activeModelRequests.delete(requestId);
+      host.postMessage(
+        createLlmModelsError(
+          requestId,
+          providerId,
+          error instanceof Error ? error.message : "Model discovery failed.",
+        ),
+      );
+    }
+  }
+
   host.onmessage = (message) => {
     let command;
     try {
@@ -112,6 +153,27 @@ export function attachLlmWorkerHost(
       return;
     }
 
+    if (command.type === "models_abort") {
+      const controller = activeModelRequests.get(command.request_id);
+      if (!controller) return;
+      activeModelRequests.delete(command.request_id);
+      controller.abort();
+      return;
+    }
+
+    if (command.type === "models_request") {
+      const existing = activeModelRequests.get(command.request_id);
+      existing?.abort();
+      const controller = new AbortController();
+      activeModelRequests.set(command.request_id, controller);
+      void listModels(
+        command.request_id,
+        command.payload.provider_id,
+        controller,
+      );
+      return;
+    }
+
     if (activeStreams.has(command.stream_id)) {
       const stream = activeStreams.get(command.stream_id);
       if (stream) {
@@ -138,6 +200,10 @@ export function attachLlmWorkerHost(
         stream.controller.abort();
         finish(streamId, stream, "aborted");
       }
+      for (const controller of activeModelRequests.values()) {
+        controller.abort();
+      }
+      activeModelRequests.clear();
     },
   };
 }

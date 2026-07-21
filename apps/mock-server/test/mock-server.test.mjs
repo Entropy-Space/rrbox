@@ -7,11 +7,7 @@ test("streams a tool call for workspace inspection", async () => {
     new Request("http://localhost/api/mock", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        session_id: "session-1",
-        prompt: "inspect the workspace",
-        tool_results: [],
-      }),
+      body: JSON.stringify(createModelRequest("inspect the workspace")),
     }),
   );
 
@@ -35,3 +31,33 @@ test("rejects malformed model requests", async () => {
 
   assert.equal(response.status, 400);
 });
+
+function createModelRequest(prompt) {
+  return {
+    session_id: "session-1",
+    provider_id: "researchbox",
+    model_id: "researchbox-mock",
+    system_prompt: "Help with the workspace.",
+    messages: [{ role: "user", content: prompt }],
+    tools: [
+      {
+        name: "list_files",
+        description: "List files in the workspace.",
+        parameters: {
+          type: "object",
+          properties: { path: { type: "string" } },
+          required: ["path"],
+        },
+      },
+      {
+        name: "read_file",
+        description: "Read a file from the workspace.",
+        parameters: {
+          type: "object",
+          properties: { path: { type: "string" } },
+          required: ["path"],
+        },
+      },
+    ],
+  };
+}

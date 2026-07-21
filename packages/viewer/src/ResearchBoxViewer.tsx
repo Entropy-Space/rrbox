@@ -35,6 +35,7 @@ import {
   isModalNavigationOpen,
   MOBILE_NAVIGATION_QUERY,
 } from "./navigation-state.ts";
+import { ModelSelector } from "./ModelSelector.tsx";
 import { useAgentSession } from "./use-agent-session.ts";
 import { WorkspaceSidebar } from "./WorkspaceSidebar.tsx";
 
@@ -66,6 +67,8 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
     transportError,
     isManagementPending,
     isInputDraftPending,
+    isActiveModelReady,
+    refreshingProviderIds,
     submitPrompt,
     updateInputDraft,
     createProject,
@@ -73,6 +76,8 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
     deleteProject,
     selectProject,
     selectNewChat,
+    selectModel,
+    refreshProvider,
     renameSession,
     deleteSession,
     selectSession,
@@ -146,12 +151,6 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
 
   const hasConversation = coreState.messages.length > 0;
   const visibleError = transportError ?? coreState.error_message;
-  const activeProject = coreState.projects.find(
-    (project) => project.project_id === coreState.active_project_id,
-  );
-  const activeSession = coreState.sessions.find(
-    (session) => session.session_id === coreState.active_session_id,
-  );
   const modalNavigationOpen = isModalNavigationOpen(
     sidebarOpen,
     isMobileViewport,
@@ -207,13 +206,19 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
             >
               <Menu size={20} />
             </button>
-            <div className="model-selector" aria-label="Active workspace">
-              <span>ResearchBox</span>
-              <small>
-                {activeProject?.name ?? "Loading"}
-                {activeSession ? ` · ${activeSession.title}` : ""}
-              </small>
-            </div>
+            <ModelSelector
+              providers={coreState.providers}
+              selection={coreState.active_model}
+              disabled={
+                !coreState.is_ready ||
+                coreState.is_running ||
+                isManagementPending ||
+                coreState.pending_prompt !== null
+              }
+              onSelect={selectModel}
+              onRefresh={refreshProvider}
+              refreshingProviderIds={refreshingProviderIds}
+            />
           </div>
           <div className="topbar-actions">
             <span
@@ -240,7 +245,7 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
           <div className="conversation-column">
             {!hasConversation ? (
               <EmptyConversation
-                isReady={coreState.is_ready}
+                isReady={coreState.is_ready && isActiveModelReady}
                 onSelectPrompt={submitDraft}
               />
             ) : (
@@ -305,6 +310,7 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
                         disabled={
                           !coreState.input_draft.trim() ||
                           !coreState.is_ready ||
+                          !isActiveModelReady ||
                           isManagementPending ||
                           coreState.pending_prompt !== null
                         }

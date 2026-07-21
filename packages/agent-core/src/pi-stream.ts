@@ -3,24 +3,55 @@ import {
   createAssistantMessageEventStream,
   type AssistantMessage,
   type Context,
-  type ToolResultMessage,
+  type Message,
+  type Model,
 } from "@earendil-works/pi-ai";
 import type {
+  ModelConversationMessage,
   ModelRequest,
-  ModelToolResult,
+  ModelToolDefinition,
+  ModelToolName,
   ModelTransport,
 } from "@researchbox/model-transport";
+import { assertCompleteToolCallResults } from "./tool-transcript.ts";
 
 export function createModelStreamFn(transport: ModelTransport): StreamFn {
   return (model, context, options) => {
     const stream = createAssistantMessageEventStream();
     const message = createPartialMessage(model.api, model.provider, model.id);
+    const signal = options?.signal ?? new AbortController().signal;
     stream.push({ type: "start", partial: message });
+
+    if (signal.aborted) {
+      message.stopReason = "aborted";
+      message.errorMessage = "The model request was aborted.";
+      stream.push({
+        type: "error",
+        reason: "aborted",
+        error: message,
+      });
+      return stream;
+    }
+
+    let request: ModelRequest;
+    try {
+      request = toModelRequest(model, context, options?.sessionId);
+    } catch (error) {
+      message.stopReason = "error";
+      message.errorMessage =
+        error instanceof Error ? error.message : "The model request is invalid.";
+      stream.push({
+        type: "error",
+        reason: "error",
+        error: message,
+      });
+      return stream;
+    }
 
     void pumpModelStream(
       transport,
-      toModelRequest(context, options?.sessionId),
-      options?.signal ?? new AbortController().signal,
+      request,
+      signal,
       message,
       stream,
     );
@@ -37,6 +68,7 @@ async function pumpModelStream(
 ): Promise<void> {
   let textIndex: number | null = null;
   let sawToolCall = false;
+  let providerStopReason: "stop" | "length" | "tool_use" | undefined;
 
   try {
     for await (const event of transport.stream(request, signal)) {
@@ -78,6 +110,8 @@ async function pumpModelStream(
           toolCall,
           partial: message,
         });
+      } else {
+        providerStopReason = event.stop_reason;
       }
     }
 
@@ -93,7 +127,12 @@ async function pumpModelStream(
       }
     }
 
-    message.stopReason = sawToolCall ? "toolUse" : "stop";
+    message.stopReason =
+      providerStopReason === "length"
+        ? "length"
+        : providerStopReason === "tool_use" || sawToolCall
+          ? "toolUse"
+          : "stop";
     stream.push({
       type: "done",
       reason: message.stopReason,
@@ -112,44 +151,92 @@ async function pumpModelStream(
   }
 }
 
-function toModelRequest(context: Context, sessionId?: string): ModelRequest {
-  const lastUserIndex = context.messages.findLastIndex(
-    (message) => message.role === "user",
-  );
-  const userMessage = context.messages[lastUserIndex];
-  const prompt =
-    userMessage?.role === "user"
-      ? typeof userMessage.content === "string"
-        ? userMessage.content
-        : userMessage.content
-            .filter((block) => block.type === "text")
-            .map((block) => block.text)
-            .join("\n")
-      : "";
-  const toolResults = context.messages
-    .slice(lastUserIndex + 1)
-    .filter((message): message is ToolResultMessage => message.role === "toolResult")
-    .map(toModelToolResult);
-
+function toModelRequest(
+  model: Model<string>,
+  context: Context,
+  sessionId?: string,
+): ModelRequest {
+  assertCompleteToolCallResults(context.messages);
   return {
     session_id: sessionId ?? crypto.randomUUID(),
-    prompt,
-    tool_results: toolResults,
+    provider_id: model.provider,
+    model_id: model.id,
+    system_prompt: context.systemPrompt ?? "",
+    messages: context.messages
+      .map(toModelConversationMessage)
+      .filter((message): message is ModelConversationMessage => message !== null),
+    tools: (context.tools ?? []).flatMap((tool): ModelToolDefinition[] =>
+      isModelToolName(tool.name)
+        ? [
+            {
+              name: tool.name,
+              description: tool.description,
+              parameters: structuredClone(tool.parameters),
+            },
+          ]
+        : [],
+    ),
   };
 }
 
-function toModelToolResult(message: ToolResultMessage): ModelToolResult {
-  const toolName =
-    message.toolName === "read_file" ? "read_file" : "list_files";
-  return {
-    tool_call_id: message.toolCallId,
-    tool_name: toolName,
-    content: message.content
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
-      .join("\n"),
-    is_error: message.isError,
-  };
+function toModelConversationMessage(
+  message: Message,
+): ModelConversationMessage | null {
+  if (message.role === "user") {
+    return {
+      role: "user",
+      content:
+        typeof message.content === "string"
+          ? message.content
+          : message.content
+              .filter((block) => block.type === "text")
+              .map((block) => block.text)
+              .join("\n"),
+    };
+  }
+  if (message.role === "toolResult") {
+    if (!isModelToolName(message.toolName)) return null;
+    return {
+      role: "tool",
+      tool_call_id: message.toolCallId,
+      tool_name: message.toolName,
+      content: message.content
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
+        .join("\n"),
+      is_error: message.isError,
+    };
+  }
+
+  const toolCalls = message.content
+    .filter(
+      (block) => block.type === "toolCall" && isModelToolName(block.name),
+    )
+    .map((block) => {
+      if (block.type !== "toolCall" || !isModelToolName(block.name)) {
+        throw new Error("Invalid model tool call.");
+      }
+      const path = block.arguments.path;
+      if (typeof path !== "string") {
+        throw new Error(`Tool call ${block.id} is missing a path argument.`);
+      }
+      return {
+        tool_call_id: block.id,
+        tool_name: block.name,
+        arguments: { path },
+      };
+    });
+  const content = message.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
+  return content || toolCalls.length > 0
+    ? { role: "assistant", content, tool_calls: toolCalls }
+    : null;
+}
+
+function isModelToolName(value: string): value is ModelToolName {
+  return value === "list_files" || value === "read_file";
 }
 
 function createPartialMessage(

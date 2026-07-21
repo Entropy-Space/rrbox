@@ -28,14 +28,30 @@ void withExclusiveWriterLease(navigator.locks, async () => {
     name: "researchbox-llm",
   });
   const database = new ResearchBoxDatabase();
+  const modelGateway = new WorkerModelTransport(llmWorker);
   const core = new ResearchBoxCore({
     projectStore: new IndexedDbProjectStore(database),
     workspaceProvider: new IndexedDbProjectFileSystemProvider(
       database,
       researchBoxSeedFiles,
     ),
-    modelTransport: new WorkerModelTransport(llmWorker),
+    modelTransport: modelGateway,
+    modelCatalog: modelGateway,
     model: researchBoxMockModel,
+    providers: [
+      {
+        provider_id: researchBoxMockModel.provider,
+        display_name: "ResearchBox",
+        kind: "mock",
+        models: [researchBoxMockModel],
+      },
+      {
+        provider_id: "local-openai",
+        display_name: "OpenAI-compatible · localhost:4141",
+        kind: "openai_compatible",
+        discover_models: true,
+      },
+    ],
     systemPrompt: researchBoxSystemPrompt,
     eventSink: (event) => host.postMessage(event),
   });

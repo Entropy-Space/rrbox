@@ -1,9 +1,19 @@
-import type { ChatMessage, ToolActivity } from "@researchbox/protocol";
+import type {
+  ChatMessage,
+  ModelSelection,
+  ToolActivity,
+} from "@researchbox/protocol";
 
-export const PROJECT_STORE_SCHEMA_VERSION = 2 as const;
+export const PROJECT_STORE_SCHEMA_VERSION = 3 as const;
 export const SESSION_DOCUMENT_FORMAT_VERSION = 2 as const;
 
+export const DEFAULT_MODEL_SELECTION: ModelSelection = {
+  provider_id: "researchbox",
+  model_id: "researchbox-mock",
+};
+
 const LEGACY_PROJECT_STORE_SCHEMA_VERSION = 1 as const;
+const DRAFT_PROJECT_STORE_SCHEMA_VERSION = 2 as const;
 const LEGACY_SESSION_DOCUMENT_FORMAT_VERSION = 1 as const;
 
 export type ProjectRecord = {
@@ -13,6 +23,7 @@ export type ProjectRecord = {
   updated_at: string;
   last_session_id: string | null;
   new_chat_draft: string;
+  new_chat_model: ModelSelection;
 };
 
 export type SessionRecord = {
@@ -22,6 +33,7 @@ export type SessionRecord = {
   title_is_custom: boolean;
   created_at: string;
   updated_at: string;
+  selected_model: ModelSelection;
 };
 
 export type SessionDocument = {
@@ -66,12 +78,14 @@ export function parseProjectStoreStateWithMigration(
   const schemaVersion = value.schema_version;
   if (
     schemaVersion !== PROJECT_STORE_SCHEMA_VERSION &&
+    schemaVersion !== DRAFT_PROJECT_STORE_SCHEMA_VERSION &&
     schemaVersion !== LEGACY_PROJECT_STORE_SCHEMA_VERSION
   ) {
     throw new Error("Unsupported project store schema version.");
   }
 
   const legacy = schemaVersion === LEGACY_PROJECT_STORE_SCHEMA_VERSION;
+  const hasModelSelection = schemaVersion === PROJECT_STORE_SCHEMA_VERSION;
   const state: ProjectStoreState = {
     schema_version: PROJECT_STORE_SCHEMA_VERSION,
     state_revision: requireNonNegativeInteger(value, "state_revision"),
@@ -80,9 +94,11 @@ export function parseProjectStoreStateWithMigration(
       ? requireString(value, "active_session_id")
       : requireNullableString(value, "active_session_id"),
     projects: requireArray(value, "projects").map((project) =>
-      parseProjectRecord(project, legacy),
+      parseProjectRecord(project, legacy, hasModelSelection),
     ),
-    sessions: requireArray(value, "sessions").map(parseSessionRecord),
+    sessions: requireArray(value, "sessions").map((session) =>
+      parseSessionRecord(session, hasModelSelection),
+    ),
     documents: requireArray(value, "documents").map((document) =>
       parseSessionDocument(document, legacy),
     ),
@@ -90,7 +106,10 @@ export function parseProjectStoreStateWithMigration(
 
   if (legacy) removeLegacyPlaceholderSessions(state);
   assertProjectStoreInvariants(state);
-  return { state, was_migrated: legacy };
+  return {
+    state,
+    was_migrated: schemaVersion !== PROJECT_STORE_SCHEMA_VERSION,
+  };
 }
 
 export function assertProjectStoreInvariants(state: ProjectStoreState): void {
@@ -158,7 +177,11 @@ export function assertProjectStoreInvariants(state: ProjectStoreState): void {
   }
 }
 
-function parseProjectRecord(value: unknown, legacy: boolean): ProjectRecord {
+function parseProjectRecord(
+  value: unknown,
+  legacy: boolean,
+  hasModelSelection: boolean,
+): ProjectRecord {
   if (!isRecord(value)) throw new Error("Project record must be an object.");
   return {
     project_id: requireString(value, "project_id"),
@@ -171,10 +194,16 @@ function parseProjectRecord(value: unknown, legacy: boolean): ProjectRecord {
     new_chat_draft: legacy
       ? ""
       : requireString(value, "new_chat_draft", true),
+    new_chat_model: hasModelSelection
+      ? parseModelSelection(value.new_chat_model)
+      : { ...DEFAULT_MODEL_SELECTION },
   };
 }
 
-function parseSessionRecord(value: unknown): SessionRecord {
+function parseSessionRecord(
+  value: unknown,
+  hasModelSelection: boolean,
+): SessionRecord {
   if (!isRecord(value)) throw new Error("Session record must be an object.");
   return {
     session_id: requireString(value, "session_id"),
@@ -183,6 +212,17 @@ function parseSessionRecord(value: unknown): SessionRecord {
     title_is_custom: requireBoolean(value, "title_is_custom"),
     created_at: requireString(value, "created_at"),
     updated_at: requireString(value, "updated_at"),
+    selected_model: hasModelSelection
+      ? parseModelSelection(value.selected_model)
+      : { ...DEFAULT_MODEL_SELECTION },
+  };
+}
+
+function parseModelSelection(value: unknown): ModelSelection {
+  if (!isRecord(value)) throw new Error("Model selection must be an object.");
+  return {
+    provider_id: requireString(value, "provider_id"),
+    model_id: requireString(value, "model_id"),
   };
 }
 

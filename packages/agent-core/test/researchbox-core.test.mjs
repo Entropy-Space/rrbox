@@ -21,6 +21,15 @@ const model = {
   maxTokens: 4_096,
 };
 
+const localModel = {
+  ...model,
+  id: "local-model",
+  name: "Local model",
+  api: "openai-completions",
+  provider: "local-openai",
+  baseUrl: "",
+};
+
 test("keeps new chat virtual and persists the first prompt before transport", async () => {
   const store = new MemoryProjectStore();
   const provider = createWorkspaceProvider();
@@ -30,15 +39,17 @@ test("keeps new chat virtual and persists the first prompt before transport", as
     async *stream(request) {
       transportStarted = true;
       const persisted = await store.load();
+      const prompt = promptFromRequest(request);
       assert.equal(persisted.sessions.length, 1);
       assert.equal(persisted.active_session_id, persisted.sessions[0].session_id);
+      assert.equal(request.session_id, persisted.sessions[0].session_id);
       assert.equal(persisted.projects[0].new_chat_draft, "");
       assert.equal(persisted.documents[0].input_draft, "");
       assert.equal(persisted.documents[0].messages.length, 2);
-      assert.equal(persisted.documents[0].messages[0].content, request.prompt);
+      assert.equal(persisted.documents[0].messages[0].content, prompt);
       assert.equal(persisted.documents[0].messages[1].status, "streaming");
       assert.equal(persisted.documents[0].agent_messages.at(-1).role, "user");
-      yield { type: "text_delta", text_delta: `Echo: ${request.prompt}` };
+      yield { type: "text_delta", text_delta: `Echo: ${prompt}` };
       yield { type: "done" };
     },
   });
@@ -67,9 +78,10 @@ test("keeps new chat virtual and persists the first prompt before transport", as
     async *stream(request) {
       transportStarted = true;
       const persisted = await store.load();
+      const prompt = promptFromRequest(request);
       assert.equal(persisted.sessions.length, 1);
       assert.equal(persisted.documents[0].messages.length, 2);
-      assert.equal(persisted.documents[0].messages[0].content, request.prompt);
+      assert.equal(persisted.documents[0].messages[0].content, prompt);
       yield { type: "done" };
     },
   });
@@ -175,6 +187,445 @@ test("new chat is idempotent and project and session drafts stay isolated", asyn
   );
   assert.equal(latestState(events).active_session_id, null);
   assert.equal(latestState(events).sessions.length, 0);
+});
+
+test("model selection is chat-scoped and survives first send and reload", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const requests = [];
+  const modelTransport = {
+    async *stream(request) {
+      const persisted = await store.load();
+      assert.deepEqual(persisted.sessions[0].selected_model, {
+        provider_id: request.provider_id,
+        model_id: request.model_id,
+      });
+      requests.push(structuredClone(request));
+      yield { type: "done" };
+    },
+  };
+  const createConfiguredCore = (eventSink) =>
+    new ResearchBoxCore({
+      projectStore: store,
+      workspaceProvider: provider,
+      modelTransport,
+      model,
+      providers: [
+        {
+          provider_id: model.provider,
+          display_name: "ResearchBox",
+          kind: "mock",
+          models: [model],
+        },
+        {
+          provider_id: localModel.provider,
+          display_name: "Local OpenAI",
+          kind: "openai_compatible",
+          models: [localModel],
+        },
+      ],
+      systemPrompt: "You are a test agent.",
+      eventSink,
+    });
+
+  const core = createConfiguredCore((event) => events.push(event));
+  await core.handle(createCommand("bootstrap", {}));
+  const projectId = latestState(events).active_project_id;
+
+  await core.handle(
+    createCommand("model_select", {
+      project_id: projectId,
+      session_id: null,
+      provider_id: localModel.provider,
+      model_id: localModel.id,
+    }),
+  );
+  assert.deepEqual(latestState(events).active_model, {
+    provider_id: localModel.provider,
+    model_id: localModel.id,
+  });
+  assert.deepEqual((await store.load()).projects[0].new_chat_model, {
+    provider_id: localModel.provider,
+    model_id: localModel.id,
+  });
+
+  await core.handle(
+    createCommand("prompt", {
+      project_id: projectId,
+      session_id: null,
+      text: "Use the local model",
+    }),
+  );
+  const sessionId = latestState(events).active_session_id;
+  assert.ok(sessionId);
+  assert.equal(requests[0].provider_id, localModel.provider);
+  assert.equal(requests[0].model_id, localModel.id);
+  assert.deepEqual((await store.load()).sessions[0].selected_model, {
+    provider_id: localModel.provider,
+    model_id: localModel.id,
+  });
+
+  await core.handle(
+    createCommand("model_select", {
+      project_id: projectId,
+      session_id: sessionId,
+      provider_id: model.provider,
+      model_id: model.id,
+    }),
+  );
+  assert.deepEqual((await store.load()).sessions[0].selected_model, {
+    provider_id: model.provider,
+    model_id: model.id,
+  });
+
+  await core.handle(createCommand("new_chat", { project_id: projectId }));
+  assert.deepEqual(latestState(events).active_model, {
+    provider_id: localModel.provider,
+    model_id: localModel.id,
+  });
+
+  const reloadedEvents = [];
+  const reloaded = createConfiguredCore((event) => reloadedEvents.push(event));
+  await reloaded.handle(createCommand("bootstrap", {}));
+  assert.deepEqual(latestState(reloadedEvents).active_model, {
+    provider_id: localModel.provider,
+    model_id: localModel.id,
+  });
+});
+
+test("dynamic providers refresh, reject non-tool models, and recover", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  let discoveryFailure = null;
+  const descriptors = [
+    {
+      provider_id: "local-openai",
+      provider_display_name: "Local OpenAI",
+      model_id: "tool-model",
+      display_name: "Tool model",
+      context_window: 128_000,
+      max_output_tokens: 8_192,
+      supports_tools: true,
+      supports_reasoning: false,
+    },
+    {
+      provider_id: "local-openai",
+      provider_display_name: "Local OpenAI",
+      model_id: "text-only-model",
+      display_name: "Text only model",
+      context_window: 128_000,
+      max_output_tokens: 8_192,
+      supports_tools: false,
+      supports_reasoning: false,
+    },
+  ];
+  const core = new ResearchBoxCore({
+    projectStore: store,
+    workspaceProvider: provider,
+    modelTransport: {
+      async *stream() {
+        yield { type: "done" };
+      },
+    },
+    modelCatalog: {
+      async listModels() {
+        if (discoveryFailure) throw discoveryFailure;
+        return descriptors;
+      },
+    },
+    model,
+    providers: [
+      {
+        provider_id: model.provider,
+        display_name: "ResearchBox",
+        kind: "mock",
+        models: [model],
+      },
+      {
+        provider_id: "local-openai",
+        display_name: "Local OpenAI",
+        kind: "openai_compatible",
+        discover_models: true,
+      },
+    ],
+    systemPrompt: "You are a test agent.",
+    eventSink: (event) => events.push(event),
+  });
+
+  await core.handle(createCommand("bootstrap", {}));
+  await core.handle(
+    createCommand("provider_refresh", { provider_id: "local-openai" }),
+  );
+  const readyState = latestState(events);
+  const localProvider = readyState.providers.find(
+    (candidate) => candidate.provider_id === "local-openai",
+  );
+  assert.equal(localProvider.availability, "ready");
+  assert.equal(
+    localProvider.models.find(
+      (candidate) => candidate.model_id === "tool-model",
+    ).availability,
+    "ready",
+  );
+  assert.equal(
+    localProvider.models.find(
+      (candidate) => candidate.model_id === "text-only-model",
+    ).availability,
+    "unavailable",
+  );
+
+  const projectId = readyState.active_project_id;
+  await core.handle(
+    createCommand("model_select", {
+      project_id: projectId,
+      session_id: null,
+      provider_id: "local-openai",
+      model_id: "text-only-model",
+    }),
+  );
+  assert.equal(events.at(-1).type, "error");
+  assert.equal(events.at(-1).payload.code, "model_unavailable");
+
+  await core.handle(
+    createCommand("model_select", {
+      project_id: projectId,
+      session_id: null,
+      provider_id: "local-openai",
+      model_id: "tool-model",
+    }),
+  );
+  assert.deepEqual(latestState(events).active_model, {
+    provider_id: "local-openai",
+    model_id: "tool-model",
+  });
+
+  discoveryFailure = new Error("gateway offline");
+  await core.handle(
+    createCommand("provider_refresh", { provider_id: "local-openai" }),
+  );
+  assert.equal(
+    latestState(events).providers.find(
+      (candidate) => candidate.provider_id === "local-openai",
+    ).availability,
+    "unavailable",
+  );
+
+  discoveryFailure = null;
+  await core.handle(
+    createCommand("provider_refresh", { provider_id: "local-openai" }),
+  );
+  assert.equal(
+    latestState(events).providers.find(
+      (candidate) => candidate.provider_id === "local-openai",
+    ).availability,
+    "ready",
+  );
+});
+
+test("persisted dynamic model becomes ready after reload discovery", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const descriptor = {
+    provider_id: "local-openai",
+    provider_display_name: "Local OpenAI",
+    model_id: "persisted-model",
+    display_name: "Persisted model",
+    context_window: 128_000,
+    max_output_tokens: 8_192,
+    supports_tools: true,
+    supports_reasoning: false,
+  };
+  const providers = [
+    {
+      provider_id: model.provider,
+      display_name: "ResearchBox",
+      kind: "mock",
+      models: [model],
+    },
+    {
+      provider_id: "local-openai",
+      display_name: "Local OpenAI",
+      kind: "openai_compatible",
+      discover_models: true,
+    },
+  ];
+  const createDynamicCore = (modelCatalog, eventSink) =>
+    new ResearchBoxCore({
+      projectStore: store,
+      workspaceProvider: provider,
+      modelTransport: {
+        async *stream() {
+          yield { type: "done" };
+        },
+      },
+      modelCatalog,
+      model,
+      providers,
+      systemPrompt: "You are a test agent.",
+      eventSink,
+    });
+
+  const initialEvents = [];
+  const initial = createDynamicCore(
+    {
+      async listModels() {
+        return [descriptor];
+      },
+    },
+    (event) => initialEvents.push(event),
+  );
+  await initial.handle(createCommand("bootstrap", {}));
+  await initial.handle(
+    createCommand("provider_refresh", { provider_id: "local-openai" }),
+  );
+  const projectId = latestState(initialEvents).active_project_id;
+  await initial.handle(
+    createCommand("model_select", {
+      project_id: projectId,
+      session_id: null,
+      provider_id: descriptor.provider_id,
+      model_id: descriptor.model_id,
+    }),
+  );
+  assert.deepEqual((await store.load()).projects[0].new_chat_model, {
+    provider_id: descriptor.provider_id,
+    model_id: descriptor.model_id,
+  });
+
+  let releaseDiscovery;
+  let discoveryCalls = 0;
+  const discovery = new Promise((resolve) => {
+    releaseDiscovery = resolve;
+  });
+  const reloadedEvents = [];
+  const reloaded = createDynamicCore(
+    {
+      async listModels() {
+        discoveryCalls += 1;
+        return discovery;
+      },
+    },
+    (event) => reloadedEvents.push(event),
+  );
+  await reloaded.handle(createCommand("bootstrap", {}));
+
+  const readyState = reloadedEvents.find((event) => event.type === "ready")
+    .payload.state;
+  const loadingProvider = readyState.providers.find(
+    (candidate) => candidate.provider_id === descriptor.provider_id,
+  );
+  assert.deepEqual(readyState.active_model, {
+    provider_id: descriptor.provider_id,
+    model_id: descriptor.model_id,
+  });
+  assert.equal(loadingProvider.availability, "loading");
+  assert.equal(
+    loadingProvider.models.find(
+      (candidate) => candidate.model_id === descriptor.model_id,
+    ).availability,
+    "unavailable",
+  );
+
+  const refresh = reloaded.handle(
+    createCommand("provider_refresh", { provider_id: descriptor.provider_id }),
+  );
+  releaseDiscovery([descriptor]);
+  await refresh;
+
+  const refreshedState = latestState(reloadedEvents);
+  const refreshedProvider = refreshedState.providers.find(
+    (candidate) => candidate.provider_id === descriptor.provider_id,
+  );
+  assert.equal(discoveryCalls, 1);
+  assert.equal(refreshedProvider.availability, "ready");
+  assert.equal(
+    refreshedProvider.models.find(
+      (candidate) => candidate.model_id === descriptor.model_id,
+    ).availability,
+    "ready",
+  );
+  assert.deepEqual(refreshedState.active_model, readyState.active_model);
+});
+
+test("provider refresh recovers when its loading snapshot fails", async () => {
+  const store = new MemoryProjectStore();
+  const workspace = new MemoryFileSystem({ "/README.md": "# Test" });
+  const provider = new MemoryProjectFileSystemProvider(() => workspace);
+  const events = [];
+  let listCalls = 0;
+  let discoveryCalls = 0;
+  const list = workspace.list.bind(workspace);
+  workspace.list = async (path) => {
+    listCalls += 1;
+    if (listCalls === 2) throw new Error("transient list failure");
+    return list(path);
+  };
+  const descriptor = {
+    provider_id: "local-openai",
+    provider_display_name: "Local OpenAI",
+    model_id: "tool-model",
+    display_name: "Tool model",
+    context_window: 128_000,
+    max_output_tokens: 8_192,
+    supports_tools: true,
+    supports_reasoning: false,
+  };
+  const core = new ResearchBoxCore({
+    projectStore: store,
+    workspaceProvider: provider,
+    modelTransport: {
+      async *stream() {
+        yield { type: "done" };
+      },
+    },
+    modelCatalog: {
+      async listModels() {
+        discoveryCalls += 1;
+        return [descriptor];
+      },
+    },
+    model,
+    providers: [
+      {
+        provider_id: model.provider,
+        display_name: "ResearchBox",
+        kind: "mock",
+        models: [model],
+      },
+      {
+        provider_id: descriptor.provider_id,
+        display_name: descriptor.provider_display_name,
+        kind: "openai_compatible",
+        discover_models: true,
+      },
+    ],
+    systemPrompt: "You are a test agent.",
+    eventSink: (event) => events.push(event),
+  });
+
+  await core.handle(createCommand("bootstrap", {}));
+  await core.handle(
+    createCommand("provider_refresh", {
+      provider_id: descriptor.provider_id,
+    }),
+  );
+  const callsAfterRecovery = discoveryCalls;
+  await core.handle(
+    createCommand("provider_refresh", {
+      provider_id: descriptor.provider_id,
+    }),
+  );
+
+  assert.ok(callsAfterRecovery >= 1);
+  assert.equal(discoveryCalls, callsAfterRecovery + 1);
+  assert.equal(
+    latestState(events).providers.find(
+      (candidate) => candidate.provider_id === descriptor.provider_id,
+    ).availability,
+    "ready",
+  );
 });
 
 test("draft updates during a run survive the finished checkpoint", async () => {
@@ -298,6 +749,229 @@ test("abort bypasses catalog serialization and checkpoints a terminal assistant"
   assert.equal(document.agent_messages.at(-1).stop_reason, "aborted");
 });
 
+test("abort repairs unexecuted sequential tool calls before the next prompt", async () => {
+  const store = new MemoryProjectStore();
+  const workspace = new MemoryFileSystem({ "/README.md": "# Test" });
+  const provider = new MemoryProjectFileSystemProvider(() => workspace);
+  const events = [];
+  let markFirstToolStarted;
+  let releaseFirstTool;
+  const firstToolStarted = new Promise((resolve) => {
+    markFirstToolStarted = resolve;
+  });
+  const firstToolReleased = new Promise((resolve) => {
+    releaseFirstTool = resolve;
+  });
+  const read = workspace.read.bind(workspace);
+  workspace.read = async (path) => {
+    markFirstToolStarted();
+    await firstToolReleased;
+    return read(path);
+  };
+
+  const requests = [];
+  const core = createCore(store, provider, events, {
+    async *stream(request) {
+      requests.push(structuredClone(request));
+      if (requests.length === 1) {
+        yield {
+          type: "tool_call",
+          tool_call_id: "read-call",
+          tool_name: "read_file",
+          arguments: { path: "/README.md" },
+        };
+        yield {
+          type: "tool_call",
+          tool_call_id: "list-call",
+          tool_name: "list_files",
+          arguments: { path: "/" },
+        };
+        yield { type: "done", stop_reason: "tool_use" };
+        return;
+      }
+      yield { type: "text_delta", text_delta: "Recovered" };
+      yield { type: "done", stop_reason: "stop" };
+    },
+  });
+
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  const firstPrompt = core.handle(
+    createCommand("prompt", {
+      project_id: initial.active_project_id,
+      session_id: null,
+      text: "Inspect the workspace",
+    }),
+  );
+  await firstToolStarted;
+  const active = latestState(events);
+  assert.ok(active.active_session_id);
+
+  await core.handle(
+    createCommand("abort", {
+      project_id: active.active_project_id,
+      session_id: active.active_session_id,
+    }),
+  );
+  releaseFirstTool();
+  await firstPrompt;
+
+  const afterAbort = (await store.load()).documents[0];
+  assert.equal(afterAbort.messages.at(-1).status, "aborted");
+  const skippedResult = afterAbort.agent_messages.find(
+    (message) =>
+      message.role === "tool_result" && message.tool_call_id === "list-call",
+  );
+  assert.ok(skippedResult, "Expected a result for the unexecuted tool call");
+  assert.equal(skippedResult.tool_name, "list_files");
+  assert.equal(skippedResult.is_error, true);
+  assert.equal(
+    skippedResult.content[0].text,
+    "Tool execution was skipped because the run was aborted.",
+  );
+
+  await core.handle(
+    createCommand("prompt", {
+      project_id: active.active_project_id,
+      session_id: active.active_session_id,
+      text: "Continue safely",
+    }),
+  );
+
+  assert.equal(requests.length, 2);
+  assert.deepEqual(
+    requests[1].messages.map((message) => message.role),
+    ["user", "assistant", "tool", "tool", "user"],
+  );
+  const priorAssistant = requests[1].messages[1];
+  assert.deepEqual(
+    priorAssistant.tool_calls.map((toolCall) => toolCall.tool_call_id),
+    ["read-call", "list-call"],
+  );
+  assert.deepEqual(
+    requests[1].messages.slice(2, 4).map((message) => ({
+      tool_call_id: message.tool_call_id,
+      is_error: message.is_error,
+    })),
+    [
+      { tool_call_id: "read-call", is_error: false },
+      { tool_call_id: "list-call", is_error: true },
+    ],
+  );
+  assert.equal(
+    (await store.load()).documents[0].messages.at(-1).status,
+    "complete",
+  );
+});
+
+test("length stops surface as a terminal core error", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const core = createCore(store, provider, events, {
+    async *stream() {
+      yield { type: "text_delta", text_delta: "Partial response" };
+      yield { type: "done", stop_reason: "length" };
+    },
+  });
+
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await core.handle(
+    createCommand("prompt", {
+      project_id: initial.active_project_id,
+      session_id: null,
+      text: "Write a long response",
+    }),
+  );
+
+  const document = (await store.load()).documents[0];
+  assert.equal(document.messages.at(-1).content, "Partial response");
+  assert.equal(document.messages.at(-1).status, "error");
+  assert.equal(document.agent_messages.at(-1).stop_reason, "length");
+  const messageFinished = events.findLast(
+    (event) => event.type === "message_finished",
+  );
+  assert.equal(messageFinished.payload.status, "error");
+  assert.equal(
+    messageFinished.payload.error_message,
+    "The model stopped because it reached its output limit.",
+  );
+  const error = events.findLast((event) => event.type === "error");
+  assert.equal(error.payload.code, "agent_run_failed");
+  assert.equal(
+    error.payload.message,
+    "The model stopped because it reached its output limit.",
+  );
+});
+
+test("invalid tool transcripts terminate cleanly and do not brick the chat", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const requests = [];
+  const core = createCore(store, provider, events, {
+    async *stream(request) {
+      requests.push(structuredClone(request));
+      if (requests.length === 1) {
+        yield {
+          type: "tool_call",
+          tool_call_id: "duplicate-call",
+          tool_name: "read_file",
+          arguments: { path: "/README.md" },
+        };
+        yield {
+          type: "tool_call",
+          tool_call_id: "duplicate-call",
+          tool_name: "list_files",
+          arguments: { path: "/" },
+        };
+        yield { type: "done", stop_reason: "tool_use" };
+        return;
+      }
+      yield { type: "text_delta", text_delta: "Recovered" };
+      yield { type: "done", stop_reason: "stop" };
+    },
+  });
+
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await core.handle(
+    createCommand("prompt", {
+      project_id: initial.active_project_id,
+      session_id: null,
+      text: "Return an invalid tool turn",
+    }),
+  );
+
+  const afterFailure = (await store.load()).documents[0];
+  assert.equal(afterFailure.messages.at(-1).status, "error");
+  assert.deepEqual(
+    afterFailure.agent_messages.map((message) => message.role),
+    ["user", "assistant"],
+  );
+  assert.equal(afterFailure.agent_messages.at(-1).stop_reason, "error");
+
+  const failedState = latestState(events);
+  await core.handle(
+    createCommand("prompt", {
+      project_id: failedState.active_project_id,
+      session_id: failedState.active_session_id,
+      text: "Continue after the provider error",
+    }),
+  );
+
+  assert.equal(requests.length, 2);
+  assert.deepEqual(
+    requests[1].messages.map((message) => message.role),
+    ["user", "user"],
+  );
+  assert.equal(
+    (await store.load()).documents[0].messages.at(-1).status,
+    "complete",
+  );
+});
+
 test("projects keep isolated filesystems without requiring a session", async () => {
   const store = new MemoryProjectStore();
   const provider = createWorkspaceProvider();
@@ -415,7 +1089,10 @@ function createCore(store, provider, events, modelTransport) {
     workspaceProvider: provider,
     modelTransport: modelTransport ?? {
       async *stream(request) {
-        yield { type: "text_delta", text_delta: `Echo: ${request.prompt}` };
+        yield {
+          type: "text_delta",
+          text_delta: `Echo: ${promptFromRequest(request)}`,
+        };
         yield { type: "done" };
       },
     },
@@ -423,6 +1100,21 @@ function createCore(store, provider, events, modelTransport) {
     systemPrompt: "You are a test agent.",
     eventSink: (event) => events.push(event),
   });
+}
+
+function promptFromRequest(request) {
+  assert.equal(request.provider_id, model.provider);
+  assert.equal(request.model_id, model.id);
+  assert.equal(request.system_prompt, "You are a test agent.");
+  assert.deepEqual(
+    request.tools.map((tool) => tool.name),
+    ["list_files", "read_file"],
+  );
+  const message = [...request.messages]
+    .reverse()
+    .find((candidate) => candidate.role === "user");
+  assert.ok(message, "Expected the model request to contain a user message");
+  return message.content;
 }
 
 function createWorkspaceProvider() {

@@ -5,7 +5,9 @@ import {
   type CoreEvent,
   type CoreStateSnapshot,
   type FileEntry,
+  type ModelSelection,
   type ProjectSummary,
+  type ProviderSummary,
   type SessionSummary,
   type ToolActivity,
   type ViewerCommand,
@@ -16,6 +18,8 @@ export type AgentSessionState = {
   state_revision: number;
   projects: ProjectSummary[];
   sessions: SessionSummary[];
+  providers: ProviderSummary[];
+  active_model: ModelSelection;
   active_project_id: string | null;
   active_session_id: string | null;
   input_draft: string;
@@ -41,6 +45,11 @@ export const initialAgentSessionState: AgentSessionState = {
   state_revision: 0,
   projects: [],
   sessions: [],
+  providers: [],
+  active_model: {
+    provider_id: "",
+    model_id: "",
+  },
   active_project_id: null,
   active_session_id: null,
   input_draft: "",
@@ -122,11 +131,24 @@ export function useAgentSession(createWorker: () => Worker) {
   );
   const [transportError, setTransportError] = useState<string | null>(null);
   const [isManagementPending, setManagementPending] = useState(false);
+  const [refreshingProviderIds, setRefreshingProviderIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const workerRef = useRef<Worker | null>(null);
   const pendingManagementRequestRef = useRef<string | null>(null);
+  const pendingProviderRefreshRequestRef = useRef(new Map<string, string>());
   const isInputDraftPending =
     coreState.pending_input_draft_request_id !== null ||
     coreState.input_draft_needs_sync;
+  const activeProvider = coreState.providers.find(
+    (provider) => provider.provider_id === coreState.active_model.provider_id,
+  );
+  const activeModel = activeProvider?.models.find(
+    (model) => model.model_id === coreState.active_model.model_id,
+  );
+  const isActiveModelReady =
+    activeProvider?.availability === "ready" &&
+    activeModel?.availability === "ready";
 
   const sendCommand = useCallback((command: ViewerCommand) => {
     workerRef.current?.postMessage(command);
@@ -222,6 +244,27 @@ export function useAgentSession(createWorker: () => Worker) {
           pendingManagementRequestRef.current = null;
           setManagementPending(false);
         }
+        const refreshingProviderId = event.request_id
+          ? pendingProviderRefreshRequestRef.current.get(event.request_id)
+          : undefined;
+        if (refreshingProviderId && event.request_id) {
+          const refreshRequestId = event.request_id;
+          const provider =
+            event.type === "state_snapshot"
+              ? event.payload.state.providers.find(
+                  (candidate) =>
+                    candidate.provider_id === refreshingProviderId,
+                )
+              : undefined;
+          if (event.type === "error" || provider?.availability !== "loading") {
+            pendingProviderRefreshRequestRef.current.delete(refreshRequestId);
+            setRefreshingProviderIds((current) => {
+              const next = new Set(current);
+              next.delete(refreshingProviderId);
+              return next;
+            });
+          }
+        }
       } catch {
         setTransportError("The browser core sent an invalid event.");
       }
@@ -229,6 +272,8 @@ export function useAgentSession(createWorker: () => Worker) {
     worker.onerror = () => {
       setTransportError("The browser core could not start. Refresh to try again.");
       pendingManagementRequestRef.current = null;
+      pendingProviderRefreshRequestRef.current.clear();
+      setRefreshingProviderIds(new Set());
       setManagementPending(false);
     };
     worker.postMessage(createCommand("bootstrap", {}));
@@ -247,7 +292,8 @@ export function useAgentSession(createWorker: () => Worker) {
         !coreState.active_project_id ||
         coreState.is_running ||
         coreState.pending_prompt !== null ||
-        isManagementPending
+        isManagementPending ||
+        !isActiveModelReady
       ) {
         return false;
       }
@@ -274,6 +320,7 @@ export function useAgentSession(createWorker: () => Worker) {
       coreState.is_running,
       coreState.pending_prompt,
       isManagementPending,
+      isActiveModelReady,
       sendCommand,
     ],
   );
@@ -359,6 +406,47 @@ export function useAgentSession(createWorker: () => Worker) {
     ],
   );
 
+  const selectModel = useCallback(
+    (providerId: string, modelId: string) => {
+      if (!coreState.active_project_id) return;
+      sendManagementCommand(
+        createCommand("model_select", {
+          project_id: coreState.active_project_id,
+          session_id: coreState.active_session_id,
+          provider_id: providerId,
+          model_id: modelId,
+        }),
+      );
+    },
+    [
+      coreState.active_project_id,
+      coreState.active_session_id,
+      sendManagementCommand,
+    ],
+  );
+
+  const refreshProvider = useCallback(
+    (providerId: string) => {
+      if (
+        [...pendingProviderRefreshRequestRef.current.values()].includes(
+          providerId,
+        )
+      ) {
+        return;
+      }
+      const command = createCommand("provider_refresh", {
+        provider_id: providerId,
+      });
+      pendingProviderRefreshRequestRef.current.set(
+        command.request_id,
+        providerId,
+      );
+      setRefreshingProviderIds((current) => new Set(current).add(providerId));
+      sendCommand(command);
+    },
+    [sendCommand],
+  );
+
   const renameSession = useCallback(
     (projectId: string, sessionId: string, title: string) => {
       sendManagementCommand(
@@ -440,6 +528,8 @@ export function useAgentSession(createWorker: () => Worker) {
     transportError,
     isManagementPending,
     isInputDraftPending,
+    isActiveModelReady,
+    refreshingProviderIds,
     submitPrompt,
     updateInputDraft,
     createProject,
@@ -447,6 +537,8 @@ export function useAgentSession(createWorker: () => Worker) {
     deleteProject,
     selectProject,
     selectNewChat,
+    selectModel,
+    refreshProvider,
     renameSession,
     deleteSession,
     selectSession,
@@ -693,6 +785,8 @@ function applySnapshot(
     state_revision: snapshot.state_revision,
     projects: snapshot.projects,
     sessions: snapshot.sessions,
+    providers: snapshot.providers,
+    active_model: snapshot.active_model,
     active_project_id: snapshot.active_project_id,
     active_session_id: snapshot.active_session_id,
     input_draft: preserveDraft ? state.input_draft : snapshot.input_draft,

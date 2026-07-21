@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { LLM_WORKER_PROTOCOL_VERSION } from "@researchbox/model-transport";
 import {
   attachLlmWorkerHost,
   WorkerModelTransport,
@@ -7,17 +8,31 @@ import {
 
 const request = (prompt) => ({
   session_id: `session-${prompt}`,
-  prompt,
-  tool_results: [],
+  provider_id: "researchbox",
+  model_id: "researchbox-mock",
+  system_prompt: "Help with the workspace.",
+  messages: [{ role: "user", content: prompt }],
+  tools: [
+    {
+      name: "list_files",
+      description: "List files in the workspace.",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string" } },
+        required: ["path"],
+      },
+    },
+  ],
 });
 
 test("multiplexes LLM worker streams without cross-talk", async () => {
   const { host, worker } = createWorkerPair();
   attachLlmWorkerHost(host, {
     async *stream(modelRequest) {
-      yield { type: "text_delta", text_delta: `${modelRequest.prompt}:one` };
+      const prompt = promptFromRequest(modelRequest);
+      yield { type: "text_delta", text_delta: `${prompt}:one` };
       await Promise.resolve();
-      yield { type: "text_delta", text_delta: `${modelRequest.prompt}:two` };
+      yield { type: "text_delta", text_delta: `${prompt}:two` };
       yield { type: "done" };
     },
   });
@@ -38,6 +53,88 @@ test("multiplexes LLM worker streams without cross-talk", async () => {
     { type: "text_delta", text_delta: "beta:two" },
     { type: "done" },
   ]);
+  transport.close();
+});
+
+test("correlates model discovery results by request and provider", async () => {
+  const { worker, emitMessage, commands } = createDetachedWorker();
+  const transport = new WorkerModelTransport(worker);
+  const signal = new AbortController().signal;
+  const alpha = transport.listModels("provider-alpha", signal);
+  const beta = transport.listModels("provider-beta", signal);
+  await Promise.resolve();
+
+  const alphaRequest = commands.find(
+    (command) =>
+      command.type === "models_request" &&
+      command.payload.provider_id === "provider-alpha",
+  );
+  const betaRequest = commands.find(
+    (command) =>
+      command.type === "models_request" &&
+      command.payload.provider_id === "provider-beta",
+  );
+  assert.ok(alphaRequest?.request_id);
+  assert.ok(betaRequest?.request_id);
+
+  const alphaModel = descriptor("provider-alpha", "alpha-model");
+  const betaModel = descriptor("provider-beta", "beta-model");
+  emitModelsResult(emitMessage, betaRequest.request_id, betaModel, "event-beta");
+  emitModelsResult(
+    emitMessage,
+    alphaRequest.request_id,
+    alphaModel,
+    "event-alpha",
+  );
+
+  assert.deepEqual(await alpha, [alphaModel]);
+  assert.deepEqual(await beta, [betaModel]);
+  transport.close();
+});
+
+test("aborts model discovery in the LLM worker", async () => {
+  const { host, worker, commands } = createWorkerPair();
+  let observeAbort;
+  const abortObserved = new Promise((resolve) => {
+    observeAbort = resolve;
+  });
+  attachLlmWorkerHost(
+    host,
+    {
+      async *stream() {
+        yield { type: "done" };
+      },
+    },
+    {
+      async listModels(_providerId, signal) {
+        await new Promise((resolve) => {
+          signal.addEventListener("abort", resolve, { once: true });
+        });
+        observeAbort();
+        throw signal.reason;
+      },
+    },
+  );
+  const transport = new WorkerModelTransport(worker);
+  const controller = new AbortController();
+  const pending = transport.listModels("provider-alpha", controller.signal);
+  await Promise.resolve();
+  controller.abort();
+
+  await assert.rejects(pending, { name: "AbortError" });
+  await abortObserved;
+  const request = commands.find(
+    (command) => command.type === "models_request",
+  );
+  assert.ok(request?.request_id);
+  assert.equal(
+    commands.filter(
+      (command) =>
+        command.type === "models_abort" &&
+        command.request_id === request.request_id,
+    ).length,
+    1,
+  );
   transport.close();
 });
 
@@ -137,7 +234,7 @@ test("aborts unfinished work when a consumer stops iterating", async () => {
   assert.ok(streamId);
 
   emitMessage({
-    protocol_version: 1,
+    protocol_version: LLM_WORKER_PROTOCOL_VERSION,
     event_id: "event-1",
     stream_id: streamId,
     type: "stream_event",
@@ -181,16 +278,17 @@ test("isolates a malformed correlated event to its stream", async () => {
   const beta = collect(transport, request("beta"));
   await Promise.resolve();
   const alphaId = commands.find(
-    (command) => command.payload?.model_request?.prompt === "alpha",
+    (command) =>
+      promptFromRequest(command.payload?.model_request) === "alpha",
   )?.stream_id;
   const betaId = commands.find(
-    (command) => command.payload?.model_request?.prompt === "beta",
+    (command) => promptFromRequest(command.payload?.model_request) === "beta",
   )?.stream_id;
   assert.ok(alphaId);
   assert.ok(betaId);
 
   emitMessage({
-    protocol_version: 1,
+    protocol_version: LLM_WORKER_PROTOCOL_VERSION,
     event_id: "event-invalid",
     stream_id: alphaId,
     type: "stream_event",
@@ -198,7 +296,7 @@ test("isolates a malformed correlated event to its stream", async () => {
   });
   emitModelEvent(emitMessage, betaId, "event-done", { type: "done" });
   emitMessage({
-    protocol_version: 1,
+    protocol_version: LLM_WORKER_PROTOCOL_VERSION,
     event_id: "event-finished",
     stream_id: betaId,
     type: "stream_finished",
@@ -309,10 +407,42 @@ function createDetachedWorker() {
 
 function emitModelEvent(emitMessage, streamId, eventId, modelEvent) {
   emitMessage({
-    protocol_version: 1,
+    protocol_version: LLM_WORKER_PROTOCOL_VERSION,
     event_id: eventId,
     stream_id: streamId,
     type: "stream_event",
     payload: { model_event: modelEvent },
   });
+}
+
+function emitModelsResult(emitMessage, requestId, model, eventId) {
+  emitMessage({
+    protocol_version: LLM_WORKER_PROTOCOL_VERSION,
+    event_id: eventId,
+    request_id: requestId,
+    type: "models_result",
+    payload: {
+      provider_id: model.provider_id,
+      models: [model],
+    },
+  });
+}
+
+function descriptor(providerId, modelId) {
+  return {
+    provider_id: providerId,
+    provider_display_name: providerId,
+    model_id: modelId,
+    display_name: modelId,
+    context_window: 32_000,
+    max_output_tokens: 4_096,
+    supports_tools: true,
+    supports_reasoning: false,
+  };
+}
+
+function promptFromRequest(modelRequest) {
+  return modelRequest?.messages
+    ?.findLast((message) => message.role === "user")
+    ?.content;
 }

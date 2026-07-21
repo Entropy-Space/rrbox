@@ -100,11 +100,12 @@ test("keeps package boundaries explicit", async () => {
   assert.doesNotMatch(coreWorker, /HttpNdjsonModelTransport/);
   assert.match(llmWorker, /attachLlmWorkerHost/);
   assert.match(llmWorker, /HttpNdjsonModelTransport/);
+  assert.match(llmWorker, /OpenAiCompatibleModelTransport/);
   assert.match(core, /ProjectStore/);
   assert.match(core, /ProjectFileSystemProvider/);
   assert.match(runtime, /new Agent\(/);
   assert.match(runtime, /VirtualFileSystem/);
-  assert.match(protocol, /PROTOCOL_VERSION = 3/);
+  assert.match(protocol, /PROTOCOL_VERSION = 4/);
 
   await assert.rejects(
     access(new URL("../.openai/hosting.json", import.meta.url)),

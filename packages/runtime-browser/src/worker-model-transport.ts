@@ -1,9 +1,13 @@
 import {
+  createLlmModelsAbort,
+  createLlmModelsRequest,
   createLlmStreamAbort,
   createLlmStreamStart,
   parseLlmWorkerEvent,
+  readLlmRequestId,
   readLlmStreamId,
   type LlmWorkerCommand,
+  type ModelDescriptor,
   type ModelRequest,
   type ModelStreamEvent,
   type ModelTransport,
@@ -24,9 +28,17 @@ type PendingStream = {
   wake: (() => void) | null;
 };
 
+type PendingModels = {
+  provider_id: string;
+  resolve: (models: ModelDescriptor[]) => void;
+  reject: (error: Error) => void;
+  remove_abort_listener: () => void;
+};
+
 export class WorkerModelTransport implements ModelTransport {
   private readonly worker: ModelWorker;
   private readonly streams = new Map<string, PendingStream>();
+  private readonly modelRequests = new Map<string, PendingModels>();
   private fatalError: Error | null = null;
   private isClosed = false;
 
@@ -35,6 +47,48 @@ export class WorkerModelTransport implements ModelTransport {
     this.worker.addEventListener("message", this.handleMessage);
     this.worker.addEventListener("error", this.handleWorkerError);
     this.worker.addEventListener("messageerror", this.handleMessageError);
+  }
+
+  listModels(
+    providerId: string,
+    signal: AbortSignal,
+  ): Promise<ModelDescriptor[]> {
+    if (this.fatalError) return Promise.reject(this.fatalError);
+    if (this.isClosed) {
+      return Promise.reject(new Error("The LLM worker transport is closed."));
+    }
+    if (signal.aborted) return Promise.reject(createAbortError());
+
+    const requestId = crypto.randomUUID();
+    return new Promise<ModelDescriptor[]>((resolve, reject) => {
+      const abort = () => {
+        const pending = this.modelRequests.get(requestId);
+        if (!pending) return;
+        this.sendModelsAbort(requestId);
+        this.modelRequests.delete(requestId);
+        pending.remove_abort_listener();
+        reject(createAbortError());
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      const pending: PendingModels = {
+        provider_id: providerId,
+        resolve,
+        reject,
+        remove_abort_listener: () => signal.removeEventListener("abort", abort),
+      };
+      this.modelRequests.set(requestId, pending);
+      try {
+        this.postCommand(createLlmModelsRequest(requestId, providerId));
+      } catch (error) {
+        this.modelRequests.delete(requestId);
+        pending.remove_abort_listener();
+        reject(
+          error instanceof Error
+            ? error
+            : new Error("Could not request models from the LLM worker."),
+        );
+      }
+    });
   }
 
   async *stream(
@@ -99,6 +153,9 @@ export class WorkerModelTransport implements ModelTransport {
       );
     }
     this.streams.clear();
+    this.failAllModelRequests(
+      new Error("The LLM worker transport was closed."),
+    );
     this.isClosed = true;
     this.worker.terminate();
   }
@@ -109,6 +166,7 @@ export class WorkerModelTransport implements ModelTransport {
       event = parseLlmWorkerEvent(message.data);
     } catch (error) {
       const streamId = readLlmStreamId(message.data);
+      const requestId = readLlmRequestId(message.data);
       const failure = new Error(
         error instanceof Error
           ? `Invalid LLM worker event: ${error.message}`
@@ -117,6 +175,8 @@ export class WorkerModelTransport implements ModelTransport {
       const pending = streamId ? this.streams.get(streamId) : undefined;
       if (pending) {
         failPending(pending, failure, false);
+      } else if (requestId && this.modelRequests.has(requestId)) {
+        this.rejectModelRequest(requestId, failure);
       } else {
         this.failAll(failure);
       }
@@ -125,6 +185,26 @@ export class WorkerModelTransport implements ModelTransport {
 
     if (event.type === "protocol_error") {
       this.failAll(new Error(event.payload.message));
+      return;
+    }
+
+    if (event.type === "models_result" || event.type === "models_error") {
+      const pending = this.modelRequests.get(event.request_id);
+      if (!pending) return;
+      if (event.payload.provider_id !== pending.provider_id) {
+        this.rejectModelRequest(
+          event.request_id,
+          new Error("The LLM worker returned models for the wrong provider."),
+        );
+        return;
+      }
+      this.modelRequests.delete(event.request_id);
+      pending.remove_abort_listener();
+      if (event.type === "models_result") {
+        pending.resolve(event.payload.models);
+      } else {
+        pending.reject(new Error(event.payload.error_message));
+      }
       return;
     }
 
@@ -201,6 +281,15 @@ export class WorkerModelTransport implements ModelTransport {
     }
   }
 
+  private sendModelsAbort(requestId: string): void {
+    if (this.isClosed) return;
+    try {
+      this.postCommand(createLlmModelsAbort(requestId));
+    } catch {
+      // The local abort is still authoritative for the caller.
+    }
+  }
+
   private failFatally(error: Error): void {
     this.fatalError = error;
     this.failAll(error);
@@ -209,6 +298,21 @@ export class WorkerModelTransport implements ModelTransport {
   private failAll(error: Error): void {
     for (const pending of this.streams.values()) {
       failPending(pending, error, false);
+    }
+    this.failAllModelRequests(error);
+  }
+
+  private rejectModelRequest(requestId: string, error: Error): void {
+    const pending = this.modelRequests.get(requestId);
+    if (!pending) return;
+    this.modelRequests.delete(requestId);
+    pending.remove_abort_listener();
+    pending.reject(error);
+  }
+
+  private failAllModelRequests(error: Error): void {
+    for (const requestId of [...this.modelRequests.keys()]) {
+      this.rejectModelRequest(requestId, error);
     }
   }
 }

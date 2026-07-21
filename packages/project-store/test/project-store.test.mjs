@@ -127,6 +127,7 @@ test("draft writes reject missing projects and cross-project sessions", async ()
     updated_at: TIMESTAMP,
     last_session_id: null,
     new_chat_draft: "",
+    new_chat_model: createDefaultModelSelection(),
   });
   await store.save(state, null);
 
@@ -206,14 +207,44 @@ test("v1 migration preserves custom and nonempty legacy sessions", () => {
   );
   assert.equal(result.state.documents[1].messages[0].content, "Keep this session");
   assert.equal(result.state.projects[0].new_chat_draft, "");
+  assert.deepEqual(
+    result.state.projects[0].new_chat_model,
+    createDefaultModelSelection(),
+  );
+  assert.deepEqual(
+    result.state.sessions.map((session) => session.selected_model),
+    [createDefaultModelSelection(), createDefaultModelSelection()],
+  );
   assert.equal(result.state.state_revision, legacy.state_revision);
+});
+
+test("v2 migration adds default model selections without changing drafts", () => {
+  const draft = createDraftState(9);
+  draft.projects[0].new_chat_draft = "new chat draft";
+  draft.documents[0].input_draft = "session draft";
+
+  const result = parseProjectStoreStateWithMigration(draft);
+
+  assert.equal(result.was_migrated, true);
+  assert.equal(result.state.schema_version, 3);
+  assert.equal(result.state.state_revision, draft.state_revision);
+  assert.deepEqual(
+    result.state.projects[0].new_chat_model,
+    createDefaultModelSelection(),
+  );
+  assert.deepEqual(
+    result.state.sessions[0].selected_model,
+    createDefaultModelSelection(),
+  );
+  assert.equal(result.state.projects[0].new_chat_draft, "new chat draft");
+  assert.equal(result.state.documents[0].input_draft, "session draft");
 });
 
 const TIMESTAMP = "2026-07-22T00:00:00.000Z";
 
 export function createState(stateRevision) {
   return {
-    schema_version: 2,
+    schema_version: 3,
     state_revision: stateRevision,
     active_project_id: "project-1",
     active_session_id: "session-1",
@@ -225,6 +256,7 @@ export function createState(stateRevision) {
         updated_at: TIMESTAMP,
         last_session_id: "session-1",
         new_chat_draft: "",
+        new_chat_model: createDefaultModelSelection(),
       },
     ],
     sessions: [createSessionRecord("session-1", "First chat")],
@@ -234,7 +266,7 @@ export function createState(stateRevision) {
 
 function createVirtualState(stateRevision) {
   return {
-    schema_version: 2,
+    schema_version: 3,
     state_revision: stateRevision,
     active_project_id: "project-1",
     active_session_id: null,
@@ -246,6 +278,7 @@ function createVirtualState(stateRevision) {
         updated_at: TIMESTAMP,
         last_session_id: null,
         new_chat_draft: "",
+        new_chat_model: createDefaultModelSelection(),
       },
     ],
     sessions: [],
@@ -261,6 +294,28 @@ function createSessionRecord(sessionId, title) {
     title_is_custom: false,
     created_at: TIMESTAMP,
     updated_at: TIMESTAMP,
+    selected_model: createDefaultModelSelection(),
+  };
+}
+
+function createDraftState(stateRevision) {
+  const state = createState(stateRevision);
+  const projects = structuredClone(state.projects);
+  const sessions = structuredClone(state.sessions);
+  for (const project of projects) delete project.new_chat_model;
+  for (const session of sessions) delete session.selected_model;
+  return {
+    ...state,
+    schema_version: 2,
+    projects,
+    sessions,
+  };
+}
+
+function createDefaultModelSelection() {
+  return {
+    provider_id: "researchbox",
+    model_id: "researchbox-mock",
   };
 }
 

@@ -1,5 +1,8 @@
 import type { Model } from "@earendil-works/pi-ai";
-import type { ModelTransport } from "@researchbox/model-transport";
+import type {
+  ModelDescriptor,
+  ModelTransport,
+} from "@researchbox/model-transport";
 import {
   PROJECT_STORE_SCHEMA_VERSION,
   SESSION_DOCUMENT_FORMAT_VERSION,
@@ -16,6 +19,9 @@ import {
   type CoreEvent,
   type CoreStateSnapshot,
   type FileEntry,
+  type ModelSelection,
+  type ModelSummary,
+  type ProviderSummary,
   type ViewerCommand,
 } from "@researchbox/protocol";
 import type {
@@ -28,15 +34,52 @@ import {
   stagePrompt,
   type CoreEventSink,
 } from "./session-runtime.ts";
-import { decodeAgentMessages } from "./session-codec.ts";
+import {
+  decodeAgentMessages,
+  encodeAgentMessages,
+} from "./session-codec.ts";
+import { repairUnansweredToolCalls } from "./tool-transcript.ts";
 
 export type ResearchBoxCoreOptions = {
   projectStore: ProjectStore;
   workspaceProvider: ProjectFileSystemProvider;
   modelTransport: ModelTransport;
+  modelCatalog?: ProviderModelCatalog;
   model: Model<string>;
+  providers?: ModelProviderDefinition[];
   systemPrompt: string;
   eventSink: CoreEventSink;
+};
+
+export type ProviderModelCatalog = {
+  listModels(
+    providerId: string,
+    signal: AbortSignal,
+  ): Promise<ModelDescriptor[]>;
+};
+
+export type ModelProviderDefinition = {
+  provider_id: string;
+  display_name: string;
+  kind: ProviderSummary["kind"];
+  models?: Model<string>[];
+  discover_models?: boolean;
+};
+
+type RegisteredModel = {
+  model: Model<string>;
+  availability: ModelSummary["availability"];
+  status_message?: string;
+};
+
+type ProviderState = {
+  provider_id: string;
+  display_name: string;
+  kind: ProviderSummary["kind"];
+  availability: ProviderSummary["availability"];
+  status_message?: string;
+  discover_models: boolean;
+  models: Map<string, RegisteredModel>;
 };
 
 export type AgentCoreOptions = ResearchBoxCoreOptions;
@@ -45,7 +88,10 @@ export class ResearchBoxCore {
   private readonly projectStore: ProjectStore;
   private readonly workspaceProvider: ProjectFileSystemProvider;
   private readonly modelTransport: ModelTransport;
-  private readonly model: Model<string>;
+  private readonly modelCatalog?: ProviderModelCatalog;
+  private readonly defaultModel: Model<string>;
+  private readonly defaultModelSelection: ModelSelection;
+  private readonly providers = new Map<string, ProviderState>();
   private readonly systemPrompt: string;
   private readonly eventSink: CoreEventSink;
   private state: ProjectStoreState | null = null;
@@ -53,14 +99,82 @@ export class ResearchBoxCore {
   private runtime: SessionRuntime | null = null;
   private initialization: Promise<void> | null = null;
   private mutationTail: Promise<void> = Promise.resolve();
+  private providerRefreshStarted = false;
+  private readonly providerRefreshes = new Map<string, Promise<void>>();
 
   constructor(options: ResearchBoxCoreOptions) {
     this.projectStore = options.projectStore;
     this.workspaceProvider = options.workspaceProvider;
     this.modelTransport = options.modelTransport;
-    this.model = options.model;
+    this.modelCatalog = options.modelCatalog;
+    this.defaultModel = options.model;
+    this.defaultModelSelection = {
+      provider_id: options.model.provider,
+      model_id: options.model.id,
+    };
+    this.initializeProviders(options.providers);
     this.systemPrompt = options.systemPrompt;
     this.eventSink = options.eventSink;
+  }
+
+  private initializeProviders(
+    definitions: ModelProviderDefinition[] | undefined,
+  ): void {
+    const configured =
+      definitions && definitions.length > 0
+        ? definitions
+        : [
+            {
+              provider_id: this.defaultModel.provider,
+              display_name: this.defaultModel.provider,
+              kind: "mock" as const,
+              models: [this.defaultModel],
+            },
+          ];
+
+    for (const definition of configured) {
+      if (this.providers.has(definition.provider_id)) {
+        throw new Error(`Duplicate model provider: ${definition.provider_id}`);
+      }
+      const models = new Map<string, RegisteredModel>();
+      for (const model of definition.models ?? []) {
+        if (model.provider !== definition.provider_id) {
+          throw new Error(
+            `Model ${model.id} does not belong to provider ${definition.provider_id}.`,
+          );
+        }
+        if (models.has(model.id)) {
+          throw new Error(`Duplicate model id: ${model.id}`);
+        }
+        models.set(model.id, { model, availability: "ready" });
+      }
+      this.providers.set(definition.provider_id, {
+        provider_id: definition.provider_id,
+        display_name: definition.display_name,
+        kind: definition.kind,
+        availability:
+          definition.discover_models && models.size === 0 ? "loading" : "ready",
+        discover_models: definition.discover_models ?? false,
+        models,
+      });
+    }
+
+    let defaultProvider = this.providers.get(this.defaultModel.provider);
+    if (!defaultProvider) {
+      defaultProvider = {
+        provider_id: this.defaultModel.provider,
+        display_name: this.defaultModel.provider,
+        kind: "mock",
+        availability: "ready",
+        discover_models: false,
+        models: new Map(),
+      };
+      this.providers.set(defaultProvider.provider_id, defaultProvider);
+    }
+    defaultProvider.models.set(this.defaultModel.id, {
+      model: this.defaultModel,
+      availability: "ready",
+    });
   }
 
   async handle(command: ViewerCommand): Promise<void> {
@@ -69,6 +183,14 @@ export class ResearchBoxCore {
       case "bootstrap":
         await this.mutationTail;
         this.emit("ready", { state: await this.createCoreState() }, command.request_id);
+        this.startProviderRefreshes();
+        return;
+      case "provider_refresh":
+        await this.mutationTail;
+        await this.refreshProvider(
+          command.payload.provider_id,
+          command.request_id,
+        );
         return;
       case "abort":
         await this.abort(command);
@@ -115,7 +237,7 @@ export class ResearchBoxCore {
       const repairedRuns = repairInterruptedSessions(loaded);
       if (repairedTranscripts || repairedRuns) await this.persistCurrentState();
     } else {
-      const state = createInitialState();
+      const state = createInitialState(this.defaultModelSelection);
       const projectId = state.active_project_id;
       await this.workspaceProvider.create(projectId);
       state.state_revision = 1;
@@ -127,13 +249,22 @@ export class ResearchBoxCore {
       }
       this.state = state;
     }
+    this.ensurePersistedModelsRegistered();
     await this.activateSelection();
   }
 
   private async handleMutation(
     command: Exclude<
       ViewerCommand,
-      { type: "bootstrap" | "abort" | "prompt" | "fs_list" | "fs_read" }
+      {
+        type:
+          | "bootstrap"
+          | "provider_refresh"
+          | "abort"
+          | "prompt"
+          | "fs_list"
+          | "fs_read";
+      }
     >,
   ): Promise<void> {
     switch (command.type) {
@@ -158,6 +289,9 @@ export class ResearchBoxCore {
           command.payload.project_id,
           command.request_id,
         );
+        return;
+      case "model_select":
+        await this.selectModel(command.payload, command.request_id);
         return;
       case "input_draft_update":
         await this.updateInputDraft(
@@ -228,6 +362,17 @@ export class ResearchBoxCore {
         );
         return;
       }
+      const activeModel = this.getActiveModelSelection();
+      if (!this.isModelReady(activeModel)) {
+        this.emitError(
+          "model_unavailable",
+          "The selected model is unavailable. Choose another model or retry its provider.",
+          command.request_id,
+          command.payload.project_id,
+          command.payload.session_id ?? undefined,
+        );
+        return;
+      }
 
       if (command.payload.session_id === null) {
         const draft = cloneProjectStoreState(this.requireState());
@@ -235,6 +380,7 @@ export class ResearchBoxCore {
           command.payload.project_id,
           deriveSessionTitle(promptText),
           false,
+          findProject(draft, command.payload.project_id).new_chat_model,
         );
         const staged = stagePrompt(created.document, promptText);
         draft.sessions.push(created.session);
@@ -302,7 +448,10 @@ export class ResearchBoxCore {
     await this.stopActiveRun();
 
     const draft = cloneProjectStoreState(this.requireState());
-    const project = createProjectRecord(normalizedName);
+    const project = createProjectRecord(
+      normalizedName,
+      this.defaultModelSelection,
+    );
     draft.projects.push(project);
     draft.active_project_id = project.project_id;
     draft.active_session_id = null;
@@ -365,7 +514,10 @@ export class ResearchBoxCore {
 
     let replacementProjectId: string | null = null;
     if (draft.projects.length === 0) {
-      const replacement = createProjectRecord("Local workspace");
+      const replacement = createProjectRecord(
+        "Local workspace",
+        this.defaultModelSelection,
+      );
       draft.projects.push(replacement);
       replacementProjectId = replacement.project_id;
       await this.workspaceProvider.create(replacement.project_id);
@@ -440,6 +592,60 @@ export class ResearchBoxCore {
     project.last_session_id = null;
     draft.active_project_id = projectId;
     draft.active_session_id = null;
+    await this.commitDraft(draft);
+    await this.activateSelection();
+    await this.emitStateSnapshot(requestId);
+  }
+
+  private async selectModel(
+    payload: Extract<ViewerCommand, { type: "model_select" }>["payload"],
+    requestId: string,
+  ): Promise<void> {
+    if (
+      !this.validateActiveSelection(
+        payload.project_id,
+        payload.session_id,
+        requestId,
+      )
+    ) {
+      return;
+    }
+    if (!this.ensureManagementIdle(requestId)) return;
+
+    const selection: ModelSelection = {
+      provider_id: payload.provider_id,
+      model_id: payload.model_id,
+    };
+    if (!this.isModelReady(selection)) {
+      this.emitError(
+        "model_unavailable",
+        "That model is not currently available.",
+        requestId,
+        payload.project_id,
+        payload.session_id ?? undefined,
+      );
+      return;
+    }
+    const activeSelection = this.getActiveModelSelection();
+    if (
+      activeSelection.provider_id === selection.provider_id &&
+      activeSelection.model_id === selection.model_id
+    ) {
+      await this.emitStateSnapshot(requestId);
+      return;
+    }
+
+    const draft = cloneProjectStoreState(this.requireState());
+    const now = new Date().toISOString();
+    const project = findProject(draft, payload.project_id);
+    if (payload.session_id === null) {
+      project.new_chat_model = selection;
+    } else {
+      const session = findSession(draft, payload.session_id);
+      session.selected_model = selection;
+      session.updated_at = now;
+    }
+    project.updated_at = now;
     await this.commitDraft(draft);
     await this.activateSelection();
     await this.emitStateSnapshot(requestId);
@@ -586,6 +792,163 @@ export class ResearchBoxCore {
     await this.emitStateSnapshot(requestId);
   }
 
+  private startProviderRefreshes(): void {
+    if (this.providerRefreshStarted) return;
+    this.providerRefreshStarted = true;
+    for (const provider of this.providers.values()) {
+      if (provider.discover_models) {
+        void this.refreshProvider(provider.provider_id).catch((error) => {
+          this.emitError(
+            "provider_refresh_failed",
+            toErrorMessage(error, "The provider refresh failed."),
+          );
+        });
+      }
+    }
+  }
+
+  private async refreshProvider(
+    providerId: string,
+    requestId?: string,
+  ): Promise<void> {
+    const provider = this.providers.get(providerId);
+    if (!provider) {
+      this.emitError(
+        "provider_not_found",
+        "The requested model provider is not configured.",
+        requestId,
+      );
+      return;
+    }
+    if (!provider.discover_models || !this.modelCatalog) {
+      if (requestId) await this.emitStateSnapshot(requestId);
+      return;
+    }
+
+    const activeRefresh = this.providerRefreshes.get(providerId);
+    if (activeRefresh) {
+      await activeRefresh;
+      if (requestId) await this.emitStateSnapshot(requestId);
+      return;
+    }
+
+    provider.availability = "loading";
+    delete provider.status_message;
+    const controller = new AbortController();
+    const refresh = (async () => {
+      try {
+        const descriptors = await this.modelCatalog?.listModels(
+          providerId,
+          controller.signal,
+        );
+        if (!descriptors) throw new Error("Model discovery is unavailable.");
+        const models = new Map<string, RegisteredModel>();
+        for (const descriptor of descriptors) {
+          if (descriptor.provider_id !== providerId) {
+            throw new Error("Model discovery returned the wrong provider_id.");
+          }
+          if (models.has(descriptor.model_id)) {
+            throw new Error(
+              `Model discovery returned duplicate model_id: ${descriptor.model_id}`,
+            );
+          }
+          models.set(descriptor.model_id, {
+            model: modelFromDescriptor(descriptor),
+            availability: descriptor.supports_tools
+              ? "ready"
+              : "unavailable",
+            ...(descriptor.supports_tools
+              ? {}
+              : {
+                  status_message:
+                    "This model does not support the agent's tools.",
+                }),
+          });
+        }
+        provider.models = models;
+        provider.availability = "ready";
+        delete provider.status_message;
+        this.ensurePersistedModelsRegistered();
+      } catch (error) {
+        provider.availability = "unavailable";
+        provider.status_message = toErrorMessage(
+          error,
+          "The provider could not be reached.",
+        );
+      }
+    })();
+    this.providerRefreshes.set(providerId, refresh);
+    try {
+      try {
+        await this.emitStateSnapshot(requestId);
+      } catch {
+        // A final authoritative snapshot is attempted after discovery settles.
+      }
+      await refresh;
+    } finally {
+      if (this.providerRefreshes.get(providerId) === refresh) {
+        this.providerRefreshes.delete(providerId);
+      }
+    }
+    await this.emitStateSnapshot(requestId);
+  }
+
+  private ensurePersistedModelsRegistered(): void {
+    const selections: ModelSelection[] = [];
+    for (const project of this.requireState().projects) {
+      selections.push(project.new_chat_model);
+    }
+    for (const session of this.requireState().sessions) {
+      selections.push(session.selected_model);
+    }
+    for (const selection of selections) {
+      let provider = this.providers.get(selection.provider_id);
+      if (!provider) {
+        provider = {
+          provider_id: selection.provider_id,
+          display_name: selection.provider_id,
+          kind: "openai_compatible",
+          availability: "unavailable",
+          status_message: "This saved provider is no longer configured.",
+          discover_models: false,
+          models: new Map(),
+        };
+        this.providers.set(selection.provider_id, provider);
+      }
+      if (!provider.models.has(selection.model_id)) {
+        provider.models.set(selection.model_id, {
+          model: unavailableModel(selection),
+          availability: "unavailable",
+          status_message: "This saved model was not returned by the provider.",
+        });
+      }
+    }
+  }
+
+  private getActiveModelSelection(): ModelSelection {
+    const state = this.requireState();
+    return state.active_session_id === null
+      ? this.requireProject(state.active_project_id).new_chat_model
+      : this.requireSession(state.active_session_id).selected_model;
+  }
+
+  private isModelReady(selection: ModelSelection): boolean {
+    const provider = this.providers.get(selection.provider_id);
+    const model = provider?.models.get(selection.model_id);
+    return (
+      provider?.availability === "ready" && model?.availability === "ready"
+    );
+  }
+
+  private requireActiveModel(): Model<string> {
+    const selection = this.getActiveModelSelection();
+    const model = this.providers
+      .get(selection.provider_id)
+      ?.models.get(selection.model_id)?.model;
+    if (!model) throw new Error("The selected model is not registered.");
+    return model;
+  }
+
   private async stopActiveRun(): Promise<void> {
     await this.runtime?.stopAndWait();
   }
@@ -604,7 +967,7 @@ export class ResearchBoxCore {
             document: this.requireDocument(sessionId),
             workspace,
             model_transport: this.modelTransport,
-            model: this.model,
+            model: this.requireActiveModel(),
             system_prompt: this.systemPrompt,
             event_sink: this.eventSink,
             checkpoint: (phase, requestId) =>
@@ -694,7 +1057,7 @@ export class ResearchBoxCore {
     }
   }
 
-  private async emitStateSnapshot(requestId: string): Promise<void> {
+  private async emitStateSnapshot(requestId?: string): Promise<void> {
     this.emit(
       "state_snapshot",
       { state: await this.createCoreState() },
@@ -703,12 +1066,26 @@ export class ResearchBoxCore {
   }
 
   private async createCoreState(): Promise<CoreStateSnapshot> {
+    let files: FileEntry[];
+    while (true) {
+      const projectId = this.requireState().active_project_id;
+      const workspace = this.requireWorkspace();
+      files = mapEntries(await workspace.list("/"));
+      if (
+        this.requireWorkspace() === workspace &&
+        this.requireState().active_project_id === projectId
+      ) {
+        break;
+      }
+    }
+
     const state = this.requireState();
     const document =
       state.active_session_id === null
         ? null
         : this.requireDocument(state.active_session_id);
     const activeProject = this.requireProject(state.active_project_id);
+    const activeModel = this.getActiveModelSelection();
     return {
       state_revision: state.state_revision,
       projects: [...state.projects]
@@ -729,6 +1106,27 @@ export class ResearchBoxCore {
           updated_at,
           message_count: this.requireDocument(session_id).messages.length,
         })),
+      providers: [...this.providers.values()].map((provider) => ({
+        provider_id: provider.provider_id,
+        display_name: provider.display_name,
+        kind: provider.kind,
+        availability: provider.availability,
+        ...(provider.status_message === undefined
+          ? {}
+          : { status_message: provider.status_message }),
+        models: [...provider.models.values()]
+          .map(({ model, availability, status_message }) => ({
+            provider_id: provider.provider_id,
+            model_id: model.id,
+            display_name: model.name,
+            availability,
+            ...(status_message === undefined ? {} : { status_message }),
+          }))
+          .sort((left, right) =>
+            left.display_name.localeCompare(right.display_name),
+          ),
+      })),
+      active_model: { ...activeModel },
       active_project_id: state.active_project_id,
       active_session_id: state.active_session_id,
       input_draft:
@@ -737,7 +1135,7 @@ export class ResearchBoxCore {
           : document.input_draft,
       messages: structuredClone(document?.messages ?? []),
       activities: structuredClone(document?.activities ?? []),
-      files: mapEntries(await this.requireWorkspace().list("/")),
+      files,
       is_running: this.runtime?.is_running ?? false,
     };
   }
@@ -1039,8 +1437,10 @@ export class ResearchBoxCore {
 
 export { ResearchBoxCore as AgentCore };
 
-function createInitialState(): ProjectStoreState {
-  const project = createProjectRecord("Local workspace");
+function createInitialState(
+  modelSelection: ModelSelection,
+): ProjectStoreState {
+  const project = createProjectRecord("Local workspace", modelSelection);
   return {
     schema_version: PROJECT_STORE_SCHEMA_VERSION,
     state_revision: 0,
@@ -1052,7 +1452,10 @@ function createInitialState(): ProjectStoreState {
   };
 }
 
-function createProjectRecord(name: string): ProjectRecord {
+function createProjectRecord(
+  name: string,
+  modelSelection: ModelSelection,
+): ProjectRecord {
   const projectId = crypto.randomUUID();
   const now = new Date().toISOString();
   return {
@@ -1062,6 +1465,7 @@ function createProjectRecord(name: string): ProjectRecord {
     updated_at: now,
     last_session_id: null,
     new_chat_draft: "",
+    new_chat_model: { ...modelSelection },
   };
 }
 
@@ -1069,6 +1473,7 @@ function createSessionRecord(
   projectId: string,
   title: string,
   titleIsCustom: boolean,
+  modelSelection: ModelSelection,
 ): { session: SessionRecord; document: SessionDocument } {
   const sessionId = crypto.randomUUID();
   const now = new Date().toISOString();
@@ -1080,6 +1485,7 @@ function createSessionRecord(
       title_is_custom: titleIsCustom,
       created_at: now,
       updated_at: now,
+      selected_model: { ...modelSelection },
     },
     document: {
       format_version: SESSION_DOCUMENT_FORMAT_VERSION,
@@ -1129,8 +1535,15 @@ function repairInvalidTranscripts(state: ProjectStoreState): boolean {
 
 function repairInvalidTranscript(document: SessionDocument): boolean {
   try {
-    decodeAgentMessages(document.agent_messages);
-    return false;
+    const decoded = decodeAgentMessages(document.agent_messages);
+    const repaired = repairUnansweredToolCalls(
+      decoded,
+      "Tool execution was interrupted before it produced a result.",
+    );
+    if (repaired.repaired) {
+      document.agent_messages = encodeAgentMessages(repaired.messages);
+    }
+    return repaired.repaired;
   } catch {
     document.agent_messages = [];
     return true;
@@ -1199,6 +1612,46 @@ function deriveSessionTitle(prompt: string): string {
 
 function mapEntries(entries: VfsEntry[]): FileEntry[] {
   return entries.map((entry) => ({ ...entry }));
+}
+
+function modelFromDescriptor(descriptor: ModelDescriptor): Model<string> {
+  return {
+    id: descriptor.model_id,
+    name: descriptor.display_name,
+    api: "openai-completions",
+    provider: descriptor.provider_id,
+    baseUrl: "",
+    reasoning: descriptor.supports_reasoning,
+    input: ["text"],
+    cost: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+    },
+    contextWindow: descriptor.context_window ?? 128_000,
+    maxTokens: descriptor.max_output_tokens ?? 8_192,
+  };
+}
+
+function unavailableModel(selection: ModelSelection): Model<string> {
+  return {
+    id: selection.model_id,
+    name: selection.model_id,
+    api: "openai-completions",
+    provider: selection.provider_id,
+    baseUrl: "",
+    reasoning: false,
+    input: ["text"],
+    cost: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+    },
+    contextWindow: 128_000,
+    maxTokens: 8_192,
+  };
 }
 
 function capitalize(value: string): string {

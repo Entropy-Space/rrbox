@@ -65,7 +65,7 @@ test("IndexedDB project state and files survive reopening the database", async (
   );
 });
 
-test("IndexedDB project-store migration is persisted exactly once", async () => {
+test("IndexedDB v1 project-store migration is persisted exactly once", async () => {
   const factory = new IDBFactory();
   const databaseName = `researchbox-store-migration-${crypto.randomUUID()}`;
   const legacyDatabase = await openLegacyDatabase(factory, databaseName);
@@ -111,7 +111,7 @@ test("IndexedDB project-store migration is persisted exactly once", async () => 
   const database = new ResearchBoxDatabase(factory, databaseName);
   const store = new IndexedDbProjectStore(database);
   const expectedState = {
-    schema_version: 2,
+    schema_version: 3,
     state_revision: 8,
     active_project_id: "legacy-project",
     active_session_id: null,
@@ -123,6 +123,7 @@ test("IndexedDB project-store migration is persisted exactly once", async () => 
         updated_at: timestamp,
         last_session_id: null,
         new_chat_draft: "",
+        new_chat_model: createDefaultModelSelection(),
       },
     ],
     sessions: [],
@@ -144,7 +145,7 @@ test("IndexedDB project-store migration is persisted exactly once", async () => 
     await requestValue(verification.objectStore("meta").get("catalog")),
     {
       key: "catalog",
-      schema_version: 2,
+      schema_version: 3,
       state_revision: 8,
       active_project_id: "legacy-project",
       active_session_id: null,
@@ -161,6 +162,125 @@ test("IndexedDB project-store migration is persisted exactly once", async () => 
   assert.deepEqual(
     await requestValue(verification.objectStore("session_documents").getAll()),
     [],
+  );
+  await verificationComplete;
+});
+
+test("IndexedDB v2 migration adds model selections exactly once", async () => {
+  const factory = new IDBFactory();
+  const databaseName = `researchbox-model-migration-${crypto.randomUUID()}`;
+  const legacyDatabase = await openLegacyDatabase(factory, databaseName);
+  const timestamp = "2026-07-22T00:00:00.000Z";
+  const transaction = legacyDatabase.transaction(
+    ["meta", "projects", "sessions", "session_documents"],
+    "readwrite",
+  );
+  const completion = transactionComplete(transaction);
+  transaction.objectStore("meta").put({
+    key: "catalog",
+    schema_version: 2,
+    state_revision: 12,
+    active_project_id: "legacy-project",
+    active_session_id: "legacy-session",
+  });
+  transaction.objectStore("projects").put({
+    project_id: "legacy-project",
+    name: "Legacy project",
+    created_at: timestamp,
+    updated_at: timestamp,
+    last_session_id: "legacy-session",
+    new_chat_draft: "new chat draft",
+  });
+  transaction.objectStore("sessions").put({
+    session_id: "legacy-session",
+    project_id: "legacy-project",
+    title: "Existing chat",
+    title_is_custom: false,
+    created_at: timestamp,
+    updated_at: timestamp,
+  });
+  transaction.objectStore("session_documents").put({
+    format_version: 2,
+    session_id: "legacy-session",
+    project_id: "legacy-project",
+    input_draft: "session draft",
+    messages: [],
+    activities: [],
+    agent_messages: [],
+  });
+  await completion;
+  legacyDatabase.close();
+
+  const expectedState = {
+    schema_version: 3,
+    state_revision: 13,
+    active_project_id: "legacy-project",
+    active_session_id: "legacy-session",
+    projects: [
+      {
+        project_id: "legacy-project",
+        name: "Legacy project",
+        created_at: timestamp,
+        updated_at: timestamp,
+        last_session_id: "legacy-session",
+        new_chat_draft: "new chat draft",
+        new_chat_model: createDefaultModelSelection(),
+      },
+    ],
+    sessions: [
+      {
+        session_id: "legacy-session",
+        project_id: "legacy-project",
+        title: "Existing chat",
+        title_is_custom: false,
+        created_at: timestamp,
+        updated_at: timestamp,
+        selected_model: createDefaultModelSelection(),
+      },
+    ],
+    documents: [
+      {
+        format_version: 2,
+        session_id: "legacy-session",
+        project_id: "legacy-project",
+        input_draft: "session draft",
+        messages: [],
+        activities: [],
+        agent_messages: [],
+      },
+    ],
+  };
+  const database = new ResearchBoxDatabase(factory, databaseName);
+  const store = new IndexedDbProjectStore(database);
+  assert.deepEqual(await store.load(), expectedState);
+
+  const reopenedDatabase = new ResearchBoxDatabase(factory, databaseName);
+  const reopenedStore = new IndexedDbProjectStore(reopenedDatabase);
+  assert.deepEqual(await reopenedStore.load(), expectedState);
+
+  const connection = await reopenedDatabase.open();
+  const verification = connection.transaction(
+    ["meta", "projects", "sessions"],
+    "readonly",
+  );
+  const verificationComplete = transactionComplete(verification);
+  assert.deepEqual(
+    await requestValue(verification.objectStore("meta").get("catalog")),
+    {
+      key: "catalog",
+      schema_version: 3,
+      state_revision: 13,
+      active_project_id: "legacy-project",
+      active_session_id: "legacy-session",
+    },
+  );
+  assert.deepEqual(
+    await requestValue(verification.objectStore("projects").getAll()),
+    expectedState.projects,
+  );
+  assert.deepEqual(
+    await requestValue(verification.objectStore("sessions").getAll()),
+    expectedState.sessions,
   );
   await verificationComplete;
 });
@@ -297,7 +417,7 @@ test("IndexedDB store rejects a stale writer revision", async () => {
 function createState() {
   const timestamp = "2026-07-22T00:00:00.000Z";
   return {
-    schema_version: 2,
+    schema_version: 3,
     state_revision: 1,
     active_project_id: "project-1",
     active_session_id: "session-1",
@@ -309,6 +429,7 @@ function createState() {
         updated_at: timestamp,
         last_session_id: "session-1",
         new_chat_draft: "",
+        new_chat_model: createDefaultModelSelection(),
       },
     ],
     sessions: [
@@ -319,6 +440,7 @@ function createState() {
         title_is_custom: false,
         created_at: timestamp,
         updated_at: timestamp,
+        selected_model: createDefaultModelSelection(),
       },
     ],
     documents: [
@@ -332,6 +454,13 @@ function createState() {
         agent_messages: [],
       },
     ],
+  };
+}
+
+function createDefaultModelSelection() {
+  return {
+    provider_id: "researchbox",
+    model_id: "researchbox-mock",
   };
 }
 

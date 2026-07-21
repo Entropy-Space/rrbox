@@ -36,6 +36,32 @@ test("viewer applies authoritative snapshots and ignores stale session events", 
   assert.equal(state.active_session_id, "s2");
 });
 
+test("authoritative snapshots update providers and the active model", () => {
+  let state = coreReducer(
+    initialAgentSessionState,
+    event("ready", { state: snapshot("p1", "s1", 1) }),
+  );
+  assert.equal(state.providers[0]?.provider_id, "researchbox");
+  assert.deepEqual(state.active_model, {
+    provider_id: "researchbox",
+    model_id: "researchbox-mock",
+  });
+
+  const changed = snapshot("p1", "s1", 2);
+  changed.providers = [localOpenAiProvider()];
+  changed.active_model = {
+    provider_id: "local-openai",
+    model_id: "gpt-5.4",
+  };
+  state = coreReducer(state, event("state_snapshot", { state: changed }));
+
+  assert.deepEqual(state.providers, [localOpenAiProvider()]);
+  assert.deepEqual(state.active_model, {
+    provider_id: "local-openai",
+    model_id: "gpt-5.4",
+  });
+});
+
 test("tool activity is attached by tool call identity", () => {
   let state = coreReducer(
     initialAgentSessionState,
@@ -492,6 +518,11 @@ function snapshot(projectId, sessionId, revision, inputDraft = "") {
               message_count: 0,
             },
           ],
+    providers: [mockProvider()],
+    active_model: {
+      provider_id: "researchbox",
+      model_id: "researchbox-mock",
+    },
     active_project_id: projectId,
     active_session_id: sessionId,
     input_draft: inputDraft,
@@ -499,6 +530,40 @@ function snapshot(projectId, sessionId, revision, inputDraft = "") {
     activities: [],
     files: [],
     is_running: false,
+  };
+}
+
+function mockProvider() {
+  return {
+    provider_id: "researchbox",
+    display_name: "ResearchBox",
+    kind: "mock",
+    availability: "ready",
+    models: [
+      {
+        provider_id: "researchbox",
+        model_id: "researchbox-mock",
+        display_name: "ResearchBox Mock",
+        availability: "ready",
+      },
+    ],
+  };
+}
+
+function localOpenAiProvider() {
+  return {
+    provider_id: "local-openai",
+    display_name: "OpenAI-compatible · localhost:4141",
+    kind: "openai_compatible",
+    availability: "ready",
+    models: [
+      {
+        provider_id: "local-openai",
+        model_id: "gpt-5.4",
+        display_name: "GPT-5.4",
+        availability: "ready",
+      },
+    ],
   };
 }
 

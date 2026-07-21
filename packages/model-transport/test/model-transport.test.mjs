@@ -8,25 +8,85 @@ import { HttpNdjsonModelTransport } from "../src/http-ndjson-model-transport.ts"
 
 const modelRequest = {
   session_id: "session-1",
-  prompt: "inspect the workspace",
-  tool_results: [],
+  provider_id: "researchbox-mock",
+  model_id: "researchbox-mock",
+  system_prompt: "Help with the workspace.",
+  messages: [{ role: "user", content: "inspect the workspace" }],
+  tools: [],
 };
 
-test("parses a model request with serialized tool results", () => {
+test("parses a model request with a serialized conversation and tools", () => {
   const request = parseModelRequest({
     session_id: "session-1",
-    prompt: "inspect the workspace",
-    tool_results: [
+    provider_id: "researchbox-mock",
+    model_id: "researchbox-mock",
+    system_prompt: "Help with the workspace.",
+    messages: [
+      { role: "user", content: "inspect the workspace" },
       {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            tool_call_id: "tool-1",
+            tool_name: "list_files",
+            arguments: { path: "/" },
+          },
+        ],
+      },
+      {
+        role: "tool",
         tool_call_id: "tool-1",
         tool_name: "list_files",
         content: "[]",
         is_error: false,
       },
     ],
+    tools: [
+      {
+        name: "list_files",
+        description: "List files.",
+        parameters: { type: "object" },
+      },
+    ],
   });
 
-  assert.equal(request.tool_results[0]?.tool_call_id, "tool-1");
+  assert.equal(request.messages[2]?.role, "tool");
+  assert.equal(request.tools[0]?.name, "list_files");
+});
+
+test("allows empty message content while requiring nonempty identifiers", () => {
+  const request = parseModelRequest({
+    ...modelRequest,
+    messages: [
+      { role: "user", content: "" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            tool_call_id: "tool-1",
+            tool_name: "list_files",
+            arguments: { path: "/" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: "tool-1",
+        tool_name: "list_files",
+        content: "",
+        is_error: false,
+      },
+    ],
+  });
+
+  assert.equal(request.messages[0]?.content, "");
+  assert.equal(request.messages[2]?.content, "");
+  assert.throws(
+    () => parseModelRequest({ ...modelRequest, session_id: "  " }),
+    /session_id must be a non-empty string/,
+  );
 });
 
 test("rejects unsupported model tools", () => {

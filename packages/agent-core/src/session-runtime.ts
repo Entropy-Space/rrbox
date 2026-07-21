@@ -20,6 +20,7 @@ import {
 import type { VirtualFileSystem } from "@researchbox/vfs";
 import { createModelStreamFn } from "./pi-stream.ts";
 import { decodeAgentMessages, encodeAgentMessages } from "./session-codec.ts";
+import { repairUnansweredToolCalls } from "./tool-transcript.ts";
 
 export type CoreEventSink = (event: CoreEvent) => void;
 
@@ -42,6 +43,7 @@ type ActiveRun = {
   request_id: string;
   assistant_message: ChatMessage;
   abort_requested: boolean;
+  transcript_boundary: number;
 };
 
 export type StagedPrompt = {
@@ -120,6 +122,7 @@ export class SessionRuntime {
         request_id: requestId,
         assistant_message: assistantMessage,
         abort_requested: false,
+        transcript_boundary: this.agent.state.messages.length,
       };
       this.emit("run_state", { is_running: true }, requestId);
       await this.completePrompt(requestId, assistantMessage);
@@ -160,6 +163,7 @@ export class SessionRuntime {
       request_id: requestId,
       assistant_message: staged.assistant_message,
       abort_requested: false,
+      transcript_boundary: this.agent.state.messages.length,
     };
 
     try {
@@ -197,13 +201,20 @@ export class SessionRuntime {
         await this.agent.continue();
         const agentError = this.agent.state.errorMessage;
         const stopReason = latestAssistantStopReason(this.agent);
-        status =
-          stopReason === "aborted"
-            ? "aborted"
-            : stopReason === "error" || agentError
-              ? "error"
-              : "complete";
-        errorMessage = agentError;
+        if (this.activeRun?.abort_requested) {
+          status = "aborted";
+        } else if (stopReason === "length") {
+          status = "error";
+          errorMessage = "The model stopped because it reached its output limit.";
+        } else {
+          status =
+            stopReason === "aborted"
+              ? "aborted"
+              : stopReason === "error" || agentError
+                ? "error"
+                : "complete";
+          errorMessage = agentError;
+        }
       }
     } catch (error) {
       errorMessage = toErrorMessage(error, "The agent run failed.");
@@ -215,6 +226,21 @@ export class SessionRuntime {
           : "error";
     }
 
+    try {
+      this.agent.state.messages = repairUnansweredToolCalls(
+        this.agent.state.messages,
+        status === "aborted"
+          ? "Tool execution was skipped because the run was aborted."
+          : "Tool execution did not complete.",
+      ).messages;
+    } catch (error) {
+      status = "error";
+      errorMessage = toErrorMessage(error, "The model returned an invalid tool transcript.");
+      this.agent.state.messages = this.agent.state.messages.slice(
+        0,
+        this.activeRun?.transcript_boundary ?? 0,
+      );
+    }
     assistantMessage.status = status;
     if (this.agent.state.messages.at(-1)?.role === "user") {
       this.agent.state.messages = [

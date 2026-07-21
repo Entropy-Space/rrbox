@@ -1,0 +1,16 @@
+{
+  "name": "@researchbox/viewer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@researchbox/protocol": "workspace:*",
+    "lucide-react": "0.468.0"
+  },
+  "peerDependencies": {
+    "react": "^19.2.6"
+  }
+}

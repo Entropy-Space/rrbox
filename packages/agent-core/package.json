@@ -1,0 +1,16 @@
+{
+  "name": "@researchbox/agent-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.79.0",
+    "@earendil-works/pi-ai": "0.79.0",
+    "@researchbox/model-transport": "workspace:*",
+    "@researchbox/protocol": "workspace:*",
+    "@researchbox/vfs": "workspace:*"
+  }
+}

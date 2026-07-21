@@ -39,7 +39,16 @@ test("server-renders the ResearchBox application shell", async () => {
 });
 
 test("keeps package boundaries explicit", async () => {
-  const [app, viewer, session, coreWorker, llmWorker, core, protocol] =
+  const [
+    app,
+    viewer,
+    session,
+    coreWorker,
+    llmWorker,
+    core,
+    runtime,
+    protocol,
+  ] =
     await Promise.all([
       readFile(new URL("../app/ResearchBoxApp.tsx", import.meta.url), "utf8"),
       readFile(
@@ -60,7 +69,14 @@ test("keeps package boundaries explicit", async () => {
       readFile(new URL("../browser/llm.worker.ts", import.meta.url), "utf8"),
       readFile(
         new URL(
-          "../../../packages/agent-core/src/agent-core.ts",
+          "../../../packages/agent-core/src/researchbox-core.ts",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+      readFile(
+        new URL(
+          "../../../packages/agent-core/src/session-runtime.ts",
           import.meta.url,
         ),
         "utf8",
@@ -79,13 +95,16 @@ test("keeps package boundaries explicit", async () => {
   assert.match(coreWorker, /new Worker\(new URL\("\.\/llm\.worker\.ts"/);
   assert.match(coreWorker, /WorkerModelTransport/);
   assert.match(coreWorker, /attachWorkerHost/);
-  assert.match(coreWorker, /new AgentCore/);
+  assert.match(coreWorker, /new ResearchBoxCore/);
+  assert.match(coreWorker, /IndexedDbProjectStore/);
   assert.doesNotMatch(coreWorker, /HttpNdjsonModelTransport/);
   assert.match(llmWorker, /attachLlmWorkerHost/);
   assert.match(llmWorker, /HttpNdjsonModelTransport/);
-  assert.match(core, /new Agent\(/);
-  assert.match(core, /VirtualFileSystem/);
-  assert.match(protocol, /PROTOCOL_VERSION = 1/);
+  assert.match(core, /ProjectStore/);
+  assert.match(core, /ProjectFileSystemProvider/);
+  assert.match(runtime, /new Agent\(/);
+  assert.match(runtime, /VirtualFileSystem/);
+  assert.match(protocol, /PROTOCOL_VERSION = 2/);
 
   await assert.rejects(
     access(new URL("../.openai/hosting.json", import.meta.url)),

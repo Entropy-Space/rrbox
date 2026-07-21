@@ -14,6 +14,7 @@ test("keeps the proposed workspace surfaces present", async () => {
     "packages/agent-core",
     "packages/viewer",
     "packages/model-transport",
+    "packages/project-store",
     "packages/runtime-browser",
     "packages/vfs",
     "platforms/ios",
@@ -31,6 +32,7 @@ test("keeps framework dependencies out of portable packages", async () => {
     "protocol",
     "model-transport",
     "runtime-browser",
+    "project-store",
     "vfs",
   ];
   const forbiddenDependencies = new Set([

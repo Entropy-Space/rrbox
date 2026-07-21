@@ -8,11 +8,14 @@ remote hosts.
 ## Current vertical slice
 
 - ChatGPT-style responsive conversation viewer
+- Persistent project and chat creation, rename, switching, and deletion
 - Real `@earendil-works/pi-agent-core` loop inside a Web Worker
 - Dedicated LLM Web Worker for multiplexed model requests and cancellation
 - Versioned, runtime-validated JSON commands and events
 - Streaming mock-model service with a real tool-result continuation loop
-- In-memory virtual filesystem with `list_files` and `read_file` tools
+- Project-isolated IndexedDB virtual filesystems with `list_files` and
+  `read_file` tools
+- Versioned Pi transcript checkpoints that restore the Pi session after reload
 - Interactive workspace browser and text-file preview
 
 ## Repository structure
@@ -29,6 +32,7 @@ packages/
   model-transport/     Model request/stream contract and HTTP adapter
   runtime-browser/     Core and LLM Web Worker hosts and transports
   vfs/                 Filesystem contract, errors, and adapters
+  project-store/       Project/session records and persistence contract
 
 platforms/
   ios/                 Future iOS storage/runtime composition
@@ -66,8 +70,12 @@ pnpm test
 Keep this repository local unless the user explicitly selects and authorizes a
 deployment target. Never publish ResearchBox to `chatgpt.site`.
 
-## Next storage milestone
+## Storage
 
-Add an OPFS adapter while retaining the memory adapter as the deterministic
-conformance-test backend. ZIP, native-folder, and iOS application-storage
-adapters will implement the same `VirtualFileSystem` contract.
+The browser composition stores project metadata, session documents, canonical
+Pi transcripts, and project files in one versioned IndexedDB database. One
+origin-wide Web Lock gives the browser core exclusive write ownership; another
+tab waits until the active core closes. The memory project store and filesystem
+provider remain deterministic test backends. ZIP import/export, native folders,
+iOS application storage, and an optional OPFS adapter can implement the same
+portable contracts.

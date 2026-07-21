@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 1 as const;
+export const PROTOCOL_VERSION = 2 as const;
 
 export type MessageRole = "user" | "assistant";
 
@@ -19,10 +19,39 @@ export type FileEntry = {
 
 export type ToolActivity = {
   tool_call_id: string;
+  message_id: string;
   tool_name: string;
   label: string;
   status: "running" | "complete" | "error";
   summary?: string;
+};
+
+export type ProjectSummary = {
+  project_id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SessionSummary = {
+  session_id: string;
+  project_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+};
+
+export type CoreStateSnapshot = {
+  state_revision: number;
+  projects: ProjectSummary[];
+  sessions: SessionSummary[];
+  active_project_id: string;
+  active_session_id: string;
+  messages: ChatMessage[];
+  activities: ToolActivity[];
+  files: FileEntry[];
+  is_running: boolean;
 };
 
 type CommandEnvelope<TType extends string, TPayload extends object> = {
@@ -34,11 +63,36 @@ type CommandEnvelope<TType extends string, TPayload extends object> = {
 
 export type ViewerCommand =
   | CommandEnvelope<"bootstrap", Record<string, never>>
-  | CommandEnvelope<"prompt", { session_id: string; text: string }>
-  | CommandEnvelope<"abort", { session_id: string }>
-  | CommandEnvelope<"session_reset", { session_id: string }>
-  | CommandEnvelope<"fs_list", { path: string }>
-  | CommandEnvelope<"fs_read", { path: string }>;
+  | CommandEnvelope<"project_create", { name: string }>
+  | CommandEnvelope<"project_update", { project_id: string; name: string }>
+  | CommandEnvelope<"project_delete", { project_id: string }>
+  | CommandEnvelope<"project_select", { project_id: string }>
+  | CommandEnvelope<
+      "session_create",
+      { project_id: string; title?: string }
+    >
+  | CommandEnvelope<
+      "session_update",
+      { project_id: string; session_id: string; title: string }
+    >
+  | CommandEnvelope<
+      "session_delete",
+      { project_id: string; session_id: string }
+    >
+  | CommandEnvelope<
+      "session_select",
+      { project_id: string; session_id: string }
+    >
+  | CommandEnvelope<
+      "prompt",
+      { project_id: string; session_id: string; text: string }
+    >
+  | CommandEnvelope<
+      "abort",
+      { project_id: string; session_id: string }
+    >
+  | CommandEnvelope<"fs_list", { project_id: string; path: string }>
+  | CommandEnvelope<"fs_read", { project_id: string; path: string }>;
 
 type EventEnvelope<TType extends string, TPayload extends object> = {
   protocol_version: typeof PROTOCOL_VERSION;
@@ -48,34 +102,51 @@ type EventEnvelope<TType extends string, TPayload extends object> = {
   payload: TPayload;
 };
 
+type CorrelatedEventEnvelope<TType extends string, TPayload extends object> =
+  Omit<EventEnvelope<TType, TPayload>, "request_id"> & {
+    request_id: string;
+  };
+
+type SessionScope = {
+  project_id: string;
+  session_id: string;
+};
+
 export type CoreEvent =
-  | EventEnvelope<
-      "ready",
-      {
-        session_id: string;
-        messages: ChatMessage[];
-        files: FileEntry[];
-      }
-    >
-  | EventEnvelope<"run_state", { is_running: boolean }>
-  | EventEnvelope<"message_added", { message: ChatMessage }>
+  | EventEnvelope<"ready", { state: CoreStateSnapshot }>
+  | EventEnvelope<"state_snapshot", { state: CoreStateSnapshot }>
+  | EventEnvelope<"run_state", SessionScope & { is_running: boolean }>
+  | EventEnvelope<"message_added", SessionScope & { message: ChatMessage }>
   | EventEnvelope<
       "message_delta",
-      { message_id: string; text_delta: string }
+      SessionScope & { message_id: string; text_delta: string }
     >
   | EventEnvelope<
       "message_finished",
-      {
+      SessionScope & {
         message_id: string;
         status: "complete" | "aborted" | "error";
         error_message?: string;
       }
     >
-  | EventEnvelope<"tool_activity", { activity: ToolActivity }>
-  | EventEnvelope<"files_snapshot", { path: string; files: FileEntry[] }>
-  | EventEnvelope<"file_content", { path: string; content: string }>
-  | EventEnvelope<"session_reset", { session_id: string }>
-  | EventEnvelope<"error", { code: string; message: string }>;
+  | EventEnvelope<"tool_activity", SessionScope & { activity: ToolActivity }>
+  | CorrelatedEventEnvelope<
+      "files_snapshot",
+      { project_id: string; path: string; files: FileEntry[] }
+    >
+  | CorrelatedEventEnvelope<
+      "file_content",
+      { project_id: string; path: string; content: string }
+    >
+  | EventEnvelope<
+      "error",
+      {
+        code: string;
+        message: string;
+        project_id?: string;
+        session_id?: string;
+      }
+    >;
 
 export function createRequestId(): string {
   return crypto.randomUUID();
@@ -98,37 +169,75 @@ export function parseViewerCommand(value: unknown): ViewerCommand {
   if (value.protocol_version !== PROTOCOL_VERSION) {
     throw new Error("Unsupported protocol version.");
   }
-  if (typeof value.request_id !== "string" || !value.request_id) {
-    throw new Error("Command request_id must be a non-empty string.");
-  }
+  const requestId = requireString(value, "request_id");
   if (typeof value.type !== "string" || !isRecord(value.payload)) {
     throw new Error("Command type and payload are required.");
   }
 
-  const requestId = value.request_id;
+  const payload = value.payload;
   switch (value.type) {
     case "bootstrap":
-      return envelope("bootstrap", requestId, {});
+      return commandEnvelope("bootstrap", requestId, {});
+    case "project_create":
+      return commandEnvelope("project_create", requestId, {
+        name: requireString(payload, "name"),
+      });
+    case "project_update":
+      return commandEnvelope("project_update", requestId, {
+        project_id: requireString(payload, "project_id"),
+        name: requireString(payload, "name"),
+      });
+    case "project_delete":
+      return commandEnvelope("project_delete", requestId, {
+        project_id: requireString(payload, "project_id"),
+      });
+    case "project_select":
+      return commandEnvelope("project_select", requestId, {
+        project_id: requireString(payload, "project_id"),
+      });
+    case "session_create": {
+      const title = optionalString(payload, "title");
+      return commandEnvelope("session_create", requestId, {
+        project_id: requireString(payload, "project_id"),
+        ...(title === undefined ? {} : { title }),
+      });
+    }
+    case "session_update":
+      return commandEnvelope("session_update", requestId, {
+        project_id: requireString(payload, "project_id"),
+        session_id: requireString(payload, "session_id"),
+        title: requireString(payload, "title"),
+      });
+    case "session_delete":
+      return commandEnvelope("session_delete", requestId, {
+        project_id: requireString(payload, "project_id"),
+        session_id: requireString(payload, "session_id"),
+      });
+    case "session_select":
+      return commandEnvelope("session_select", requestId, {
+        project_id: requireString(payload, "project_id"),
+        session_id: requireString(payload, "session_id"),
+      });
     case "prompt":
-      return envelope("prompt", requestId, {
-        session_id: requireString(value.payload, "session_id"),
-        text: requireString(value.payload, "text"),
+      return commandEnvelope("prompt", requestId, {
+        project_id: requireString(payload, "project_id"),
+        session_id: requireString(payload, "session_id"),
+        text: requireString(payload, "text"),
       });
     case "abort":
-      return envelope("abort", requestId, {
-        session_id: requireString(value.payload, "session_id"),
-      });
-    case "session_reset":
-      return envelope("session_reset", requestId, {
-        session_id: requireString(value.payload, "session_id"),
+      return commandEnvelope("abort", requestId, {
+        project_id: requireString(payload, "project_id"),
+        session_id: requireString(payload, "session_id"),
       });
     case "fs_list":
-      return envelope("fs_list", requestId, {
-        path: requireString(value.payload, "path"),
+      return commandEnvelope("fs_list", requestId, {
+        project_id: requireString(payload, "project_id"),
+        path: requireString(payload, "path"),
       });
     case "fs_read":
-      return envelope("fs_read", requestId, {
-        path: requireString(value.payload, "path"),
+      return commandEnvelope("fs_read", requestId, {
+        project_id: requireString(payload, "project_id"),
+        path: requireString(payload, "path"),
       });
     default:
       throw new Error(`Unknown command type: ${value.type}`);
@@ -142,38 +251,45 @@ export function parseCoreEvent(value: unknown): CoreEvent {
   }
 
   const eventId = requireString(value, "event_id");
-  const requestId =
-    value.request_id === undefined
-      ? undefined
-      : requireString(value, "request_id");
+  const requestId = optionalString(value, "request_id");
   if (typeof value.type !== "string" || !isRecord(value.payload)) {
     throw new Error("Core event type and payload are required.");
   }
+  const payload = value.payload;
 
   switch (value.type) {
     case "ready":
       return eventEnvelope(
         "ready",
         eventId,
-        {
-          session_id: requireString(value.payload, "session_id"),
-          messages: requireArray(value.payload, "messages").map(parseChatMessage),
-          files: requireArray(value.payload, "files").map(parseFileEntry),
-        },
+        { state: parseCoreStateSnapshot(payload.state) },
+        requestId,
+      );
+    case "state_snapshot":
+      return eventEnvelope(
+        "state_snapshot",
+        eventId,
+        { state: parseCoreStateSnapshot(payload.state) },
         requestId,
       );
     case "run_state":
       return eventEnvelope(
         "run_state",
         eventId,
-        { is_running: requireBoolean(value.payload, "is_running") },
+        {
+          ...parseSessionScope(payload),
+          is_running: requireBoolean(payload, "is_running"),
+        },
         requestId,
       );
     case "message_added":
       return eventEnvelope(
         "message_added",
         eventId,
-        { message: parseChatMessage(value.payload.message) },
+        {
+          ...parseSessionScope(payload),
+          message: parseChatMessage(payload.message),
+        },
         requestId,
       );
     case "message_delta":
@@ -181,25 +297,21 @@ export function parseCoreEvent(value: unknown): CoreEvent {
         "message_delta",
         eventId,
         {
-          message_id: requireString(value.payload, "message_id"),
-          text_delta: requireString(value.payload, "text_delta", true),
+          ...parseSessionScope(payload),
+          message_id: requireString(payload, "message_id"),
+          text_delta: requireString(payload, "text_delta", true),
         },
         requestId,
       );
     case "message_finished": {
-      const status = value.payload.status;
-      if (status !== "complete" && status !== "aborted" && status !== "error") {
-        throw new Error("Invalid finished message status.");
-      }
-      const errorMessage =
-        value.payload.error_message === undefined
-          ? undefined
-          : requireString(value.payload, "error_message", true);
+      const status = parseFinishedStatus(payload.status);
+      const errorMessage = optionalString(payload, "error_message", true);
       return eventEnvelope(
         "message_finished",
         eventId,
         {
-          message_id: requireString(value.payload, "message_id"),
+          ...parseSessionScope(payload),
+          message_id: requireString(payload, "message_id"),
           status,
           ...(errorMessage === undefined
             ? {}
@@ -212,7 +324,10 @@ export function parseCoreEvent(value: unknown): CoreEvent {
       return eventEnvelope(
         "tool_activity",
         eventId,
-        { activity: parseToolActivity(value.payload.activity) },
+        {
+          ...parseSessionScope(payload),
+          activity: parseToolActivity(payload.activity),
+        },
         requestId,
       );
     case "files_snapshot":
@@ -220,44 +335,61 @@ export function parseCoreEvent(value: unknown): CoreEvent {
         "files_snapshot",
         eventId,
         {
-          path: requireString(value.payload, "path"),
-          files: requireArray(value.payload, "files").map(parseFileEntry),
+          project_id: requireString(payload, "project_id"),
+          path: requireString(payload, "path"),
+          files: requireArray(payload, "files").map(parseFileEntry),
         },
-        requestId,
+        requireEventRequestId(requestId, "files_snapshot"),
       );
     case "file_content":
       return eventEnvelope(
         "file_content",
         eventId,
         {
-          path: requireString(value.payload, "path"),
-          content: requireString(value.payload, "content", true),
+          project_id: requireString(payload, "project_id"),
+          path: requireString(payload, "path"),
+          content: requireString(payload, "content", true),
         },
-        requestId,
+        requireEventRequestId(requestId, "file_content"),
       );
-    case "session_reset":
-      return eventEnvelope(
-        "session_reset",
-        eventId,
-        { session_id: requireString(value.payload, "session_id") },
-        requestId,
-      );
-    case "error":
+    case "error": {
+      const projectId = optionalString(payload, "project_id");
+      const sessionId = optionalString(payload, "session_id");
+      const code = requireString(payload, "code");
+      if (
+        (code === "fs_list_failed" || code === "fs_read_failed") &&
+        requestId === undefined
+      ) {
+        throw new Error(`${code} events require request_id.`);
+      }
       return eventEnvelope(
         "error",
         eventId,
         {
-          code: requireString(value.payload, "code"),
-          message: requireString(value.payload, "message"),
+          code,
+          message: requireString(payload, "message"),
+          ...(projectId === undefined ? {} : { project_id: projectId }),
+          ...(sessionId === undefined ? {} : { session_id: sessionId }),
         },
         requestId,
       );
+    }
     default:
       throw new Error(`Unknown core event type: ${value.type}`);
   }
 }
 
-function envelope<T extends ViewerCommand["type"]>(
+function requireEventRequestId(
+  requestId: string | undefined,
+  eventType: "files_snapshot" | "file_content",
+): string {
+  if (requestId === undefined) {
+    throw new Error(`${eventType} events require request_id.`);
+  }
+  return requestId;
+}
+
+function commandEnvelope<T extends ViewerCommand["type"]>(
   type: T,
   requestId: string,
   payload: Extract<ViewerCommand, { type: T }>["payload"],
@@ -283,6 +415,80 @@ function eventEnvelope<T extends CoreEvent["type"]>(
     type,
     payload,
   } as Extract<CoreEvent, { type: T }>;
+}
+
+function parseCoreStateSnapshot(value: unknown): CoreStateSnapshot {
+  if (!isRecord(value)) throw new Error("Core state must be an object.");
+  const snapshot: CoreStateSnapshot = {
+    state_revision: requireNonNegativeInteger(value, "state_revision"),
+    projects: requireArray(value, "projects").map(parseProjectSummary),
+    sessions: requireArray(value, "sessions").map(parseSessionSummary),
+    active_project_id: requireString(value, "active_project_id"),
+    active_session_id: requireString(value, "active_session_id"),
+    messages: requireArray(value, "messages").map(parseChatMessage),
+    activities: requireArray(value, "activities").map(parseToolActivity),
+    files: requireArray(value, "files").map(parseFileEntry),
+    is_running: requireBoolean(value, "is_running"),
+  };
+  assertCoreStateInvariants(snapshot);
+  return snapshot;
+}
+
+function assertCoreStateInvariants(snapshot: CoreStateSnapshot): void {
+  const projects = new Set<string>();
+  for (const project of snapshot.projects) {
+    if (projects.has(project.project_id)) {
+      throw new Error(`Duplicate project_id: ${project.project_id}`);
+    }
+    projects.add(project.project_id);
+  }
+  const sessions = new Map<string, SessionSummary>();
+  for (const session of snapshot.sessions) {
+    if (sessions.has(session.session_id)) {
+      throw new Error(`Duplicate session_id: ${session.session_id}`);
+    }
+    if (!projects.has(session.project_id)) {
+      throw new Error("Session references an unknown project_id.");
+    }
+    sessions.set(session.session_id, session);
+  }
+  if (!projects.has(snapshot.active_project_id)) {
+    throw new Error("active_project_id does not exist.");
+  }
+  const activeSession = sessions.get(snapshot.active_session_id);
+  if (!activeSession) throw new Error("active_session_id does not exist.");
+  if (activeSession.project_id !== snapshot.active_project_id) {
+    throw new Error("Active session does not belong to active project.");
+  }
+}
+
+function parseProjectSummary(value: unknown): ProjectSummary {
+  if (!isRecord(value)) throw new Error("Project summary must be an object.");
+  return {
+    project_id: requireString(value, "project_id"),
+    name: requireString(value, "name"),
+    created_at: requireString(value, "created_at"),
+    updated_at: requireString(value, "updated_at"),
+  };
+}
+
+function parseSessionSummary(value: unknown): SessionSummary {
+  if (!isRecord(value)) throw new Error("Session summary must be an object.");
+  return {
+    session_id: requireString(value, "session_id"),
+    project_id: requireString(value, "project_id"),
+    title: requireString(value, "title"),
+    created_at: requireString(value, "created_at"),
+    updated_at: requireString(value, "updated_at"),
+    message_count: requireNonNegativeInteger(value, "message_count"),
+  };
+}
+
+function parseSessionScope(value: Record<string, unknown>): SessionScope {
+  return {
+    project_id: requireString(value, "project_id"),
+    session_id: requireString(value, "session_id"),
+  };
 }
 
 function parseChatMessage(value: unknown): ChatMessage {
@@ -314,15 +520,11 @@ function parseFileEntry(value: unknown): FileEntry {
   if (value.kind !== "file" && value.kind !== "directory") {
     throw new Error("Invalid file entry kind.");
   }
-  const size = value.size;
-  if (typeof size !== "number" || !Number.isFinite(size) || size < 0) {
-    throw new Error("File entry size must be a non-negative number.");
-  }
   return {
     name: requireString(value, "name"),
     path: requireString(value, "path"),
     kind: value.kind,
-    size,
+    size: requireNonNegativeNumber(value, "size"),
   };
 }
 
@@ -332,17 +534,24 @@ function parseToolActivity(value: unknown): ToolActivity {
   if (status !== "running" && status !== "complete" && status !== "error") {
     throw new Error("Invalid tool activity status.");
   }
-  const summary =
-    value.summary === undefined
-      ? undefined
-      : requireString(value, "summary", true);
+  const summary = optionalString(value, "summary", true);
   return {
     tool_call_id: requireString(value, "tool_call_id"),
+    message_id: requireString(value, "message_id"),
     tool_name: requireString(value, "tool_name"),
     label: requireString(value, "label"),
     status,
     ...(summary === undefined ? {} : { summary }),
   };
+}
+
+function parseFinishedStatus(
+  value: unknown,
+): "complete" | "aborted" | "error" {
+  if (value !== "complete" && value !== "aborted" && value !== "error") {
+    throw new Error("Invalid finished message status.");
+  }
+  return value;
 }
 
 function requireArray(
@@ -363,6 +572,37 @@ function requireBoolean(
     throw new Error(`${field} must be a boolean.`);
   }
   return candidate;
+}
+
+function requireNonNegativeInteger(
+  value: Record<string, unknown>,
+  field: string,
+): number {
+  const candidate = requireNonNegativeNumber(value, field);
+  if (!Number.isInteger(candidate)) {
+    throw new Error(`${field} must be an integer.`);
+  }
+  return candidate;
+}
+
+function requireNonNegativeNumber(
+  value: Record<string, unknown>,
+  field: string,
+): number {
+  const candidate = value[field];
+  if (typeof candidate !== "number" || !Number.isFinite(candidate) || candidate < 0) {
+    throw new Error(`${field} must be a non-negative number.`);
+  }
+  return candidate;
+}
+
+function optionalString(
+  value: Record<string, unknown>,
+  field: string,
+  allowEmpty = false,
+): string | undefined {
+  if (value[field] === undefined) return undefined;
+  return requireString(value, field, allowEmpty);
 }
 
 function requireString(

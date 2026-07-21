@@ -12,7 +12,7 @@
     "@researchbox/agent-core": "workspace:*",
     "@researchbox/mock-server": "workspace:*",
     "@researchbox/model-transport": "workspace:*",
-    "@researchbox/protocol": "workspace:*",
+    "@researchbox/project-store": "workspace:*",
     "@researchbox/runtime-browser": "workspace:*",
     "@researchbox/vfs": "workspace:*",
     "@researchbox/viewer": "workspace:*",

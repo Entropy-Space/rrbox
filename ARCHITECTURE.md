@@ -13,8 +13,10 @@ apps/web
        ├─ packages/agent-core
        │    ├─ packages/protocol
        │    ├─ packages/model-transport
+       │    ├─ packages/project-store
        │    └─ packages/vfs
-       ├─ memory VFS adapter
+       ├─ IndexedDB project/session store
+       ├─ IndexedDB project VFS provider
        └─ worker model transport
             │ versioned JSON, multiplexed by stream_id
             ▼
@@ -23,10 +25,15 @@ apps/web
             └─ HTTP model transport → /api/mock
 ```
 
-The viewer and core worker exchange only viewer-protocol values. The core and
-LLM workers use a separate versioned protocol so provider I/O, cancellation,
-and future credentials stay outside the agent runtime. The viewer never imports
-Pi, filesystem implementations, model transports, or either worker runtime.
+The viewer and core worker exchange only protocol-v2 JSON values. Project and
+session identifiers scope prompts and incremental chat events. Filesystem
+events use a project identifier plus a required request identifier, while
+authoritative snapshots use a monotonic state revision. Together these prevent
+late work from replacing a newer project, chat, or file-navigation result. The
+core and LLM workers use a separate versioned protocol so provider I/O,
+cancellation, and future credentials stay outside the agent runtime. The
+viewer never imports Pi, filesystem implementations, model transports, or
+either worker runtime.
 
 The LLM worker is an isolation and lifecycle boundary, not a security boundary
 against same-origin code. Server-held credentials must remain on the server.
@@ -38,11 +45,13 @@ against same-origin code. Server-held credentials must remain on the server.
 2. `apps/mock-server` owns mock-model behavior and is mounted by a thin web
    route.
 3. `packages/viewer` depends only on React, UI primitives, and the protocol.
-4. `packages/agent-core` depends on Pi plus abstract model and VFS contracts.
+4. `packages/agent-core` contains a project/session manager above one active
+   Pi session runtime and depends only on abstract model, project-store, and
+   VFS contracts.
 5. `packages/runtime-browser` hosts compatible core and LLM handlers; it does
    not construct ResearchBox, select providers, or import Pi.
-6. `packages/model-transport`, `packages/protocol`, and `packages/vfs` have no
-   application or framework dependencies.
+6. `packages/model-transport`, `packages/protocol`, `packages/project-store`,
+   and `packages/vfs` have no application or framework dependencies.
 7. Platform implementations compose these packages; packages never import a
    platform.
 
@@ -59,16 +68,34 @@ identifier.
 
 The LLM worker currently owns only the deterministic mock HTTP transport. This
 split moves model I/O out of the core worker but does not yet constitute real
-provider support. Before adding providers, `ModelRequest` must grow beyond its
-current mock-oriented prompt/tool-result shape to preserve complete Pi context,
+provider support. Pi transcripts are restored into the session runtime, but the
+mock-oriented `ModelRequest` currently forwards only the latest turn and tool
+results. Before adding providers, it must grow to preserve complete Pi context,
 tool schemas, model selection, options, and usage.
+
+## Project and session persistence
+
+The browser core worker owns one IndexedDB database with `meta`, `projects`,
+`sessions`, `session_documents`, `project_filesystems`, and `files` stores.
+Catalog writes use a monotonic `state_revision` guard. An origin-wide exclusive
+Web Lock ensures only one browser core writes or repairs the database at a time;
+a second tab waits for ownership. Session documents persist both viewer
+messages and a versioned snake-case codec of the canonical Pi transcript,
+including tool calls and results. Incomplete streams are recovered as
+interrupted only after the prior writer has released its lease.
+
+A project owns one virtual filesystem and any number of sessions. Switching a
+project restores its last selected session. Deleting the final project or final
+session creates a deterministic replacement, so the viewer always receives a
+valid active pair.
 
 ## Storage roadmap
 
 Every storage backend implements `VirtualFileSystem`:
 
 - memory: implemented, deterministic test backend
-- OPFS/IndexedDB: next browser persistence backend
+- IndexedDB: implemented browser persistence backend
+- OPFS: optional large-workspace browser backend
 - ZIP: portable import/export backend
 - native folder: desktop backend
 - iOS application storage: native mobile backend

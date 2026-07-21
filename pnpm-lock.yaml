@@ -23,6 +23,9 @@ importers:
       eslint-config-next:
         specifier: 16.2.6
         version: 16.2.6(@typescript-eslint/parser@8.64.0(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)
+      fake-indexeddb:
+        specifier: 6.2.4
+        version: 6.2.4
       next:
         specifier: 16.2.6
         version: 16.2.6(@babel/core@7.29.7)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
@@ -47,9 +50,9 @@ importers:
       '@researchbox/model-transport':
         specifier: workspace:*
         version: link:../../packages/model-transport
-      '@researchbox/protocol':
+      '@researchbox/project-store':
         specifier: workspace:*
-        version: link:../../packages/protocol
+        version: link:../../packages/project-store
       '@researchbox/runtime-browser':
         specifier: workspace:*
         version: link:../../packages/runtime-browser
@@ -108,6 +111,9 @@ importers:
       '@researchbox/model-transport':
         specifier: workspace:*
         version: link:../model-transport
+      '@researchbox/project-store':
+        specifier: workspace:*
+        version: link:../project-store
       '@researchbox/protocol':
         specifier: workspace:*
         version: link:../protocol
@@ -116,6 +122,12 @@ importers:
         version: link:../vfs
 
   packages/model-transport: {}
+
+  packages/project-store:
+    dependencies:
+      '@researchbox/protocol':
+        specifier: workspace:*
+        version: link:../protocol
 
   packages/protocol: {}
 
@@ -2138,6 +2150,10 @@ packages:
 
   extend@3.0.2:
     resolution: {integrity: sha512-fjquC59cD7CyW6urNXK0FBufkZcoiGG80wTuPujX590cB5Ttln20E2UB4S/WARVqhXffZl2LNgS+gQdPIIim/g==}
+
+  fake-indexeddb@6.2.4:
+    resolution: {integrity: sha512-INKeIKEtSViN4yVtEWEUqbsqmaIy7Ls+MfU0yxQVXg67pOJ/sH1ZxcVrP8XrKULUFohcPD9gnmym+qBfEybACw==}
+    engines: {node: '>=18'}
 
   fast-deep-equal@3.1.3:
     resolution: {integrity: sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q==}
@@ -5641,6 +5657,8 @@ snapshots:
   events@3.3.0: {}
 
   extend@3.0.2: {}
+
+  fake-indexeddb@6.2.4: {}
 
   fast-deep-equal@3.1.3: {}
 

@@ -3,7 +3,6 @@
 import {
   ArrowUp,
   Check,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Code2,
@@ -11,21 +10,16 @@ import {
   FileText,
   Folder,
   FolderOpen,
-  Library,
   LoaderCircle,
   Menu,
   MessageSquareText,
   Mic,
-  MoreHorizontal,
   PanelRight,
   Paperclip,
   Plus,
   RotateCcw,
-  Search,
-  Settings,
   SlidersHorizontal,
   Sparkles,
-  SquarePen,
   ThumbsDown,
   ThumbsUp,
   X,
@@ -35,26 +29,18 @@ import {
   type FileEntry,
   type ToolActivity,
 } from "@researchbox/protocol";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
+import {
+  isModalNavigationOpen,
+  MOBILE_NAVIGATION_QUERY,
+} from "./navigation-state.ts";
 import { useAgentSession } from "./use-agent-session.ts";
+import { WorkspaceSidebar } from "./WorkspaceSidebar.tsx";
 
 export type ResearchBoxViewerProps = {
   createWorker: () => Worker;
 };
-
-const recentChats = [
-  "Browser-native agent design",
-  "Virtual filesystem adapters",
-  "Protocol event model",
-  "OPFS persistence notes",
-];
 
 const suggestions = [
   {
@@ -78,14 +64,26 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
   const {
     coreState,
     transportError,
+    isManagementPending,
     submitPrompt,
-    startNewChat,
+    createProject,
+    renameProject,
+    deleteProject,
+    selectProject,
+    createSession,
+    renameSession,
+    deleteSession,
+    selectSession,
     abortRun,
     openFile,
     navigateToParent,
   } = useAgentSession(createWorker);
-  const [draft, setDraft] = useState("");
+  const [draftState, setDraftState] = useState<{
+    session_id: string | null;
+    value: string;
+  }>({ session_id: null, value: "" });
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [isMobileViewport, setMobileViewport] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const conversationEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -96,20 +94,38 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
     });
   }, [coreState.messages, coreState.activities, coreState.is_running]);
 
-  const latestAssistantId = useMemo(
-    () =>
-      [...coreState.messages]
-        .reverse()
-        .find((message) => message.role === "assistant")?.id,
-    [coreState.messages],
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(MOBILE_NAVIGATION_QUERY);
+    const syncViewport = () => {
+      setMobileViewport(mediaQuery.matches);
+      if (!mediaQuery.matches) setSidebarOpen(false);
+    };
+    syncViewport();
+    mediaQuery.addEventListener("change", syncViewport);
+    return () => mediaQuery.removeEventListener("change", syncViewport);
+  }, []);
+
+  const draft =
+    draftState.session_id === coreState.active_session_id
+      ? draftState.value
+      : "";
+  const setDraft = useCallback(
+    (value: string) => {
+      setDraftState({
+        session_id: coreState.active_session_id,
+        value,
+      });
+    },
+    [coreState.active_session_id],
   );
 
   const submitDraft = useCallback(
     (prompt: string) => {
       if (submitPrompt(prompt)) setDraft("");
     },
-    [submitPrompt],
+    [setDraft, submitPrompt],
   );
+  const closeSidebar = useCallback(() => setSidebarOpen(false), []);
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -123,106 +139,71 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
     }
   }
 
-  function resetConversation() {
-    startNewChat();
-    setSidebarOpen(false);
-  }
-
   const hasConversation = coreState.messages.length > 0;
   const visibleError = transportError ?? coreState.error_message;
+  const activeProject = coreState.projects.find(
+    (project) => project.project_id === coreState.active_project_id,
+  );
+  const activeSession = coreState.sessions.find(
+    (session) => session.session_id === coreState.active_session_id,
+  );
+  const modalNavigationOpen = isModalNavigationOpen(
+    sidebarOpen,
+    isMobileViewport,
+  );
 
   return (
     <main className="app-shell">
-      {sidebarOpen && (
+      {modalNavigationOpen && (
         <button
           className="mobile-scrim"
           type="button"
           aria-label="Close navigation"
-          onClick={() => setSidebarOpen(false)}
+          onClick={closeSidebar}
         />
       )}
 
-      <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
-        <div className="sidebar-topline">
-          <button
-            className="brand-button"
-            type="button"
-            aria-label="ResearchBox home"
-            onClick={resetConversation}
-          >
-            <span className="brand-mark">R</span>
-          </button>
-          <button
-            className="icon-button"
-            type="button"
-            aria-label="Close sidebar"
-            onClick={() => setSidebarOpen(false)}
-          >
-            <ChevronLeft size={18} strokeWidth={1.8} />
-          </button>
-        </div>
+      <WorkspaceSidebar
+        isOpen={modalNavigationOpen}
+        projects={coreState.projects}
+        sessions={coreState.sessions}
+        activeProjectId={coreState.active_project_id}
+        activeSessionId={coreState.active_session_id}
+        isPending={isManagementPending || coreState.is_running}
+        onClose={closeSidebar}
+        onCreateProject={createProject}
+        onRenameProject={renameProject}
+        onDeleteProject={deleteProject}
+        onSelectProject={selectProject}
+        onCreateSession={createSession}
+        onRenameSession={renameSession}
+        onDeleteSession={deleteSession}
+        onSelectSession={selectSession}
+      />
 
-        <nav className="primary-nav" aria-label="Primary navigation">
-          <button type="button" onClick={resetConversation}>
-            <SquarePen size={18} />
-            <span>New chat</span>
-          </button>
-          <button type="button">
-            <Search size={18} />
-            <span>Search chats</span>
-          </button>
-          <button type="button">
-            <Library size={18} />
-            <span>Library</span>
-          </button>
-        </nav>
-
-        <div className="sidebar-section">
-          <div className="section-label">
-            <span>Chats</span>
-            <button type="button" aria-label="Chat options">
-              <MoreHorizontal size={16} />
-            </button>
-          </div>
-          <div className="chat-history">
-            {recentChats.map((chat, index) => (
-              <button
-                key={chat}
-                type="button"
-                className={index === 0 && hasConversation ? "active" : ""}
-              >
-                {chat}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <button className="profile-button" type="button">
-          <span className="profile-avatar">C</span>
-          <span className="profile-copy">
-            <strong>Local workspace</strong>
-            <small>Mock model</small>
-          </span>
-          <Settings size={17} />
-        </button>
-      </aside>
-
-      <section className="chat-surface">
+      <section
+        className="chat-surface"
+        inert={modalNavigationOpen ? true : undefined}
+      >
         <header className="topbar">
           <div className="topbar-leading">
             <button
               className="icon-button mobile-menu-button"
               type="button"
               aria-label="Open navigation"
+              aria-controls="researchbox-navigation"
+              aria-expanded={modalNavigationOpen}
               onClick={() => setSidebarOpen(true)}
             >
               <Menu size={20} />
             </button>
-            <button className="model-selector" type="button">
+            <div className="model-selector" aria-label="Active workspace">
               <span>ResearchBox</span>
-              <small>Pi mock</small>
-              <ChevronDown size={15} />
-            </button>
+              <small>
+                {activeProject?.name ?? "Loading"}
+                {activeSession ? ` · ${activeSession.title}` : ""}
+              </small>
+            </div>
           </div>
           <div className="topbar-actions">
             <span
@@ -258,11 +239,9 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
                   <MessageRow
                     key={message.id}
                     message={message}
-                    activities={
-                      message.id === latestAssistantId
-                        ? coreState.activities
-                        : []
-                    }
+                    activities={coreState.activities.filter(
+                      (activity) => activity.message_id === message.id,
+                    )}
                   />
                 ))}
                 <div ref={conversationEndRef} />
@@ -277,7 +256,7 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
                   rows={1}
                   aria-label="Message ResearchBox"
                   placeholder="Message ResearchBox"
-                  disabled={!coreState.is_ready}
+                  disabled={!coreState.is_ready || isManagementPending}
                   onChange={(event) => setDraft(event.target.value)}
                   onKeyDown={handleComposerKeyDown}
                 />
@@ -312,7 +291,11 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
                         className="send-button"
                         type="submit"
                         aria-label="Send message"
-                        disabled={!draft.trim() || !coreState.is_ready}
+                        disabled={
+                          !draft.trim() ||
+                          !coreState.is_ready ||
+                          isManagementPending
+                        }
                       >
                         <ArrowUp size={18} strokeWidth={2.5} />
                       </button>

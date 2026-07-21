@@ -1,6 +1,6 @@
-import type { AgentCoreOptions } from "@researchbox/agent-core";
+import type { ResearchBoxCoreOptions } from "@researchbox/agent-core";
 
-export const researchBoxMockModel: AgentCoreOptions["model"] = {
+export const researchBoxMockModel: ResearchBoxCoreOptions["model"] = {
   id: "researchbox-mock",
   name: "ResearchBox Mock",
   api: "researchbox-mock",

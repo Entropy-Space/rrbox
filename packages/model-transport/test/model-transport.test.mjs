@@ -58,6 +58,25 @@ test("stops consuming model events at done", async () => {
   assert.deepEqual(events, [{ type: "done" }]);
 });
 
+test("invokes fetch with the active global scope", async () => {
+  let callCount = 0;
+  const transport = new HttpNdjsonModelTransport(
+    "http://localhost/api/mock",
+    function fetchWithReceiver() {
+      assert.equal(this, globalThis);
+      callCount += 1;
+      return Promise.resolve(
+        new Response('{"type":"done"}\n', {
+          headers: { "content-type": "application/x-ndjson" },
+        }),
+      );
+    },
+  );
+
+  assert.deepEqual(await collectTransport(transport), [{ type: "done" }]);
+  assert.equal(callCount, 1);
+});
+
 async function collectStream(body) {
   const transport = new HttpNdjsonModelTransport(
     "http://localhost/api/mock",
@@ -66,6 +85,10 @@ async function collectStream(body) {
         headers: { "content-type": "application/x-ndjson" },
       }),
   );
+  return collectTransport(transport);
+}
+
+async function collectTransport(transport) {
   const events = [];
   for await (const event of transport.stream(
     modelRequest,

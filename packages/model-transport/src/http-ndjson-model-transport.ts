@@ -11,7 +11,7 @@ export class HttpNdjsonModelTransport implements ModelTransport {
 
   constructor(endpoint: string, fetchRequest: typeof fetch = fetch) {
     this.endpoint = endpoint;
-    this.fetchRequest = fetchRequest;
+    this.fetchRequest = fetchRequest.bind(globalThis);
   }
 
   async *stream(

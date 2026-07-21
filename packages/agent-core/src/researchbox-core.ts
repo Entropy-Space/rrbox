@@ -25,6 +25,7 @@ import type {
 } from "@researchbox/vfs";
 import {
   SessionRuntime,
+  stagePrompt,
   type CoreEventSink,
 } from "./session-runtime.ts";
 import { decodeAgentMessages } from "./session-codec.ts";
@@ -126,7 +127,7 @@ export class ResearchBoxCore {
       }
       this.state = state;
     }
-    await this.activateRuntime();
+    await this.activateSelection();
   }
 
   private async handleMutation(
@@ -152,10 +153,17 @@ export class ResearchBoxCore {
       case "project_select":
         await this.selectProject(command.payload.project_id, command.request_id);
         return;
-      case "session_create":
-        await this.createSession(
+      case "new_chat":
+        await this.selectNewChat(
           command.payload.project_id,
-          command.payload.title,
+          command.request_id,
+        );
+        return;
+      case "input_draft_update":
+        await this.updateInputDraft(
+          command.payload.project_id,
+          command.payload.session_id,
+          command.payload.input_draft,
           command.request_id,
         );
         return;
@@ -189,8 +197,19 @@ export class ResearchBoxCore {
   ): Promise<void> {
     let runPromise: Promise<void> | null = null;
     await this.enqueueMutation(async () => {
+      const promptText = command.payload.text.trim();
+      if (!promptText) {
+        this.emitError(
+          "invalid_prompt",
+          "A prompt must contain at least one non-whitespace character.",
+          command.request_id,
+          command.payload.project_id,
+          command.payload.session_id ?? undefined,
+        );
+        return;
+      }
       if (
-        !this.validateActiveSession(
+        !this.validateActiveSelection(
           command.payload.project_id,
           command.payload.session_id,
           command.request_id,
@@ -198,30 +217,55 @@ export class ResearchBoxCore {
       ) {
         return;
       }
-      const runtime = this.requireRuntime();
-      if (runtime.is_running) {
+
+      if (this.runtime?.is_running) {
         this.emitError(
           "run_in_progress",
           "Wait for the current response to finish.",
           command.request_id,
           command.payload.project_id,
-          command.payload.session_id,
+          command.payload.session_id ?? undefined,
         );
         return;
       }
 
-      const session = this.requireSession(command.payload.session_id);
-      if (!session.title_is_custom && this.requireDocument(session.session_id).messages.length === 0) {
+      if (command.payload.session_id === null) {
         const draft = cloneProjectStoreState(this.requireState());
-        const draftSession = findSession(draft, session.session_id);
-        draftSession.title = deriveSessionTitle(command.payload.text);
-        draftSession.updated_at = new Date().toISOString();
-        findProject(draft, session.project_id).updated_at = draftSession.updated_at;
-        await this.commitDraft(draft);
+        const created = createSessionRecord(
+          command.payload.project_id,
+          deriveSessionTitle(promptText),
+          false,
+        );
+        const staged = stagePrompt(created.document, promptText);
+        draft.sessions.push(created.session);
+        draft.documents.push(created.document);
+        const project = findProject(draft, command.payload.project_id);
+        project.last_session_id = created.session.session_id;
+        project.new_chat_draft = "";
+        project.updated_at = created.session.updated_at;
+        draft.active_session_id = created.session.session_id;
+        try {
+          await this.commitDraft(draft);
+        } catch (error) {
+          this.emitError(
+            "persistence_failed",
+            toErrorMessage(error, "The new chat could not be saved."),
+            command.request_id,
+            command.payload.project_id,
+          );
+          return;
+        }
+        await this.activateSelection();
         await this.emitStateSnapshot(command.request_id);
+        runPromise = this.requireRuntime().continueStagedPrompt(
+          staged.assistant_message.id,
+          command.request_id,
+        );
+        return;
       }
+
       runPromise = this.requireRuntime().startPrompt(
-        command.payload.text,
+        promptText,
         command.request_id,
       );
     });
@@ -258,23 +302,21 @@ export class ResearchBoxCore {
     await this.stopActiveRun();
 
     const draft = cloneProjectStoreState(this.requireState());
-    const created = createProjectWithSession(normalizedName);
-    draft.projects.push(created.project);
-    draft.sessions.push(created.session);
-    draft.documents.push(created.document);
-    draft.active_project_id = created.project.project_id;
-    draft.active_session_id = created.session.session_id;
+    const project = createProjectRecord(normalizedName);
+    draft.projects.push(project);
+    draft.active_project_id = project.project_id;
+    draft.active_session_id = null;
 
-    await this.workspaceProvider.create(created.project.project_id);
+    await this.workspaceProvider.create(project.project_id);
     try {
       await this.commitDraft(draft);
     } catch (error) {
       await this.workspaceProvider
-        .delete(created.project.project_id)
+        .delete(project.project_id)
         .catch(() => undefined);
       throw error;
     }
-    await this.activateRuntime();
+    await this.activateSelection();
     await this.emitStateSnapshot(requestId);
   }
 
@@ -323,12 +365,10 @@ export class ResearchBoxCore {
 
     let replacementProjectId: string | null = null;
     if (draft.projects.length === 0) {
-      const replacement = createProjectWithSession("Local workspace");
-      draft.projects.push(replacement.project);
-      draft.sessions.push(replacement.session);
-      draft.documents.push(replacement.document);
-      replacementProjectId = replacement.project.project_id;
-      await this.workspaceProvider.create(replacement.project.project_id);
+      const replacement = createProjectRecord("Local workspace");
+      draft.projects.push(replacement);
+      replacementProjectId = replacement.project_id;
+      await this.workspaceProvider.create(replacement.project_id);
     }
     if (activeChanged) {
       const nextProject = newestProject(draft.projects);
@@ -346,7 +386,7 @@ export class ResearchBoxCore {
       }
       throw error;
     }
-    if (activeChanged) await this.activateRuntime();
+    if (activeChanged) await this.activateSelection();
     await this.emitStateSnapshot(requestId);
     try {
       await this.workspaceProvider.delete(projectId);
@@ -375,40 +415,94 @@ export class ResearchBoxCore {
     draft.active_project_id = projectId;
     draft.active_session_id = findProject(draft, projectId).last_session_id;
     await this.commitDraft(draft);
-    await this.activateRuntime();
+    await this.activateSelection();
     await this.emitStateSnapshot(requestId);
   }
 
-  private async createSession(
+  private async selectNewChat(
     projectId: string,
-    title: string | undefined,
     requestId: string,
   ): Promise<void> {
     if (!this.getProject(projectId, requestId)) return;
-    const normalizedTitle =
-      title === undefined
-        ? "New chat"
-        : this.validateName(title, "session", requestId);
-    if (!normalizedTitle) return;
+    const state = this.requireState();
+    if (
+      state.active_project_id === projectId &&
+      state.active_session_id === null
+    ) {
+      await this.emitStateSnapshot(requestId);
+      return;
+    }
     if (!this.ensureManagementIdle(requestId)) return;
     await this.stopActiveRun();
 
-    const draft = cloneProjectStoreState(this.requireState());
-    const created = createSessionRecord(
-      projectId,
-      normalizedTitle,
-      title !== undefined,
-    );
-    draft.sessions.push(created.session);
-    draft.documents.push(created.document);
+    const draft = cloneProjectStoreState(state);
     const project = findProject(draft, projectId);
-    project.last_session_id = created.session.session_id;
-    project.updated_at = created.session.updated_at;
+    project.last_session_id = null;
     draft.active_project_id = projectId;
-    draft.active_session_id = created.session.session_id;
+    draft.active_session_id = null;
     await this.commitDraft(draft);
-    await this.activateRuntime();
+    await this.activateSelection();
     await this.emitStateSnapshot(requestId);
+  }
+
+  private async updateInputDraft(
+    projectId: string,
+    sessionId: string | null,
+    inputDraft: string,
+    requestId: string,
+  ): Promise<void> {
+    const state = this.requireState();
+    const isActiveScope =
+      state.active_project_id === projectId &&
+      state.active_session_id === sessionId;
+    const isPromotedNewChatCleanup =
+      state.active_project_id === projectId &&
+      state.active_session_id !== null &&
+      sessionId === null &&
+      inputDraft === "";
+    if (!isActiveScope && !isPromotedNewChatCleanup) {
+      // A virtual prompt can promote the composer before its latest UI change
+      // reaches the worker. The viewer re-sends that text in the new session
+      // scope; persisting the stale command would repopulate the virtual draft.
+      return;
+    }
+    const project = this.getProject(projectId, requestId);
+    if (!project) return;
+    if (sessionId !== null && !this.getSession(projectId, sessionId, requestId)) {
+      return;
+    }
+
+    try {
+      await this.projectStore.saveInputDraft({
+        project_id: projectId,
+        session_id: sessionId,
+        input_draft: inputDraft,
+      });
+    } catch (error) {
+      this.emitError(
+        "persistence_failed",
+        toErrorMessage(error, "The input draft could not be saved."),
+        requestId,
+        projectId,
+        sessionId ?? undefined,
+      );
+      return;
+    }
+
+    if (sessionId === null) {
+      project.new_chat_draft = inputDraft;
+    } else {
+      this.requireDocument(sessionId).input_draft = inputDraft;
+    }
+    this.emit(
+      "input_draft_saved",
+      {
+        project_id: projectId,
+        session_id: sessionId,
+        input_draft: inputDraft,
+      },
+      requestId,
+    );
   }
 
   private async updateSession(
@@ -449,24 +543,19 @@ export class ResearchBoxCore {
     draft.documents = draft.documents.filter(
       (document) => document.session_id !== sessionId,
     );
-    let projectSessions = draft.sessions.filter(
+    const projectSessions = draft.sessions.filter(
       (session) => session.project_id === projectId,
     );
-    if (projectSessions.length === 0) {
-      const replacement = createSessionRecord(projectId, "New chat", false);
-      draft.sessions.push(replacement.session);
-      draft.documents.push(replacement.document);
-      projectSessions = [replacement.session];
-    }
-    const replacement = newestSession(projectSessions);
+    const replacement =
+      projectSessions.length === 0 ? null : newestSession(projectSessions);
     const project = findProject(draft, projectId);
     if (project.last_session_id === sessionId) {
-      project.last_session_id = replacement.session_id;
+      project.last_session_id = replacement?.session_id ?? null;
     }
     project.updated_at = new Date().toISOString();
-    if (activeChanged) draft.active_session_id = replacement.session_id;
+    if (activeChanged) draft.active_session_id = replacement?.session_id ?? null;
     await this.commitDraft(draft);
-    if (activeChanged) await this.activateRuntime();
+    if (activeChanged) await this.activateSelection();
     await this.emitStateSnapshot(requestId);
   }
 
@@ -493,7 +582,7 @@ export class ResearchBoxCore {
     project.last_session_id = sessionId;
     project.updated_at = new Date().toISOString();
     await this.commitDraft(draft);
-    await this.activateRuntime();
+    await this.activateSelection();
     await this.emitStateSnapshot(requestId);
   }
 
@@ -501,36 +590,79 @@ export class ResearchBoxCore {
     await this.runtime?.stopAndWait();
   }
 
-  private async activateRuntime(): Promise<void> {
+  private async activateSelection(): Promise<void> {
     const state = this.requireState();
-    const document = this.requireDocument(state.active_session_id);
     const workspace = await this.workspaceProvider.open(state.active_project_id);
-    const nextRuntime = new SessionRuntime({
-      project_id: state.active_project_id,
-      session_id: state.active_session_id,
-      document,
-      workspace,
-      model_transport: this.modelTransport,
-      model: this.model,
-      system_prompt: this.systemPrompt,
-      event_sink: this.eventSink,
-      checkpoint: async (phase, requestId) => {
-        await this.checkpointActiveSession();
-        if (phase === "finished") await this.emitStateSnapshot(requestId);
-      },
-    });
+    const projectId = state.active_project_id;
+    const sessionId = state.active_session_id;
+    const nextRuntime =
+      sessionId === null
+        ? null
+        : new SessionRuntime({
+            project_id: projectId,
+            session_id: sessionId,
+            document: this.requireDocument(sessionId),
+            workspace,
+            model_transport: this.modelTransport,
+            model: this.model,
+            system_prompt: this.systemPrompt,
+            event_sink: this.eventSink,
+            checkpoint: (phase, requestId) =>
+              this.enqueueMutation(async () => {
+                await this.checkpointActiveSession(
+                  projectId,
+                  sessionId,
+                  phase,
+                );
+                if (phase === "finished") {
+                  await this.emitStateSnapshot(requestId);
+                }
+              }),
+          });
     this.runtime?.dispose();
     this.workspace = workspace;
     this.runtime = nextRuntime;
   }
 
-  private async checkpointActiveSession(): Promise<void> {
+  private async checkpointActiveSession(
+    projectId: string,
+    sessionId: string,
+    phase: "staged" | "finished",
+  ): Promise<void> {
     const state = this.requireState();
-    const session = this.requireSession(state.active_session_id);
+    if (
+      state.active_project_id !== projectId ||
+      state.active_session_id !== sessionId
+    ) {
+      throw new Error("The running session is no longer active.");
+    }
+
+    const expectedRevision = state.state_revision;
+    const persisted = cloneProjectStoreState(state);
+    const session = findSession(persisted, sessionId);
+    const document = findDocument(persisted, sessionId);
     const now = new Date().toISOString();
+    if (
+      phase === "staged" &&
+      !session.title_is_custom &&
+      document.messages.length === 2
+    ) {
+      const firstUserMessage = document.messages[0];
+      if (firstUserMessage?.role === "user") {
+        session.title = deriveSessionTitle(firstUserMessage.content);
+      }
+    }
     session.updated_at = now;
-    this.requireProject(state.active_project_id).updated_at = now;
-    await this.persistCurrentState();
+    findProject(persisted, projectId).updated_at = now;
+    persisted.state_revision = expectedRevision + 1;
+    assertProjectStoreInvariants(persisted);
+    await this.projectStore.save(persisted, expectedRevision);
+
+    const currentSession = this.requireSession(sessionId);
+    currentSession.title = session.title;
+    currentSession.updated_at = now;
+    this.requireProject(projectId).updated_at = now;
+    state.state_revision = persisted.state_revision;
   }
 
   private async persistCurrentState(): Promise<void> {
@@ -546,17 +678,18 @@ export class ResearchBoxCore {
   private async commitDraft(draft: ProjectStoreState): Promise<void> {
     const current = this.requireState();
     const expectedRevision = current.state_revision;
-    repairInvalidTranscript(
-      findDocument(draft, draft.active_session_id),
-    );
+    if (draft.active_session_id !== null) {
+      repairInvalidTranscript(findDocument(draft, draft.active_session_id));
+    }
     draft.state_revision = expectedRevision + 1;
     assertProjectStoreInvariants(draft);
     await this.projectStore.save(draft, expectedRevision);
     const sameRuntime =
+      draft.active_session_id !== null &&
       this.runtime?.project_id === draft.active_project_id &&
       this.runtime.session_id === draft.active_session_id;
     this.state = draft;
-    if (sameRuntime) {
+    if (sameRuntime && draft.active_session_id !== null) {
       this.runtime?.bindDocument(this.requireDocument(draft.active_session_id));
     }
   }
@@ -571,7 +704,11 @@ export class ResearchBoxCore {
 
   private async createCoreState(): Promise<CoreStateSnapshot> {
     const state = this.requireState();
-    const document = this.requireDocument(state.active_session_id);
+    const document =
+      state.active_session_id === null
+        ? null
+        : this.requireDocument(state.active_session_id);
+    const activeProject = this.requireProject(state.active_project_id);
     return {
       state_revision: state.state_revision,
       projects: [...state.projects]
@@ -594,8 +731,12 @@ export class ResearchBoxCore {
         })),
       active_project_id: state.active_project_id,
       active_session_id: state.active_session_id,
-      messages: structuredClone(document.messages),
-      activities: structuredClone(document.activities),
+      input_draft:
+        document === null
+          ? activeProject.new_chat_draft
+          : document.input_draft,
+      messages: structuredClone(document?.messages ?? []),
+      activities: structuredClone(document?.activities ?? []),
       files: mapEntries(await this.requireWorkspace().list("/")),
       is_running: this.runtime?.is_running ?? false,
     };
@@ -654,7 +795,7 @@ export class ResearchBoxCore {
       toErrorMessage(error, "Filesystem operation failed."),
       requestId,
       state.active_project_id,
-      state.active_session_id,
+      state.active_session_id ?? undefined,
     );
   }
 
@@ -712,6 +853,37 @@ export class ResearchBoxCore {
       return false;
     }
     return true;
+  }
+
+  private validateActiveSelection(
+    projectId: string,
+    sessionId: string | null,
+    requestId: string,
+  ): boolean {
+    const state = this.requireState();
+    if (state.active_project_id !== projectId) {
+      this.emitError(
+        "project_not_active",
+        "The requested project is not active.",
+        requestId,
+        projectId,
+        sessionId ?? undefined,
+      );
+      return false;
+    }
+    if (state.active_session_id !== sessionId) {
+      this.emitError(
+        "session_not_active",
+        "The requested chat is not active.",
+        requestId,
+        projectId,
+        sessionId ?? undefined,
+      );
+      return false;
+    }
+    return sessionId === null
+      ? true
+      : this.validateActiveSession(projectId, sessionId, requestId);
   }
 
   private getProject(projectId: string, requestId: string): ProjectRecord | null {
@@ -786,7 +958,7 @@ export class ResearchBoxCore {
       "Wait for the current response to finish before changing projects or chats.",
       requestId,
       state.active_project_id,
-      state.active_session_id,
+      state.active_session_id ?? undefined,
     );
     return false;
   }
@@ -868,35 +1040,28 @@ export class ResearchBoxCore {
 export { ResearchBoxCore as AgentCore };
 
 function createInitialState(): ProjectStoreState {
-  const created = createProjectWithSession("Local workspace");
+  const project = createProjectRecord("Local workspace");
   return {
     schema_version: PROJECT_STORE_SCHEMA_VERSION,
     state_revision: 0,
-    active_project_id: created.project.project_id,
-    active_session_id: created.session.session_id,
-    projects: [created.project],
-    sessions: [created.session],
-    documents: [created.document],
+    active_project_id: project.project_id,
+    active_session_id: null,
+    projects: [project],
+    sessions: [],
+    documents: [],
   };
 }
 
-function createProjectWithSession(name: string): {
-  project: ProjectRecord;
-  session: SessionRecord;
-  document: SessionDocument;
-} {
+function createProjectRecord(name: string): ProjectRecord {
   const projectId = crypto.randomUUID();
-  const created = createSessionRecord(projectId, "New chat", false);
-  const now = created.session.created_at;
+  const now = new Date().toISOString();
   return {
-    project: {
-      project_id: projectId,
-      name,
-      created_at: now,
-      updated_at: now,
-      last_session_id: created.session.session_id,
-    },
-    ...created,
+    project_id: projectId,
+    name,
+    created_at: now,
+    updated_at: now,
+    last_session_id: null,
+    new_chat_draft: "",
   };
 }
 
@@ -920,6 +1085,7 @@ function createSessionRecord(
       format_version: SESSION_DOCUMENT_FORMAT_VERSION,
       session_id: sessionId,
       project_id: projectId,
+      input_draft: "",
       messages: [],
       activities: [],
       agent_messages: [],

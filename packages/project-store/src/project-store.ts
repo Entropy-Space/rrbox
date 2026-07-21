@@ -13,4 +13,11 @@ export interface ProjectStore {
     state: ProjectStoreState,
     expected_revision: number | null,
   ): Promise<void>;
+  saveInputDraft(update: InputDraftUpdate): Promise<void>;
 }
+
+export type InputDraftUpdate = {
+  project_id: string;
+  session_id: string | null;
+  input_draft: string;
+};

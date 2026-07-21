@@ -25,15 +25,16 @@ apps/web
             └─ HTTP model transport → /api/mock
 ```
 
-The viewer and core worker exchange only protocol-v2 JSON values. Project and
-session identifiers scope prompts and incremental chat events. Filesystem
-events use a project identifier plus a required request identifier, while
-authoritative snapshots use a monotonic state revision. Together these prevent
-late work from replacing a newer project, chat, or file-navigation result. The
-core and LLM workers use a separate versioned protocol so provider I/O,
-cancellation, and future credentials stay outside the agent runtime. The
-viewer never imports Pi, filesystem implementations, model transports, or
-either worker runtime.
+The viewer and core worker exchange only protocol-v3 JSON values. A
+`project_id` plus nullable `session_id` scopes the active composer: `null`
+identifies that project's single virtual new chat, while incremental run events
+always identify a durable session. Filesystem and draft acknowledgements use a
+required request identifier, while authoritative snapshots use a monotonic
+state revision. Together these prevent late work from replacing a newer
+project, chat, draft, or file-navigation result. The core and LLM workers use a
+separate versioned protocol so provider I/O, cancellation, and future
+credentials stay outside the agent runtime. The viewer never imports Pi,
+filesystem implementations, model transports, or either worker runtime.
 
 The LLM worker is an isolation and lifecycle boundary, not a security boundary
 against same-origin code. Server-held credentials must remain on the server.
@@ -45,9 +46,9 @@ against same-origin code. Server-held credentials must remain on the server.
 2. `apps/mock-server` owns mock-model behavior and is mounted by a thin web
    route.
 3. `packages/viewer` depends only on React, UI primitives, and the protocol.
-4. `packages/agent-core` contains a project/session manager above one active
-   Pi session runtime and depends only on abstract model, project-store, and
-   VFS contracts.
+4. `packages/agent-core` contains a project/session manager above an optional
+   active Pi session runtime and depends only on abstract model, project-store,
+   and VFS contracts.
 5. `packages/runtime-browser` hosts compatible core and LLM handlers; it does
    not construct ResearchBox, select providers, or import Pi.
 6. `packages/model-transport`, `packages/protocol`, `packages/project-store`,
@@ -77,17 +78,24 @@ tool schemas, model selection, options, and usage.
 
 The browser core worker owns one IndexedDB database with `meta`, `projects`,
 `sessions`, `session_documents`, `project_filesystems`, and `files` stores.
-Catalog writes use a monotonic `state_revision` guard. An origin-wide exclusive
-Web Lock ensures only one browser core writes or repairs the database at a time;
-a second tab waits for ownership. Session documents persist both viewer
-messages and a versioned snake-case codec of the canonical Pi transcript,
-including tool calls and results. Incomplete streams are recovered as
-interrupted only after the prior writer has released its lease.
+Catalog writes use a monotonic `state_revision` guard. Draft-only writes update
+one project or session document without rewriting the catalog; this relies on
+the origin-wide exclusive Web Lock that gives one browser core write ownership
+while another tab waits. Session documents persist the existing-session input
+draft, viewer messages, and a versioned snake-case codec of the canonical Pi
+transcript, including tool calls and results. Projects persist their virtual
+new-chat draft. Incomplete streams are recovered as interrupted only after the
+prior writer has released its lease.
 
-A project owns one virtual filesystem and any number of sessions. Switching a
-project restores its last selected session. Deleting the final project or final
-session creates a deterministic replacement, so the viewer always receives a
-valid active pair.
+A project owns one virtual filesystem and zero or more durable sessions.
+Switching a project restores its last selected session or its virtual new chat.
+Selecting New chat is idempotent and creates no session record. On first send,
+the core atomically stores the new session, cleared project draft, staged user
+and assistant messages, and canonical Pi user message before starting model
+transport. Deleting a project's final session returns it to virtual new-chat
+state. Deleting the final project creates a deterministic empty replacement so
+the viewer always has an active project, but an active session is intentionally
+optional.
 
 ## Storage roadmap
 

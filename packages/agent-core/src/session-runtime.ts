@@ -44,6 +44,11 @@ type ActiveRun = {
   abort_requested: boolean;
 };
 
+export type StagedPrompt = {
+  user_message: ChatMessage;
+  assistant_message: ChatMessage;
+};
+
 export class SessionRuntime {
   readonly project_id: string;
   readonly session_id: string;
@@ -93,14 +98,32 @@ export class SessionRuntime {
   }
 
   startPrompt(text: string, requestId: string): Promise<void> {
-    if (this.runPromise || this.is_running) {
-      throw new Error("A session run is already active.");
-    }
-    const runPromise = this.executePrompt(text, requestId);
-    this.runPromise = runPromise.finally(() => {
-      this.runPromise = null;
+    return this.trackRun(() => this.executePrompt(text, requestId));
+  }
+
+  continueStagedPrompt(
+    assistantMessageId: string,
+    requestId: string,
+  ): Promise<void> {
+    return this.trackRun(async () => {
+      const assistantMessage = this.document.messages.find(
+        (message) => message.id === assistantMessageId,
+      );
+      if (
+        !assistantMessage ||
+        assistantMessage.role !== "assistant" ||
+        assistantMessage.status !== "streaming"
+      ) {
+        throw new Error("The staged assistant message is not available.");
+      }
+      this.activeRun = {
+        request_id: requestId,
+        assistant_message: assistantMessage,
+        abort_requested: false,
+      };
+      this.emit("run_state", { is_running: true }, requestId);
+      await this.completePrompt(requestId, assistantMessage);
     });
-    return this.runPromise;
   }
 
   abort(): void {
@@ -127,20 +150,15 @@ export class SessionRuntime {
 
   private async executePrompt(text: string, requestId: string): Promise<void> {
     const messageCount = this.document.messages.length;
+    const previousInputDraft = this.document.input_draft;
     const previousAgentMessages = [...this.agent.state.messages];
-    const userMessage = createChatMessage("user", text, "complete");
-    const assistantMessage = createChatMessage("assistant", "", "streaming");
-    const stagedUserMessage: UserMessage = {
-      role: "user",
-      content: text,
-      timestamp: Date.parse(userMessage.created_at),
-    };
-    this.document.messages.push(userMessage, assistantMessage);
-    this.agent.state.messages = [...previousAgentMessages, stagedUserMessage];
-    this.document.agent_messages = encodeAgentMessages(this.agent.state.messages);
+    const staged = stagePrompt(this.document, text);
+    this.agent.state.messages = decodeAgentMessages(
+      this.document.agent_messages,
+    );
     this.activeRun = {
       request_id: requestId,
-      assistant_message: assistantMessage,
+      assistant_message: staged.assistant_message,
       abort_requested: false,
     };
 
@@ -148,6 +166,7 @@ export class SessionRuntime {
       await this.checkpoint("staged", requestId);
     } catch (error) {
       this.document.messages.splice(messageCount);
+      this.document.input_draft = previousInputDraft;
       this.agent.state.messages = previousAgentMessages;
       this.document.agent_messages = encodeAgentMessages(previousAgentMessages);
       this.activeRun = null;
@@ -155,14 +174,24 @@ export class SessionRuntime {
       return;
     }
 
-    this.emit("message_added", { message: userMessage }, requestId);
-    this.emit("message_added", { message: assistantMessage }, requestId);
+    this.emit("message_added", { message: staged.user_message }, requestId);
+    this.emit(
+      "message_added",
+      { message: staged.assistant_message },
+      requestId,
+    );
     this.emit("run_state", { is_running: true }, requestId);
+    await this.completePrompt(requestId, staged.assistant_message);
+  }
 
+  private async completePrompt(
+    requestId: string,
+    assistantMessage: ChatMessage,
+  ): Promise<void> {
     let status: "complete" | "aborted" | "error" = "complete";
     let errorMessage: string | undefined;
     try {
-      if (this.activeRun.abort_requested) {
+      if (this.activeRun?.abort_requested) {
         status = "aborted";
       } else {
         await this.agent.continue();
@@ -181,7 +210,7 @@ export class SessionRuntime {
       status =
         latestAssistantStopReason(this.agent) === "aborted" ||
         isAbortError(error) ||
-        this.activeRun.abort_requested
+        this.activeRun?.abort_requested
           ? "aborted"
           : "error";
     }
@@ -220,6 +249,17 @@ export class SessionRuntime {
     }
     this.activeRun = null;
     this.emit("run_state", { is_running: false }, requestId);
+  }
+
+  private trackRun(operation: () => Promise<void>): Promise<void> {
+    if (this.runPromise || this.is_running) {
+      throw new Error("A session run is already active.");
+    }
+    const runPromise = operation();
+    this.runPromise = runPromise.finally(() => {
+      this.runPromise = null;
+    });
+    return this.runPromise;
   }
 
   private handleAgentEvent(event: AgentEvent): void {
@@ -423,6 +463,30 @@ function createChatMessage(
     content,
     created_at: new Date().toISOString(),
     status,
+  };
+}
+
+export function stagePrompt(
+  document: SessionDocument,
+  text: string,
+): StagedPrompt {
+  const userMessage = createChatMessage("user", text, "complete");
+  const assistantMessage = createChatMessage("assistant", "", "streaming");
+  const stagedUserMessage: UserMessage = {
+    role: "user",
+    content: text,
+    timestamp: Date.parse(userMessage.created_at),
+  };
+  const agentMessages = decodeAgentMessages(document.agent_messages);
+  document.input_draft = "";
+  document.messages.push(userMessage, assistantMessage);
+  document.agent_messages = encodeAgentMessages([
+    ...agentMessages,
+    stagedUserMessage,
+  ]);
+  return {
+    user_message: userMessage,
+    assistant_message: assistantMessage,
   };
 }
 

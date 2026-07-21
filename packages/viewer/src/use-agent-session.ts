@@ -18,6 +18,13 @@ export type AgentSessionState = {
   sessions: SessionSummary[];
   active_project_id: string | null;
   active_session_id: string | null;
+  input_draft: string;
+  input_draft_generation: number;
+  pending_input_draft_request_id: string | null;
+  input_draft_needs_sync: boolean;
+  input_draft_retry_count: number;
+  input_draft_cleanup_scope: DraftScope | null;
+  pending_prompt: PendingPrompt | null;
   messages: ChatMessage[];
   files: FileEntry[];
   current_path: string;
@@ -36,6 +43,13 @@ export const initialAgentSessionState: AgentSessionState = {
   sessions: [],
   active_project_id: null,
   active_session_id: null,
+  input_draft: "",
+  input_draft_generation: 0,
+  pending_input_draft_request_id: null,
+  input_draft_needs_sync: false,
+  input_draft_retry_count: 0,
+  input_draft_cleanup_scope: null,
+  pending_prompt: null,
   messages: [],
   files: [],
   current_path: "/",
@@ -48,14 +62,57 @@ export const initialAgentSessionState: AgentSessionState = {
   pending_fs_read_request_id: null,
 };
 
+type PendingPrompt = {
+  request_id: string;
+  project_id: string;
+  session_id: string | null;
+  input_draft: string;
+  input_draft_generation: number;
+};
+
+type DraftScope = {
+  project_id: string;
+  session_id: string | null;
+};
+
 type AgentSessionAction =
   | CoreEvent
   | { type: "fs_list_requested"; request_id: string }
-  | { type: "fs_read_requested"; request_id: string };
+  | { type: "fs_read_requested"; request_id: string }
+  | {
+      type: "input_draft_changed";
+      request_id: string;
+      project_id: string;
+      session_id: string | null;
+      input_draft: string;
+    }
+  | {
+      type: "input_draft_sync_started";
+      request_id: string | null;
+      project_id: string;
+      session_id: string | null;
+      input_draft: string;
+    }
+  | {
+      type: "prompt_submitted";
+      request_id: string;
+      project_id: string;
+      session_id: string | null;
+      input_draft: string;
+      input_draft_generation: number;
+    };
 
 type ManagementCommand = Exclude<
   ViewerCommand,
-  { type: "bootstrap" | "prompt" | "abort" | "fs_list" | "fs_read" }
+  {
+    type:
+      | "bootstrap"
+      | "prompt"
+      | "input_draft_update"
+      | "abort"
+      | "fs_list"
+      | "fs_read";
+  }
 >;
 
 export function useAgentSession(createWorker: () => Worker) {
@@ -67,10 +124,64 @@ export function useAgentSession(createWorker: () => Worker) {
   const [isManagementPending, setManagementPending] = useState(false);
   const workerRef = useRef<Worker | null>(null);
   const pendingManagementRequestRef = useRef<string | null>(null);
+  const isInputDraftPending =
+    coreState.pending_input_draft_request_id !== null ||
+    coreState.input_draft_needs_sync;
 
   const sendCommand = useCallback((command: ViewerCommand) => {
     workerRef.current?.postMessage(command);
   }, []);
+
+  useEffect(() => {
+    const activeProjectId = coreState.active_project_id;
+    if (
+      (!coreState.input_draft_needs_sync &&
+        coreState.input_draft_cleanup_scope === null) ||
+      !activeProjectId
+    ) {
+      return;
+    }
+    const retryDelay =
+      coreState.input_draft_retry_count === 0
+        ? 0
+        : Math.min(
+            500 * 2 ** (coreState.input_draft_retry_count - 1),
+            5_000,
+          );
+    const retryTimer = window.setTimeout(() => {
+      const cleanupCommand = coreState.input_draft_cleanup_scope
+        ? createCommand("input_draft_update", {
+            ...coreState.input_draft_cleanup_scope,
+            input_draft: "",
+          })
+        : null;
+      const syncCommand = coreState.input_draft_needs_sync
+        ? createCommand("input_draft_update", {
+            project_id: activeProjectId,
+            session_id: coreState.active_session_id,
+            input_draft: coreState.input_draft,
+          })
+        : null;
+      dispatch({
+        type: "input_draft_sync_started",
+        request_id: syncCommand?.request_id ?? null,
+        project_id: activeProjectId,
+        session_id: coreState.active_session_id,
+        input_draft: coreState.input_draft,
+      });
+      if (cleanupCommand) sendCommand(cleanupCommand);
+      if (syncCommand) sendCommand(syncCommand);
+    }, retryDelay);
+    return () => window.clearTimeout(retryTimer);
+  }, [
+    coreState.active_project_id,
+    coreState.active_session_id,
+    coreState.input_draft_cleanup_scope,
+    coreState.input_draft,
+    coreState.input_draft_needs_sync,
+    coreState.input_draft_retry_count,
+    sendCommand,
+  ]);
 
   const sendManagementCommand = useCallback(
     (command: ManagementCommand) => {
@@ -134,26 +245,59 @@ export function useAgentSession(createWorker: () => Worker) {
       if (
         !text ||
         !coreState.active_project_id ||
-        !coreState.active_session_id ||
         coreState.is_running ||
+        coreState.pending_prompt !== null ||
         isManagementPending
       ) {
         return false;
       }
-      sendCommand(
-        createCommand("prompt", {
-          project_id: coreState.active_project_id,
-          session_id: coreState.active_session_id,
-          text,
-        }),
-      );
+      const command = createCommand("prompt", {
+        project_id: coreState.active_project_id,
+        session_id: coreState.active_session_id,
+        text,
+      });
+      dispatch({
+        type: "prompt_submitted",
+        request_id: command.request_id,
+        project_id: command.payload.project_id,
+        session_id: command.payload.session_id,
+        input_draft: prompt,
+        input_draft_generation: coreState.input_draft_generation,
+      });
+      sendCommand(command);
       return true;
     },
     [
       coreState.active_project_id,
       coreState.active_session_id,
+      coreState.input_draft_generation,
       coreState.is_running,
+      coreState.pending_prompt,
       isManagementPending,
+      sendCommand,
+    ],
+  );
+
+  const updateInputDraft = useCallback(
+    (inputDraft: string) => {
+      if (!coreState.active_project_id) return;
+      const command = createCommand("input_draft_update", {
+        project_id: coreState.active_project_id,
+        session_id: coreState.active_session_id,
+        input_draft: inputDraft,
+      });
+      dispatch({
+        type: "input_draft_changed",
+        request_id: command.request_id,
+        project_id: command.payload.project_id,
+        session_id: command.payload.session_id,
+        input_draft: command.payload.input_draft,
+      });
+      sendCommand(command);
+    },
+    [
+      coreState.active_project_id,
+      coreState.active_session_id,
       sendCommand,
     ],
   );
@@ -192,18 +336,27 @@ export function useAgentSession(createWorker: () => Worker) {
     [sendManagementCommand],
   );
 
-  const createSession = useCallback(
-    (projectId?: string, title?: string) => {
+  const selectNewChat = useCallback(
+    (projectId?: string) => {
       const targetProjectId = projectId ?? coreState.active_project_id;
       if (!targetProjectId) return;
+      if (
+        targetProjectId === coreState.active_project_id &&
+        coreState.active_session_id === null
+      ) {
+        return;
+      }
       sendManagementCommand(
-        createCommand("session_create", {
+        createCommand("new_chat", {
           project_id: targetProjectId,
-          ...(title === undefined ? {} : { title }),
         }),
       );
     },
-    [coreState.active_project_id, sendManagementCommand],
+    [
+      coreState.active_project_id,
+      coreState.active_session_id,
+      sendManagementCommand,
+    ],
   );
 
   const renameSession = useCallback(
@@ -286,12 +439,14 @@ export function useAgentSession(createWorker: () => Worker) {
     coreState,
     transportError,
     isManagementPending,
+    isInputDraftPending,
     submitPrompt,
+    updateInputDraft,
     createProject,
     renameProject,
     deleteProject,
     selectProject,
-    createSession,
+    selectNewChat,
     renameSession,
     deleteSession,
     selectSession,
@@ -306,6 +461,46 @@ export function coreReducer(
   event: AgentSessionAction,
 ): AgentSessionState {
   switch (event.type) {
+    case "input_draft_changed":
+      if (!isActiveDraftScope(state, event)) return state;
+      return {
+        ...state,
+        input_draft: event.input_draft,
+        input_draft_generation: state.input_draft_generation + 1,
+        pending_input_draft_request_id: event.request_id,
+        input_draft_needs_sync: false,
+        input_draft_retry_count: 0,
+        error_message: null,
+      };
+    case "input_draft_sync_started":
+      if (
+        !isActiveDraftScope(state, event) ||
+        (!state.input_draft_needs_sync &&
+          state.input_draft_cleanup_scope === null) ||
+        event.input_draft !== state.input_draft
+      ) {
+        return state;
+      }
+      return {
+        ...state,
+        pending_input_draft_request_id:
+          event.request_id ?? state.pending_input_draft_request_id,
+        input_draft_needs_sync: false,
+        input_draft_cleanup_scope: null,
+      };
+    case "prompt_submitted":
+      if (!isActiveDraftScope(state, event)) return state;
+      return {
+        ...state,
+        pending_prompt: {
+          request_id: event.request_id,
+          project_id: event.project_id,
+          session_id: event.session_id,
+          input_draft: event.input_draft,
+          input_draft_generation: event.input_draft_generation,
+        },
+        error_message: null,
+      };
     case "fs_list_requested":
       return {
         ...state,
@@ -323,22 +518,25 @@ export function coreReducer(
         error_message: null,
       };
     case "ready":
-      return applySnapshot(state, event.payload.state);
+      return applySnapshot(state, event.payload.state, event.request_id);
     case "state_snapshot":
       if (event.payload.state.state_revision < state.state_revision) return state;
-      return applySnapshot(state, event.payload.state);
+      return applySnapshot(state, event.payload.state, event.request_id);
     case "run_state":
       return isActiveSessionEvent(state, event.payload)
         ? { ...state, is_running: event.payload.is_running }
         : state;
     case "message_added":
-      return isActiveSessionEvent(state, event.payload)
-        ? {
-            ...state,
-            error_message: null,
-            messages: [...state.messages, event.payload.message],
-          }
-        : state;
+      if (!isActiveSessionEvent(state, event.payload)) return state;
+      return acceptSubmittedPrompt(
+        {
+          ...state,
+          error_message: null,
+          messages: [...state.messages, event.payload.message],
+        },
+        event.request_id,
+        event.payload.message.role === "user",
+      );
     case "message_delta":
       return isActiveSessionEvent(state, event.payload)
         ? {
@@ -397,44 +595,99 @@ export function coreReducer(
             pending_fs_read_request_id: null,
           }
         : state;
-    case "error":
+    case "input_draft_saved":
       if (
-        (event.payload.code === "fs_list_failed" &&
-          event.request_id !== state.pending_fs_list_request_id) ||
-        (event.payload.code === "fs_read_failed" &&
-          event.request_id !== state.pending_fs_read_request_id)
-      ) {
-        return state;
-      }
-      if (
-        (event.payload.project_id !== undefined &&
-          event.payload.project_id !== state.active_project_id) ||
-        (event.payload.session_id !== undefined &&
-          event.payload.session_id !== state.active_session_id)
+        !isActiveDraftScope(state, event.payload) ||
+        event.request_id !== state.pending_input_draft_request_id ||
+        event.payload.input_draft !== state.input_draft
       ) {
         return state;
       }
       return {
         ...state,
+        pending_input_draft_request_id: null,
+        input_draft_retry_count: 0,
+        error_message: null,
+      };
+    case "error": {
+      let nextState =
+        event.request_id === state.pending_prompt?.request_id
+          ? { ...state, pending_prompt: null }
+          : state;
+      if (
+        event.payload.code === "persistence_failed" &&
+        event.request_id === state.pending_input_draft_request_id
+      ) {
+        nextState = {
+          ...nextState,
+          pending_input_draft_request_id: null,
+          input_draft_needs_sync: true,
+          input_draft_retry_count: state.input_draft_retry_count + 1,
+        };
+      }
+      if (
+        (event.payload.code === "fs_list_failed" &&
+          event.request_id !== nextState.pending_fs_list_request_id) ||
+        (event.payload.code === "fs_read_failed" &&
+          event.request_id !== nextState.pending_fs_read_request_id)
+      ) {
+        return nextState;
+      }
+      if (
+        (event.payload.project_id !== undefined &&
+          event.payload.project_id !== nextState.active_project_id) ||
+        (event.payload.session_id !== undefined &&
+          event.payload.session_id !== nextState.active_session_id)
+      ) {
+        return nextState;
+      }
+      return {
+        ...nextState,
         error_message: event.payload.message,
         pending_fs_list_request_id:
           event.payload.code === "fs_list_failed"
             ? null
-            : state.pending_fs_list_request_id,
+            : nextState.pending_fs_list_request_id,
         pending_fs_read_request_id:
           event.payload.code === "fs_read_failed"
             ? null
-            : state.pending_fs_read_request_id,
+            : nextState.pending_fs_read_request_id,
       };
+    }
   }
 }
 
 function applySnapshot(
   state: AgentSessionState,
   snapshot: CoreStateSnapshot,
+  requestId?: string,
 ): AgentSessionState {
   const preserveWorkspace =
     state.is_ready && state.active_project_id === snapshot.active_project_id;
+  const scopeChanged =
+    state.active_project_id !== snapshot.active_project_id ||
+    state.active_session_id !== snapshot.active_session_id;
+  const acceptedVirtualPrompt =
+    requestId !== undefined &&
+    requestId === state.pending_prompt?.request_id &&
+    state.pending_prompt.project_id === snapshot.active_project_id &&
+    state.pending_prompt.session_id === null &&
+    snapshot.active_session_id !== null;
+  const draftChangedAfterSubmit =
+    acceptedVirtualPrompt &&
+    (state.input_draft_generation !==
+      state.pending_prompt?.input_draft_generation ||
+      state.input_draft !== state.pending_prompt?.input_draft);
+  const draftEditedAfterSubmit =
+    acceptedVirtualPrompt &&
+    state.input_draft_generation !==
+      state.pending_prompt?.input_draft_generation;
+  const preserveDraft =
+    draftChangedAfterSubmit ||
+    (!scopeChanged &&
+      (state.pending_input_draft_request_id !== null ||
+        state.input_draft_needs_sync ||
+        state.pending_prompt !== null));
   return {
     ...state,
     state_revision: snapshot.state_revision,
@@ -442,6 +695,31 @@ function applySnapshot(
     sessions: snapshot.sessions,
     active_project_id: snapshot.active_project_id,
     active_session_id: snapshot.active_session_id,
+    input_draft: preserveDraft ? state.input_draft : snapshot.input_draft,
+    input_draft_generation:
+      scopeChanged && !draftChangedAfterSubmit
+        ? 0
+        : state.input_draft_generation,
+    pending_input_draft_request_id: scopeChanged
+      ? null
+      : state.pending_input_draft_request_id,
+    input_draft_needs_sync:
+      (draftChangedAfterSubmit && state.input_draft.length > 0) ||
+      (!scopeChanged && state.input_draft_needs_sync),
+    input_draft_retry_count: scopeChanged
+      ? 0
+      : state.input_draft_retry_count,
+    input_draft_cleanup_scope:
+      draftEditedAfterSubmit && state.input_draft.length > 0
+        ? {
+            project_id: snapshot.active_project_id,
+            session_id: null,
+          }
+        : scopeChanged
+          ? null
+          : state.input_draft_cleanup_scope,
+    pending_prompt:
+      acceptedVirtualPrompt || scopeChanged ? null : state.pending_prompt,
     messages: snapshot.messages,
     activities: snapshot.activities,
     files: preserveWorkspace ? state.files : snapshot.files,
@@ -459,9 +737,49 @@ function applySnapshot(
   };
 }
 
+function acceptSubmittedPrompt(
+  state: AgentSessionState,
+  requestId: string | undefined,
+  isUserMessage: boolean,
+): AgentSessionState {
+  const pendingPrompt = state.pending_prompt;
+  if (
+    !isUserMessage ||
+    requestId === undefined ||
+    requestId !== pendingPrompt?.request_id
+  ) {
+    return state;
+  }
+  const draftIsUnchanged =
+    state.input_draft_generation === pendingPrompt.input_draft_generation &&
+    state.input_draft === pendingPrompt.input_draft;
+  return {
+    ...state,
+    input_draft: draftIsUnchanged ? "" : state.input_draft,
+    pending_input_draft_request_id: draftIsUnchanged
+      ? null
+      : state.pending_input_draft_request_id,
+    input_draft_needs_sync: false,
+    input_draft_retry_count: draftIsUnchanged
+      ? 0
+      : state.input_draft_retry_count,
+    pending_prompt: null,
+  };
+}
+
 function isActiveSessionEvent(
   state: AgentSessionState,
   scope: { project_id: string; session_id: string },
+): boolean {
+  return (
+    scope.project_id === state.active_project_id &&
+    scope.session_id === state.active_session_id
+  );
+}
+
+function isActiveDraftScope(
+  state: AgentSessionState,
+  scope: { project_id: string; session_id: string | null },
 ): boolean {
   return (
     scope.project_id === state.active_project_id &&

@@ -7,15 +7,14 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v2 management command", () => {
+test("round-trips every protocol-v3 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("project_create", { name: "Docs" }),
     createCommand("project_update", { project_id: "p1", name: "Product" }),
     createCommand("project_delete", { project_id: "p1" }),
     createCommand("project_select", { project_id: "p1" }),
-    createCommand("session_create", { project_id: "p1" }),
-    createCommand("session_create", { project_id: "p1", title: "Notes" }),
+    createCommand("new_chat", { project_id: "p1" }),
     createCommand("session_update", {
       project_id: "p1",
       session_id: "s1",
@@ -23,10 +22,25 @@ test("round-trips every protocol-v2 management command", () => {
     }),
     createCommand("session_delete", { project_id: "p1", session_id: "s1" }),
     createCommand("session_select", { project_id: "p1", session_id: "s1" }),
+    createCommand("input_draft_update", {
+      project_id: "p1",
+      session_id: null,
+      input_draft: "",
+    }),
+    createCommand("input_draft_update", {
+      project_id: "p1",
+      session_id: "s1",
+      input_draft: "  unfinished message\n",
+    }),
+    createCommand("prompt", {
+      project_id: "p1",
+      session_id: null,
+      text: "first message",
+    }),
     createCommand("prompt", {
       project_id: "p1",
       session_id: "s1",
-      text: "hello",
+      text: "follow-up",
     }),
     createCommand("abort", { project_id: "p1", session_id: "s1" }),
     createCommand("fs_list", { project_id: "p1", path: "/" }),
@@ -39,19 +53,56 @@ test("round-trips every protocol-v2 management command", () => {
   }
 });
 
-test("validates authoritative state snapshots", () => {
+test("rejects retired commands and older protocol versions", () => {
+  assert.throws(
+    () =>
+      parseViewerCommand({
+        protocol_version: PROTOCOL_VERSION,
+        request_id: "request-1",
+        type: "session_create",
+        payload: { project_id: "project-1" },
+      }),
+    /Unknown command type: session_create/,
+  );
+  assert.throws(
+    () =>
+      parseViewerCommand({
+        protocol_version: 2,
+        request_id: "request-2",
+        type: "bootstrap",
+        payload: {},
+      }),
+    /Unsupported protocol version/,
+  );
+});
+
+test("validates authoritative state snapshots with persisted sessions", () => {
   const event = parseCoreEvent({
     protocol_version: PROTOCOL_VERSION,
     event_id: "event-1",
     request_id: "request-1",
     type: "ready",
-    payload: { state: createState() },
+    payload: { state: createPersistedState() },
   });
 
   assert.equal(event.type, "ready");
   assert.equal(event.payload.state.active_project_id, "project-1");
+  assert.equal(event.payload.state.active_session_id, "session-1");
+  assert.equal(event.payload.state.input_draft, "draft reply");
   assert.equal(event.payload.state.sessions[0]?.message_count, 0);
   assert.equal(event.payload.state.files[0]?.path, "/README.md");
+});
+
+test("accepts virtual new chat state and preserves its draft exactly", () => {
+  const state = createVirtualState();
+  const event = parseCoreEvent(
+    coreEvent("state_snapshot", { state }, "request-new-chat"),
+  );
+
+  assert.equal(event.type, "state_snapshot");
+  assert.equal(event.payload.state.active_session_id, null);
+  assert.equal(event.payload.state.sessions.length, 0);
+  assert.equal(event.payload.state.input_draft, "  unfinished message\n");
 });
 
 test("round-trips every core event variant", () => {
@@ -64,8 +115,12 @@ test("round-trips every core event variant", () => {
     status: "complete",
   };
   const events = [
-    coreEvent("ready", { state: createState() }),
-    coreEvent("state_snapshot", { state: createState() }, "request-state"),
+    coreEvent("ready", { state: createPersistedState() }),
+    coreEvent(
+      "state_snapshot",
+      { state: createVirtualState() },
+      "request-state",
+    ),
     coreEvent("run_state", { ...scope, is_running: true }),
     coreEvent("message_added", { ...scope, message }),
     coreEvent("message_delta", {
@@ -106,6 +161,24 @@ test("round-trips every core event variant", () => {
       },
       "request-read",
     ),
+    coreEvent(
+      "input_draft_saved",
+      {
+        project_id: "project-1",
+        session_id: null,
+        input_draft: "",
+      },
+      "request-new-draft",
+    ),
+    coreEvent(
+      "input_draft_saved",
+      {
+        project_id: "project-1",
+        session_id: "session-1",
+        input_draft: "  next prompt\n",
+      },
+      "request-session-draft",
+    ),
     coreEvent("error", {
       code: "agent_run_failed",
       message: "Provider failed",
@@ -116,18 +189,28 @@ test("round-trips every core event variant", () => {
   for (const event of events) assert.deepEqual(parseCoreEvent(event), event);
 });
 
-test("requires request correlation for filesystem results and errors", () => {
-  assert.throws(
-    () =>
-      parseCoreEvent(
-        coreEvent("files_snapshot", {
-          project_id: "project-1",
-          path: "/",
-          files: [],
-        }),
-      ),
-    /require request_id/,
-  );
+test("requires request correlation for filesystem and draft results", () => {
+  const uncorrelatedEvents = [
+    coreEvent("files_snapshot", {
+      project_id: "project-1",
+      path: "/",
+      files: [],
+    }),
+    coreEvent("file_content", {
+      project_id: "project-1",
+      path: "/README.md",
+      content: "",
+    }),
+    coreEvent("input_draft_saved", {
+      project_id: "project-1",
+      session_id: null,
+      input_draft: "draft",
+    }),
+  ];
+
+  for (const event of uncorrelatedEvents) {
+    assert.throws(() => parseCoreEvent(event), /require request_id/);
+  }
   assert.throws(
     () =>
       parseCoreEvent(
@@ -141,7 +224,45 @@ test("requires request correlation for filesystem results and errors", () => {
   );
 });
 
-test("rejects malformed nested state and missing command scope", () => {
+test("requires explicit nullable session scope for drafts and prompts", () => {
+  for (const command of [
+    {
+      type: "prompt",
+      payload: { project_id: "project-1", text: "hello" },
+    },
+    {
+      type: "input_draft_update",
+      payload: { project_id: "project-1", input_draft: "hello" },
+    },
+  ]) {
+    assert.throws(
+      () =>
+        parseViewerCommand({
+          protocol_version: PROTOCOL_VERSION,
+          request_id: "request-missing-session",
+          ...command,
+        }),
+      /session_id must be null or a non-empty string/,
+    );
+  }
+
+  assert.throws(
+    () =>
+      parseViewerCommand({
+        protocol_version: PROTOCOL_VERSION,
+        request_id: "request-empty-session",
+        type: "prompt",
+        payload: {
+          project_id: "project-1",
+          session_id: "",
+          text: "hello",
+        },
+      }),
+    /session_id must be null or a non-empty string/,
+  );
+});
+
+test("rejects malformed nested state and mismatched active scope", () => {
   assert.throws(
     () =>
       parseCoreEvent({
@@ -150,7 +271,7 @@ test("rejects malformed nested state and missing command scope", () => {
         type: "ready",
         payload: {
           state: {
-            ...createState(),
+            ...createPersistedState(),
             activities: [
               {
                 tool_call_id: "tool-1",
@@ -174,7 +295,8 @@ test("rejects malformed nested state and missing command scope", () => {
       }),
     /project_id must be a non-empty string/,
   );
-  const mismatched = createState();
+
+  const mismatched = createPersistedState();
   mismatched.projects.push({
     ...mismatched.projects[0],
     project_id: "project-2",
@@ -193,22 +315,47 @@ test("rejects malformed nested state and missing command scope", () => {
   );
 });
 
-function createState() {
+test("rejects runtime state on virtual new chat", () => {
+  assert.throws(
+    () =>
+      parseCoreEvent(
+        coreEvent("state_snapshot", {
+          state: {
+            ...createVirtualState(),
+            messages: [
+              {
+                id: "message-1",
+                role: "user",
+                content: "hello",
+                created_at: "2026-07-22T00:00:00.000Z",
+                status: "complete",
+              },
+            ],
+          },
+        }),
+      ),
+    /Virtual new chat cannot contain messages or tool activities/,
+  );
+  assert.throws(
+    () =>
+      parseCoreEvent(
+        coreEvent("state_snapshot", {
+          state: { ...createVirtualState(), is_running: true },
+        }),
+      ),
+    /Virtual new chat cannot have an active run/,
+  );
+});
+
+function createPersistedState() {
   return {
     state_revision: 1,
-    projects: [
-      {
-        project_id: "project-1",
-        name: "Local workspace",
-        created_at: "2026-07-22T00:00:00.000Z",
-        updated_at: "2026-07-22T00:00:00.000Z",
-      },
-    ],
+    projects: [createProject()],
     sessions: [
       {
         session_id: "session-1",
         project_id: "project-1",
-        title: "New chat",
+        title: "Notes",
         created_at: "2026-07-22T00:00:00.000Z",
         updated_at: "2026-07-22T00:00:00.000Z",
         message_count: 0,
@@ -216,6 +363,7 @@ function createState() {
     ],
     active_project_id: "project-1",
     active_session_id: "session-1",
+    input_draft: "draft reply",
     messages: [],
     activities: [],
     files: [
@@ -227,6 +375,30 @@ function createState() {
       },
     ],
     is_running: false,
+  };
+}
+
+function createVirtualState() {
+  return {
+    state_revision: 1,
+    projects: [createProject()],
+    sessions: [],
+    active_project_id: "project-1",
+    active_session_id: null,
+    input_draft: "  unfinished message\n",
+    messages: [],
+    activities: [],
+    files: [],
+    is_running: false,
+  };
+}
+
+function createProject() {
+  return {
+    project_id: "project-1",
+    name: "Local workspace",
+    created_at: "2026-07-22T00:00:00.000Z",
+    updated_at: "2026-07-22T00:00:00.000Z",
   };
 }
 

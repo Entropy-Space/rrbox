@@ -8,7 +8,8 @@ remote hosts.
 ## Current vertical slice
 
 - ChatGPT-style responsive conversation viewer
-- Persistent project and chat creation, rename, switching, and deletion
+- Persistent projects, submitted chats, and project/session input drafts
+- One virtual new-chat state per project; a session is created on first send
 - Real `@earendil-works/pi-agent-core` loop inside a Web Worker
 - Dedicated LLM Web Worker for multiplexed model requests and cancellation
 - Versioned, runtime-validated JSON commands and events
@@ -72,10 +73,12 @@ deployment target. Never publish ResearchBox to `chatgpt.site`.
 
 ## Storage
 
-The browser composition stores project metadata, session documents, canonical
-Pi transcripts, and project files in one versioned IndexedDB database. One
-origin-wide Web Lock gives the browser core exclusive write ownership; another
-tab waits until the active core closes. The memory project store and filesystem
-provider remain deterministic test backends. ZIP import/export, native folders,
-iOS application storage, and an optional OPFS adapter can implement the same
-portable contracts.
+The browser composition stores project metadata, drafts, session documents,
+canonical Pi transcripts, and project files in one versioned IndexedDB
+database. A new chat remains project-scoped draft state until its first prompt;
+that prompt, its session, and its staged messages commit atomically before model
+transport starts. One origin-wide Web Lock gives the browser core exclusive
+write ownership; another tab waits until the active core closes. The memory
+project store and filesystem provider remain deterministic test backends. ZIP
+import/export, native folders, iOS application storage, and an optional OPFS
+adapter can implement the same portable contracts.

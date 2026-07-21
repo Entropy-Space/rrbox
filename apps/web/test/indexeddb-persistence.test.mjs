@@ -19,12 +19,26 @@ test("IndexedDB project state and files survive reopening the database", async (
 
   await firstProvider.create("project-1");
   await firstStore.save(state, null);
+  await firstStore.saveInputDraft({
+    project_id: "project-1",
+    session_id: null,
+    input_draft: "A new chat draft",
+  });
+  await firstStore.saveInputDraft({
+    project_id: "project-1",
+    session_id: "session-1",
+    input_draft: "A session draft",
+  });
   await (await firstProvider.open("project-1")).write("/notes.txt", "persisted");
+
+  const expectedState = structuredClone(state);
+  expectedState.projects[0].new_chat_draft = "A new chat draft";
+  expectedState.documents[0].input_draft = "A session draft";
 
   const secondDatabase = new ResearchBoxDatabase(factory, databaseName);
   const secondStore = new IndexedDbProjectStore(secondDatabase);
   const secondProvider = new IndexedDbProjectFileSystemProvider(secondDatabase, {});
-  assert.deepEqual(await secondStore.load(), state);
+  assert.deepEqual(await secondStore.load(), expectedState);
   assert.equal(
     await (await secondProvider.open("project-1")).read("/notes.txt"),
     "persisted",
@@ -49,6 +63,135 @@ test("IndexedDB project state and files survive reopening the database", async (
     secondProvider.open("project-never-created"),
     /does not exist/,
   );
+});
+
+test("IndexedDB project-store migration is persisted exactly once", async () => {
+  const factory = new IDBFactory();
+  const databaseName = `researchbox-store-migration-${crypto.randomUUID()}`;
+  const legacyDatabase = await openLegacyDatabase(factory, databaseName);
+  const timestamp = "2026-07-22T00:00:00.000Z";
+  const transaction = legacyDatabase.transaction(
+    ["meta", "projects", "sessions", "session_documents"],
+    "readwrite",
+  );
+  const completion = transactionComplete(transaction);
+  transaction.objectStore("meta").put({
+    key: "catalog",
+    schema_version: 1,
+    state_revision: 7,
+    active_project_id: "legacy-project",
+    active_session_id: "legacy-placeholder",
+  });
+  transaction.objectStore("projects").put({
+    project_id: "legacy-project",
+    name: "Legacy project",
+    created_at: timestamp,
+    updated_at: timestamp,
+    last_session_id: "legacy-placeholder",
+  });
+  transaction.objectStore("sessions").put({
+    session_id: "legacy-placeholder",
+    project_id: "legacy-project",
+    title: "New chat",
+    title_is_custom: false,
+    created_at: timestamp,
+    updated_at: timestamp,
+  });
+  transaction.objectStore("session_documents").put({
+    format_version: 1,
+    session_id: "legacy-placeholder",
+    project_id: "legacy-project",
+    messages: [],
+    activities: [],
+    agent_messages: [],
+  });
+  await completion;
+  legacyDatabase.close();
+
+  const database = new ResearchBoxDatabase(factory, databaseName);
+  const store = new IndexedDbProjectStore(database);
+  const expectedState = {
+    schema_version: 2,
+    state_revision: 8,
+    active_project_id: "legacy-project",
+    active_session_id: null,
+    projects: [
+      {
+        project_id: "legacy-project",
+        name: "Legacy project",
+        created_at: timestamp,
+        updated_at: timestamp,
+        last_session_id: null,
+        new_chat_draft: "",
+      },
+    ],
+    sessions: [],
+    documents: [],
+  };
+  assert.deepEqual(await store.load(), expectedState);
+
+  const reopenedDatabase = new ResearchBoxDatabase(factory, databaseName);
+  const reopenedStore = new IndexedDbProjectStore(reopenedDatabase);
+  assert.deepEqual(await reopenedStore.load(), expectedState);
+
+  const connection = await reopenedDatabase.open();
+  const verification = connection.transaction(
+    ["meta", "projects", "sessions", "session_documents"],
+    "readonly",
+  );
+  const verificationComplete = transactionComplete(verification);
+  assert.deepEqual(
+    await requestValue(verification.objectStore("meta").get("catalog")),
+    {
+      key: "catalog",
+      schema_version: 2,
+      state_revision: 8,
+      active_project_id: "legacy-project",
+      active_session_id: null,
+    },
+  );
+  assert.deepEqual(
+    await requestValue(verification.objectStore("projects").getAll()),
+    expectedState.projects,
+  );
+  assert.deepEqual(
+    await requestValue(verification.objectStore("sessions").getAll()),
+    [],
+  );
+  assert.deepEqual(
+    await requestValue(verification.objectStore("session_documents").getAll()),
+    [],
+  );
+  await verificationComplete;
+});
+
+test("IndexedDB draft writes validate their target ownership", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-draft-validation-${crypto.randomUUID()}`,
+  );
+  const store = new IndexedDbProjectStore(database);
+  const state = createState();
+  await store.save(state, null);
+
+  await assert.rejects(
+    store.saveInputDraft({
+      project_id: "other-project",
+      session_id: "session-1",
+      input_draft: "must not persist",
+    }),
+    /does not belong to project/,
+  );
+  await assert.rejects(
+    store.saveInputDraft({
+      project_id: "missing-project",
+      session_id: null,
+      input_draft: "must not persist",
+    }),
+    /does not exist/,
+  );
+  assert.deepEqual(await store.load(), state);
 });
 
 test("IndexedDB v1 projects gain filesystem markers during migration", async () => {
@@ -154,7 +297,7 @@ test("IndexedDB store rejects a stale writer revision", async () => {
 function createState() {
   const timestamp = "2026-07-22T00:00:00.000Z";
   return {
-    schema_version: 1,
+    schema_version: 2,
     state_revision: 1,
     active_project_id: "project-1",
     active_session_id: "session-1",
@@ -165,13 +308,14 @@ function createState() {
         created_at: timestamp,
         updated_at: timestamp,
         last_session_id: "session-1",
+        new_chat_draft: "",
       },
     ],
     sessions: [
       {
         session_id: "session-1",
         project_id: "project-1",
-        title: "New chat",
+        title: "First chat",
         title_is_custom: false,
         created_at: timestamp,
         updated_at: timestamp,
@@ -179,15 +323,23 @@ function createState() {
     ],
     documents: [
       {
-        format_version: 1,
+        format_version: 2,
         session_id: "session-1",
         project_id: "project-1",
+        input_draft: "",
         messages: [],
         activities: [],
         agent_messages: [],
       },
     ],
   };
+}
+
+function requestValue(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
 }
 
 function openLegacyDatabase(factory, databaseName) {

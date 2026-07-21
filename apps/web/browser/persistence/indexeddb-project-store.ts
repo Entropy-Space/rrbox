@@ -2,6 +2,8 @@ import {
   PROJECT_STORE_SCHEMA_VERSION,
   ProjectStoreConflictError,
   parseProjectStoreState,
+  parseProjectStoreStateWithMigration,
+  type InputDraftUpdate,
   type ProjectRecord,
   type ProjectStore,
   type ProjectStoreState,
@@ -17,10 +19,10 @@ import {
 
 type CatalogRecord = {
   key: "catalog";
-  schema_version: typeof PROJECT_STORE_SCHEMA_VERSION;
+  schema_version: 1 | typeof PROJECT_STORE_SCHEMA_VERSION;
   state_revision: number;
   active_project_id: string;
-  active_session_id: string;
+  active_session_id: string | null;
 };
 
 export class IndexedDbProjectStore implements ProjectStore {
@@ -58,7 +60,7 @@ export class IndexedDbProjectStore implements ProjectStore {
     ]);
     await completion;
     if (!catalog) return null;
-    return parseProjectStoreState({
+    const parsed = parseProjectStoreStateWithMigration({
       schema_version: catalog.schema_version,
       state_revision: catalog.state_revision,
       active_project_id: catalog.active_project_id,
@@ -67,6 +69,14 @@ export class IndexedDbProjectStore implements ProjectStore {
       sessions,
       documents,
     });
+    if (!parsed.was_migrated) return parsed.state;
+
+    const migratedState: ProjectStoreState = {
+      ...parsed.state,
+      state_revision: parsed.state.state_revision + 1,
+    };
+    await this.save(migratedState, parsed.state.state_revision);
+    return migratedState;
   }
 
   async save(
@@ -120,6 +130,109 @@ export class IndexedDbProjectStore implements ProjectStore {
         active_project_id: validState.active_project_id,
         active_session_id: validState.active_session_id,
       } satisfies CatalogRecord);
+    } catch (error) {
+      transaction.abort();
+      await completion.catch(() => undefined);
+      throw error;
+    }
+
+    await completion;
+  }
+
+  async saveInputDraft(update: InputDraftUpdate): Promise<void> {
+    if (update.session_id === null) {
+      await this.saveNewChatDraft(update);
+      return;
+    }
+    await this.saveSessionDraft({
+      ...update,
+      session_id: update.session_id,
+    });
+  }
+
+  private async saveNewChatDraft(update: InputDraftUpdate): Promise<void> {
+    const database = await this.database.open();
+    const transaction = database.transaction(
+      databaseStores.projects,
+      "readwrite",
+    );
+    const completion = transactionDone(transaction);
+
+    try {
+      const projectStore = transaction.objectStore(databaseStores.projects);
+      const project = (await requestResult(
+        projectStore.get(update.project_id),
+      )) as ProjectRecord | undefined;
+      if (!project) {
+        throw new Error(`Project ${update.project_id} does not exist.`);
+      }
+      projectStore.put({
+        ...project,
+        new_chat_draft: update.input_draft,
+      } satisfies ProjectRecord);
+    } catch (error) {
+      transaction.abort();
+      await completion.catch(() => undefined);
+      throw error;
+    }
+
+    await completion;
+  }
+
+  private async saveSessionDraft(
+    update: InputDraftUpdate & { session_id: string },
+  ): Promise<void> {
+    const database = await this.database.open();
+    const transaction = database.transaction(
+      [
+        databaseStores.projects,
+        databaseStores.sessions,
+        databaseStores.session_documents,
+      ],
+      "readwrite",
+    );
+    const completion = transactionDone(transaction);
+
+    try {
+      const projectStore = transaction.objectStore(databaseStores.projects);
+      const sessionStore = transaction.objectStore(databaseStores.sessions);
+      const documentStore = transaction.objectStore(
+        databaseStores.session_documents,
+      );
+      const [project, session, document] = await Promise.all([
+        requestResult(projectStore.get(update.project_id)) as Promise<
+          ProjectRecord | undefined
+        >,
+        requestResult(sessionStore.get(update.session_id)) as Promise<
+          SessionRecord | undefined
+        >,
+        requestResult(documentStore.get(update.session_id)) as Promise<
+          SessionDocument | undefined
+        >,
+      ]);
+      if (!session) {
+        throw new Error(`Session ${update.session_id} does not exist.`);
+      }
+      if (session.project_id !== update.project_id) {
+        throw new Error(
+          `Session ${update.session_id} does not belong to project ${update.project_id}.`,
+        );
+      }
+      if (!project) {
+        throw new Error(`Project ${update.project_id} does not exist.`);
+      }
+      if (!document) {
+        throw new Error(`Session document ${update.session_id} does not exist.`);
+      }
+      if (document.project_id !== update.project_id) {
+        throw new Error(
+          `Session document ${update.session_id} does not belong to project ${update.project_id}.`,
+        );
+      }
+      documentStore.put({
+        ...document,
+        input_draft: update.input_draft,
+      } satisfies SessionDocument);
     } catch (error) {
       transaction.abort();
       await completion.catch(() => undefined);

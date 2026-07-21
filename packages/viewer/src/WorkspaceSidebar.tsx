@@ -28,7 +28,7 @@ export function WorkspaceSidebar({
   onRenameProject,
   onDeleteProject,
   onSelectProject,
-  onCreateSession,
+  onSelectNewChat,
   onRenameSession,
   onDeleteSession,
   onSelectSession,
@@ -44,7 +44,7 @@ export function WorkspaceSidebar({
   onRenameProject: (projectId: string, name: string) => void;
   onDeleteProject: (projectId: string) => void;
   onSelectProject: (projectId: string) => void;
-  onCreateSession: (projectId?: string) => void;
+  onSelectNewChat: (projectId?: string) => void;
   onRenameSession: (projectId: string, sessionId: string, title: string) => void;
   onDeleteSession: (projectId: string, sessionId: string) => void;
   onSelectSession: (projectId: string, sessionId: string) => void;
@@ -118,9 +118,9 @@ export function WorkspaceSidebar({
     onClose();
   }
 
-  function createSession() {
+  function selectNewChat() {
     setOpenMenu(null);
-    onCreateSession(activeProjectId ?? undefined);
+    onSelectNewChat(activeProjectId ?? undefined);
     onClose();
   }
 
@@ -172,8 +172,11 @@ export function WorkspaceSidebar({
         <nav className="primary-nav" aria-label="Primary navigation">
           <button
             type="button"
+            aria-current={
+              activeProjectId && activeSessionId === null ? "page" : undefined
+            }
             disabled={!activeProjectId || isPending}
-            onClick={createSession}
+            onClick={selectNewChat}
           >
             <SquarePen size={18} />
             <span>New chat</span>
@@ -266,7 +269,7 @@ export function WorkspaceSidebar({
               type="button"
               aria-label="Create chat"
               disabled={!activeProjectId || isPending}
-              onClick={createSession}
+              onClick={selectNewChat}
             >
               <Plus size={16} />
             </button>

@@ -1,14 +1,18 @@
 import type { ChatMessage, ToolActivity } from "@researchbox/protocol";
 
-export const PROJECT_STORE_SCHEMA_VERSION = 1 as const;
-export const SESSION_DOCUMENT_FORMAT_VERSION = 1 as const;
+export const PROJECT_STORE_SCHEMA_VERSION = 2 as const;
+export const SESSION_DOCUMENT_FORMAT_VERSION = 2 as const;
+
+const LEGACY_PROJECT_STORE_SCHEMA_VERSION = 1 as const;
+const LEGACY_SESSION_DOCUMENT_FORMAT_VERSION = 1 as const;
 
 export type ProjectRecord = {
   project_id: string;
   name: string;
   created_at: string;
   updated_at: string;
-  last_session_id: string;
+  last_session_id: string | null;
+  new_chat_draft: string;
 };
 
 export type SessionRecord = {
@@ -24,6 +28,7 @@ export type SessionDocument = {
   format_version: typeof SESSION_DOCUMENT_FORMAT_VERSION;
   session_id: string;
   project_id: string;
+  input_draft: string;
   messages: ChatMessage[];
   activities: ToolActivity[];
   agent_messages: unknown[];
@@ -33,10 +38,15 @@ export type ProjectStoreState = {
   schema_version: typeof PROJECT_STORE_SCHEMA_VERSION;
   state_revision: number;
   active_project_id: string;
-  active_session_id: string;
+  active_session_id: string | null;
   projects: ProjectRecord[];
   sessions: SessionRecord[];
   documents: SessionDocument[];
+};
+
+export type ProjectStoreParseResult = {
+  state: ProjectStoreState;
+  was_migrated: boolean;
 };
 
 export function cloneProjectStoreState(
@@ -46,22 +56,41 @@ export function cloneProjectStoreState(
 }
 
 export function parseProjectStoreState(value: unknown): ProjectStoreState {
+  return parseProjectStoreStateWithMigration(value).state;
+}
+
+export function parseProjectStoreStateWithMigration(
+  value: unknown,
+): ProjectStoreParseResult {
   if (!isRecord(value)) throw new Error("Project store state must be an object.");
-  if (value.schema_version !== PROJECT_STORE_SCHEMA_VERSION) {
+  const schemaVersion = value.schema_version;
+  if (
+    schemaVersion !== PROJECT_STORE_SCHEMA_VERSION &&
+    schemaVersion !== LEGACY_PROJECT_STORE_SCHEMA_VERSION
+  ) {
     throw new Error("Unsupported project store schema version.");
   }
 
+  const legacy = schemaVersion === LEGACY_PROJECT_STORE_SCHEMA_VERSION;
   const state: ProjectStoreState = {
     schema_version: PROJECT_STORE_SCHEMA_VERSION,
     state_revision: requireNonNegativeInteger(value, "state_revision"),
     active_project_id: requireString(value, "active_project_id"),
-    active_session_id: requireString(value, "active_session_id"),
-    projects: requireArray(value, "projects").map(parseProjectRecord),
+    active_session_id: legacy
+      ? requireString(value, "active_session_id")
+      : requireNullableString(value, "active_session_id"),
+    projects: requireArray(value, "projects").map((project) =>
+      parseProjectRecord(project, legacy),
+    ),
     sessions: requireArray(value, "sessions").map(parseSessionRecord),
-    documents: requireArray(value, "documents").map(parseSessionDocument),
+    documents: requireArray(value, "documents").map((document) =>
+      parseSessionDocument(document, legacy),
+    ),
   };
+
+  if (legacy) removeLegacyPlaceholderSessions(state);
   assertProjectStoreInvariants(state);
-  return state;
+  return { state, was_migrated: legacy };
 }
 
 export function assertProjectStoreInvariants(state: ProjectStoreState): void {
@@ -87,16 +116,23 @@ export function assertProjectStoreInvariants(state: ProjectStoreState): void {
 
   const activeProject = projects.get(state.active_project_id);
   if (!activeProject) throw new Error("Active project does not exist.");
-  const activeSession = sessions.get(state.active_session_id);
-  if (!activeSession) throw new Error("Active session does not exist.");
-  if (activeSession.project_id !== activeProject.project_id) {
-    throw new Error("Active session does not belong to the active project.");
-  }
-  if (activeProject.last_session_id !== activeSession.session_id) {
-    throw new Error("Active session must be the active project's last session.");
+  if (state.active_session_id === null) {
+    if (activeProject.last_session_id !== null) {
+      throw new Error("Active new chat must be the active project's last view.");
+    }
+  } else {
+    const activeSession = sessions.get(state.active_session_id);
+    if (!activeSession) throw new Error("Active session does not exist.");
+    if (activeSession.project_id !== activeProject.project_id) {
+      throw new Error("Active session does not belong to the active project.");
+    }
+    if (activeProject.last_session_id !== activeSession.session_id) {
+      throw new Error("Active session must be the active project's last session.");
+    }
   }
 
   for (const project of state.projects) {
+    if (project.last_session_id === null) continue;
     const lastSession = sessions.get(project.last_session_id);
     if (!lastSession || lastSession.project_id !== project.project_id) {
       throw new Error("Project last_session_id is invalid.");
@@ -112,6 +148,9 @@ export function assertProjectStoreInvariants(state: ProjectStoreState): void {
     if (document.project_id !== session.project_id) {
       throw new Error("Session document project_id does not match its session.");
     }
+    if (isUnsubmittedNewChat(session, document)) {
+      throw new Error("Unsubmitted new chats must not be persisted as sessions.");
+    }
   }
 
   if (documents.size !== sessions.size) {
@@ -119,14 +158,19 @@ export function assertProjectStoreInvariants(state: ProjectStoreState): void {
   }
 }
 
-function parseProjectRecord(value: unknown): ProjectRecord {
+function parseProjectRecord(value: unknown, legacy: boolean): ProjectRecord {
   if (!isRecord(value)) throw new Error("Project record must be an object.");
   return {
     project_id: requireString(value, "project_id"),
     name: requireString(value, "name"),
     created_at: requireString(value, "created_at"),
     updated_at: requireString(value, "updated_at"),
-    last_session_id: requireString(value, "last_session_id"),
+    last_session_id: legacy
+      ? requireString(value, "last_session_id")
+      : requireNullableString(value, "last_session_id"),
+    new_chat_draft: legacy
+      ? ""
+      : requireString(value, "new_chat_draft", true),
   };
 }
 
@@ -142,9 +186,15 @@ function parseSessionRecord(value: unknown): SessionRecord {
   };
 }
 
-function parseSessionDocument(value: unknown): SessionDocument {
+function parseSessionDocument(
+  value: unknown,
+  legacy: boolean,
+): SessionDocument {
   if (!isRecord(value)) throw new Error("Session document must be an object.");
-  if (value.format_version !== SESSION_DOCUMENT_FORMAT_VERSION) {
+  const expectedFormat = legacy
+    ? LEGACY_SESSION_DOCUMENT_FORMAT_VERSION
+    : SESSION_DOCUMENT_FORMAT_VERSION;
+  if (value.format_version !== expectedFormat) {
     throw new Error("Unsupported session document format version.");
   }
   const messages = requireArray(value, "messages").map(parseChatMessage);
@@ -153,10 +203,54 @@ function parseSessionDocument(value: unknown): SessionDocument {
     format_version: SESSION_DOCUMENT_FORMAT_VERSION,
     session_id: requireString(value, "session_id"),
     project_id: requireString(value, "project_id"),
+    input_draft: legacy ? "" : requireString(value, "input_draft", true),
     messages,
     activities,
     agent_messages: structuredClone(requireArray(value, "agent_messages")),
   };
+}
+
+function removeLegacyPlaceholderSessions(state: ProjectStoreState): void {
+  const documents = new Map(
+    state.documents.map((document) => [document.session_id, document]),
+  );
+  const placeholderIds = new Set(
+    state.sessions
+      .filter((session) => {
+        const document = documents.get(session.session_id);
+        return document !== undefined && isUnsubmittedNewChat(session, document);
+      })
+      .map((session) => session.session_id),
+  );
+  if (placeholderIds.size === 0) return;
+
+  state.sessions = state.sessions.filter(
+    (session) => !placeholderIds.has(session.session_id),
+  );
+  state.documents = state.documents.filter(
+    (document) => !placeholderIds.has(document.session_id),
+  );
+  for (const project of state.projects) {
+    if (project.last_session_id && placeholderIds.has(project.last_session_id)) {
+      project.last_session_id = null;
+    }
+  }
+  if (state.active_session_id && placeholderIds.has(state.active_session_id)) {
+    state.active_session_id = null;
+  }
+}
+
+function isUnsubmittedNewChat(
+  session: SessionRecord,
+  document: SessionDocument,
+): boolean {
+  return (
+    session.title === "New chat" &&
+    !session.title_is_custom &&
+    document.messages.length === 0 &&
+    document.activities.length === 0 &&
+    document.agent_messages.length === 0
+  );
 }
 
 function parseChatMessage(value: unknown): ChatMessage {
@@ -247,6 +341,14 @@ function requireNonNegativeInteger(
     throw new Error(`${field} must be a non-negative integer.`);
   }
   return candidate;
+}
+
+function requireNullableString(
+  value: Record<string, unknown>,
+  field: string,
+): string | null {
+  if (value[field] === null) return null;
+  return requireString(value, field);
 }
 
 function optionalString(

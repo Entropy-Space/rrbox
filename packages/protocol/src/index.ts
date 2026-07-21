@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 2 as const;
+export const PROTOCOL_VERSION = 3 as const;
 
 export type MessageRole = "user" | "assistant";
 
@@ -47,7 +47,8 @@ export type CoreStateSnapshot = {
   projects: ProjectSummary[];
   sessions: SessionSummary[];
   active_project_id: string;
-  active_session_id: string;
+  active_session_id: string | null;
+  input_draft: string;
   messages: ChatMessage[];
   activities: ToolActivity[];
   files: FileEntry[];
@@ -67,10 +68,7 @@ export type ViewerCommand =
   | CommandEnvelope<"project_update", { project_id: string; name: string }>
   | CommandEnvelope<"project_delete", { project_id: string }>
   | CommandEnvelope<"project_select", { project_id: string }>
-  | CommandEnvelope<
-      "session_create",
-      { project_id: string; title?: string }
-    >
+  | CommandEnvelope<"new_chat", { project_id: string }>
   | CommandEnvelope<
       "session_update",
       { project_id: string; session_id: string; title: string }
@@ -85,7 +83,11 @@ export type ViewerCommand =
     >
   | CommandEnvelope<
       "prompt",
-      { project_id: string; session_id: string; text: string }
+      { project_id: string; session_id: string | null; text: string }
+    >
+  | CommandEnvelope<
+      "input_draft_update",
+      { project_id: string; session_id: string | null; input_draft: string }
     >
   | CommandEnvelope<
       "abort",
@@ -137,6 +139,10 @@ export type CoreEvent =
   | CorrelatedEventEnvelope<
       "file_content",
       { project_id: string; path: string; content: string }
+    >
+  | CorrelatedEventEnvelope<
+      "input_draft_saved",
+      { project_id: string; session_id: string | null; input_draft: string }
     >
   | EventEnvelope<
       "error",
@@ -195,13 +201,10 @@ export function parseViewerCommand(value: unknown): ViewerCommand {
       return commandEnvelope("project_select", requestId, {
         project_id: requireString(payload, "project_id"),
       });
-    case "session_create": {
-      const title = optionalString(payload, "title");
-      return commandEnvelope("session_create", requestId, {
+    case "new_chat":
+      return commandEnvelope("new_chat", requestId, {
         project_id: requireString(payload, "project_id"),
-        ...(title === undefined ? {} : { title }),
       });
-    }
     case "session_update":
       return commandEnvelope("session_update", requestId, {
         project_id: requireString(payload, "project_id"),
@@ -221,8 +224,14 @@ export function parseViewerCommand(value: unknown): ViewerCommand {
     case "prompt":
       return commandEnvelope("prompt", requestId, {
         project_id: requireString(payload, "project_id"),
-        session_id: requireString(payload, "session_id"),
+        session_id: requireNullableString(payload, "session_id"),
         text: requireString(payload, "text"),
+      });
+    case "input_draft_update":
+      return commandEnvelope("input_draft_update", requestId, {
+        project_id: requireString(payload, "project_id"),
+        session_id: requireNullableString(payload, "session_id"),
+        input_draft: requireString(payload, "input_draft", true),
       });
     case "abort":
       return commandEnvelope("abort", requestId, {
@@ -352,6 +361,17 @@ export function parseCoreEvent(value: unknown): CoreEvent {
         },
         requireEventRequestId(requestId, "file_content"),
       );
+    case "input_draft_saved":
+      return eventEnvelope(
+        "input_draft_saved",
+        eventId,
+        {
+          project_id: requireString(payload, "project_id"),
+          session_id: requireNullableString(payload, "session_id"),
+          input_draft: requireString(payload, "input_draft", true),
+        },
+        requireEventRequestId(requestId, "input_draft_saved"),
+      );
     case "error": {
       const projectId = optionalString(payload, "project_id");
       const sessionId = optionalString(payload, "session_id");
@@ -381,7 +401,7 @@ export function parseCoreEvent(value: unknown): CoreEvent {
 
 function requireEventRequestId(
   requestId: string | undefined,
-  eventType: "files_snapshot" | "file_content",
+  eventType: "files_snapshot" | "file_content" | "input_draft_saved",
 ): string {
   if (requestId === undefined) {
     throw new Error(`${eventType} events require request_id.`);
@@ -424,7 +444,8 @@ function parseCoreStateSnapshot(value: unknown): CoreStateSnapshot {
     projects: requireArray(value, "projects").map(parseProjectSummary),
     sessions: requireArray(value, "sessions").map(parseSessionSummary),
     active_project_id: requireString(value, "active_project_id"),
-    active_session_id: requireString(value, "active_session_id"),
+    active_session_id: requireNullableString(value, "active_session_id"),
+    input_draft: requireString(value, "input_draft", true),
     messages: requireArray(value, "messages").map(parseChatMessage),
     activities: requireArray(value, "activities").map(parseToolActivity),
     files: requireArray(value, "files").map(parseFileEntry),
@@ -455,6 +476,18 @@ function assertCoreStateInvariants(snapshot: CoreStateSnapshot): void {
   if (!projects.has(snapshot.active_project_id)) {
     throw new Error("active_project_id does not exist.");
   }
+  if (snapshot.active_session_id === null) {
+    if (snapshot.messages.length > 0 || snapshot.activities.length > 0) {
+      throw new Error(
+        "Virtual new chat cannot contain messages or tool activities.",
+      );
+    }
+    if (snapshot.is_running) {
+      throw new Error("Virtual new chat cannot have an active run.");
+    }
+    return;
+  }
+
   const activeSession = sessions.get(snapshot.active_session_id);
   if (!activeSession) throw new Error("active_session_id does not exist.");
   if (activeSession.project_id !== snapshot.active_project_id) {
@@ -603,6 +636,16 @@ function optionalString(
 ): string | undefined {
   if (value[field] === undefined) return undefined;
   return requireString(value, field, allowEmpty);
+}
+
+function requireNullableString(
+  value: Record<string, unknown>,
+  field: string,
+): string | null {
+  const candidate = value[field];
+  if (candidate === null) return null;
+  if (typeof candidate === "string" && candidate.length > 0) return candidate;
+  throw new Error(`${field} must be null or a non-empty string.`);
 }
 
 function requireString(

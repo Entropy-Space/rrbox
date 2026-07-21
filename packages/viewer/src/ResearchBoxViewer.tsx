@@ -65,12 +65,14 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
     coreState,
     transportError,
     isManagementPending,
+    isInputDraftPending,
     submitPrompt,
+    updateInputDraft,
     createProject,
     renameProject,
     deleteProject,
     selectProject,
-    createSession,
+    selectNewChat,
     renameSession,
     deleteSession,
     selectSession,
@@ -78,14 +80,11 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
     openFile,
     navigateToParent,
   } = useAgentSession(createWorker);
-  const [draftState, setDraftState] = useState<{
-    session_id: string | null;
-    value: string;
-  }>({ session_id: null, value: "" });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isMobileViewport, setMobileViewport] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const conversationEndRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     conversationEndRef.current?.scrollIntoView({
@@ -105,37 +104,43 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
     return () => mediaQuery.removeEventListener("change", syncViewport);
   }, []);
 
-  const draft =
-    draftState.session_id === coreState.active_session_id
-      ? draftState.value
-      : "";
-  const setDraft = useCallback(
-    (value: string) => {
-      setDraftState({
-        session_id: coreState.active_session_id,
-        value,
-      });
-    },
-    [coreState.active_session_id],
-  );
-
   const submitDraft = useCallback(
     (prompt: string) => {
-      if (submitPrompt(prompt)) setDraft("");
+      submitPrompt(prompt);
     },
-    [setDraft, submitPrompt],
+    [submitPrompt],
+  );
+  const selectNewChatAndFocus = useCallback(
+    (projectId?: string) => {
+      selectNewChat(projectId);
+      requestAnimationFrame(() => composerRef.current?.focus());
+    },
+    [selectNewChat],
   );
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
 
+  useEffect(() => {
+    if (!coreState.is_ready) return;
+    composerRef.current?.focus();
+  }, [
+    coreState.active_project_id,
+    coreState.active_session_id,
+    coreState.is_ready,
+  ]);
+
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    submitDraft(draft);
+    submitDraft(coreState.input_draft);
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (
+      event.key === "Enter" &&
+      !event.shiftKey &&
+      !event.nativeEvent.isComposing
+    ) {
       event.preventDefault();
-      submitDraft(draft);
+      submitDraft(coreState.input_draft);
     }
   }
 
@@ -169,13 +174,18 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
         sessions={coreState.sessions}
         activeProjectId={coreState.active_project_id}
         activeSessionId={coreState.active_session_id}
-        isPending={isManagementPending || coreState.is_running}
+        isPending={
+          isManagementPending ||
+          isInputDraftPending ||
+          coreState.is_running ||
+          coreState.pending_prompt !== null
+        }
         onClose={closeSidebar}
         onCreateProject={createProject}
         onRenameProject={renameProject}
         onDeleteProject={deleteProject}
         onSelectProject={selectProject}
-        onCreateSession={createSession}
+        onSelectNewChat={selectNewChatAndFocus}
         onRenameSession={renameSession}
         onDeleteSession={deleteSession}
         onSelectSession={selectSession}
@@ -252,12 +262,13 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
               {visibleError && <div className="error-banner">{visibleError}</div>}
               <form className="composer" onSubmit={handleSubmit}>
                 <textarea
-                  value={draft}
+                  ref={composerRef}
+                  value={coreState.input_draft}
                   rows={1}
                   aria-label="Message ResearchBox"
                   placeholder="Message ResearchBox"
                   disabled={!coreState.is_ready || isManagementPending}
-                  onChange={(event) => setDraft(event.target.value)}
+                  onChange={(event) => updateInputDraft(event.target.value)}
                   onKeyDown={handleComposerKeyDown}
                 />
                 <div className="composer-controls">
@@ -292,9 +303,10 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
                         type="submit"
                         aria-label="Send message"
                         disabled={
-                          !draft.trim() ||
+                          !coreState.input_draft.trim() ||
                           !coreState.is_ready ||
-                          isManagementPending
+                          isManagementPending ||
+                          coreState.pending_prompt !== null
                         }
                       >
                         <ArrowUp size={18} strokeWidth={2.5} />

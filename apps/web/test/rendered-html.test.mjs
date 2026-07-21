@@ -39,34 +39,50 @@ test("server-renders the ResearchBox application shell", async () => {
 });
 
 test("keeps package boundaries explicit", async () => {
-  const [app, viewer, session, worker, core, protocol] = await Promise.all([
-    readFile(new URL("../app/ResearchBoxApp.tsx", import.meta.url), "utf8"),
-    readFile(
-      new URL("../../../packages/viewer/src/ResearchBoxViewer.tsx", import.meta.url),
-      "utf8",
-    ),
-    readFile(
-      new URL("../../../packages/viewer/src/use-agent-session.ts", import.meta.url),
-      "utf8",
-    ),
-    readFile(new URL("../browser/core.worker.ts", import.meta.url), "utf8"),
-    readFile(
-      new URL("../../../packages/agent-core/src/agent-core.ts", import.meta.url),
-      "utf8",
-    ),
-    readFile(
-      new URL("../../../packages/protocol/src/index.ts", import.meta.url),
-      "utf8",
-    ),
-  ]);
+  const [app, viewer, session, coreWorker, llmWorker, core, protocol] =
+    await Promise.all([
+      readFile(new URL("../app/ResearchBoxApp.tsx", import.meta.url), "utf8"),
+      readFile(
+        new URL(
+          "../../../packages/viewer/src/ResearchBoxViewer.tsx",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+      readFile(
+        new URL(
+          "../../../packages/viewer/src/use-agent-session.ts",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+      readFile(new URL("../browser/core.worker.ts", import.meta.url), "utf8"),
+      readFile(new URL("../browser/llm.worker.ts", import.meta.url), "utf8"),
+      readFile(
+        new URL(
+          "../../../packages/agent-core/src/agent-core.ts",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+      readFile(
+        new URL("../../../packages/protocol/src/index.ts", import.meta.url),
+        "utf8",
+      ),
+    ]);
 
   assert.match(app, /new Worker\(new URL\(/);
   assert.doesNotMatch(viewer, /new Worker\(/);
   assert.match(session, /createCommand\("bootstrap"/);
   assert.match(session, /parseCoreEvent/);
   assert.doesNotMatch(viewer, /from "@earendil-works\/pi-agent-core"/);
-  assert.match(worker, /attachWorkerHost/);
-  assert.match(worker, /new AgentCore/);
+  assert.match(coreWorker, /new Worker\(new URL\("\.\/llm\.worker\.ts"/);
+  assert.match(coreWorker, /WorkerModelTransport/);
+  assert.match(coreWorker, /attachWorkerHost/);
+  assert.match(coreWorker, /new AgentCore/);
+  assert.doesNotMatch(coreWorker, /HttpNdjsonModelTransport/);
+  assert.match(llmWorker, /attachLlmWorkerHost/);
+  assert.match(llmWorker, /HttpNdjsonModelTransport/);
   assert.match(core, /new Agent\(/);
   assert.match(core, /VirtualFileSystem/);
   assert.match(protocol, /PROTOCOL_VERSION = 1/);

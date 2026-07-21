@@ -121,6 +121,9 @@ importers:
 
   packages/runtime-browser:
     dependencies:
+      '@researchbox/model-transport':
+        specifier: workspace:*
+        version: link:../model-transport
       '@researchbox/protocol':
         specifier: workspace:*
         version: link:../protocol

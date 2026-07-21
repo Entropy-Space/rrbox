@@ -9,6 +9,7 @@ remote hosts.
 
 - ChatGPT-style responsive conversation viewer
 - Real `@earendil-works/pi-agent-core` loop inside a Web Worker
+- Dedicated LLM Web Worker for multiplexed model requests and cancellation
 - Versioned, runtime-validated JSON commands and events
 - Streaming mock-model service with a real tool-result continuation loop
 - In-memory virtual filesystem with `list_files` and `read_file` tools
@@ -26,7 +27,7 @@ packages/
   agent-core/          Pi agent orchestration and tools
   viewer/              React conversation and workspace UI
   model-transport/     Model request/stream contract and HTTP adapter
-  runtime-browser/     Generic Web Worker host
+  runtime-browser/     Core and LLM Web Worker hosts and transports
   vfs/                 Filesystem contract, errors, and adapters
 
 platforms/

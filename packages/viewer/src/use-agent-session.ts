@@ -3,6 +3,7 @@ import {
   parseCoreEvent,
   type ChatMessage,
   type CoreEvent,
+  type CoreLifecyclePhase,
   type CoreStateSnapshot,
   type FileEntry,
   type ModelSelection,
@@ -16,6 +17,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
 export type AgentSessionState = {
   state_revision: number;
+  catalog_revision: number;
   projects: ProjectSummary[];
   sessions: SessionSummary[];
   providers: ProviderSummary[];
@@ -34,6 +36,8 @@ export type AgentSessionState = {
   current_path: string;
   selected_file: { path: string; content: string } | null;
   activities: ToolActivity[];
+  core_lifecycle: CoreLifecyclePhase;
+  core_status_message: string | null;
   is_ready: boolean;
   is_running: boolean;
   error_message: string | null;
@@ -43,6 +47,7 @@ export type AgentSessionState = {
 
 export const initialAgentSessionState: AgentSessionState = {
   state_revision: 0,
+  catalog_revision: 0,
   projects: [],
   sessions: [],
   providers: [],
@@ -64,6 +69,8 @@ export const initialAgentSessionState: AgentSessionState = {
   current_path: "/",
   selected_file: null,
   activities: [],
+  core_lifecycle: "electing",
+  core_status_message: null,
   is_ready: false,
   is_running: false,
   error_message: null,
@@ -109,7 +116,8 @@ type AgentSessionAction =
       session_id: string | null;
       input_draft: string;
       input_draft_generation: number;
-    };
+    }
+  | { type: "transport_failed"; message: string };
 
 type ManagementCommand = Exclude<
   ViewerCommand,
@@ -255,6 +263,11 @@ export function useAgentSession(createWorker: () => Worker) {
                   (candidate) =>
                     candidate.provider_id === refreshingProviderId,
                 )
+              : event.type === "provider_catalog_snapshot"
+                ? event.payload.providers.find(
+                    (candidate) =>
+                      candidate.provider_id === refreshingProviderId,
+                  )
               : undefined;
           if (event.type === "error" || provider?.availability !== "loading") {
             pendingProviderRefreshRequestRef.current.delete(refreshRequestId);
@@ -270,7 +283,9 @@ export function useAgentSession(createWorker: () => Worker) {
       }
     };
     worker.onerror = () => {
-      setTransportError("The browser core could not start. Refresh to try again.");
+      const message = "The browser core stopped. Refresh to try again.";
+      setTransportError(message);
+      dispatch({ type: "transport_failed", message });
       pendingManagementRequestRef.current = null;
       pendingProviderRefreshRequestRef.current.clear();
       setRefreshingProviderIds(new Set());
@@ -609,6 +624,35 @@ export function coreReducer(
         selected_file: null,
         error_message: null,
       };
+    case "transport_failed":
+      return {
+        ...state,
+        core_lifecycle: "failed",
+        core_status_message: event.message,
+        is_ready: false,
+        is_running: false,
+        error_message: event.message,
+        pending_input_draft_request_id: null,
+        input_draft_needs_sync: false,
+        input_draft_retry_count: 0,
+        input_draft_cleanup_scope: null,
+        pending_prompt: null,
+        pending_fs_list_request_id: null,
+        pending_fs_read_request_id: null,
+      };
+    case "core_lifecycle":
+      return {
+        ...state,
+        core_lifecycle: event.payload.phase,
+        core_status_message: event.payload.status_message ?? null,
+      };
+    case "provider_catalog_snapshot":
+      if (event.payload.catalog_revision < state.catalog_revision) return state;
+      return {
+        ...state,
+        catalog_revision: event.payload.catalog_revision,
+        providers: event.payload.providers,
+      };
     case "ready":
       return applySnapshot(state, event.payload.state, event.request_id);
     case "state_snapshot":
@@ -783,9 +827,16 @@ function applySnapshot(
   return {
     ...state,
     state_revision: snapshot.state_revision,
+    catalog_revision: Math.max(
+      state.catalog_revision,
+      snapshot.catalog_revision,
+    ),
     projects: snapshot.projects,
     sessions: snapshot.sessions,
-    providers: snapshot.providers,
+    providers:
+      snapshot.catalog_revision >= state.catalog_revision
+        ? snapshot.providers
+        : state.providers,
     active_model: snapshot.active_model,
     active_project_id: snapshot.active_project_id,
     active_session_id: snapshot.active_session_id,
@@ -819,6 +870,8 @@ function applySnapshot(
     files: preserveWorkspace ? state.files : snapshot.files,
     current_path: preserveWorkspace ? state.current_path : "/",
     selected_file: preserveWorkspace ? state.selected_file : null,
+    core_lifecycle: "ready",
+    core_status_message: null,
     is_ready: true,
     is_running: snapshot.is_running,
     error_message: null,

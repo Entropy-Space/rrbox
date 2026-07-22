@@ -151,6 +151,19 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
 
   const hasConversation = coreState.messages.length > 0;
   const visibleError = transportError ?? coreState.error_message;
+  const visibleCoreStatus =
+    !coreState.is_ready &&
+    (coreState.core_lifecycle === "waiting_for_writer" ||
+      coreState.core_lifecycle === "failed")
+      ? coreState.core_status_message
+      : null;
+  const coreStatusLabel = coreState.is_ready
+    ? "Local core"
+    : coreState.core_lifecycle === "waiting_for_writer"
+      ? "Waiting"
+      : coreState.core_lifecycle === "failed"
+        ? "Unavailable"
+        : "Starting";
   const modalNavigationOpen = isModalNavigationOpen(
     sidebarOpen,
     isMobileViewport,
@@ -209,7 +222,7 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
             <ModelSelector
               providers={coreState.providers}
               selection={coreState.active_model}
-              disabled={
+              selectionDisabled={
                 !coreState.is_ready ||
                 coreState.is_running ||
                 isManagementPending ||
@@ -222,11 +235,15 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
           </div>
           <div className="topbar-actions">
             <span
-              className={`core-status ${coreState.is_ready ? "online" : ""}`}
-              title={coreState.is_ready ? "Browser core ready" : "Starting browser core"}
+              className={`core-status ${coreState.is_ready ? "online" : coreState.core_lifecycle}`}
+              title={
+                coreState.is_ready
+                  ? "Browser core ready"
+                  : (coreState.core_status_message ?? "Starting browser core")
+              }
             >
               <span />
-              {coreState.is_ready ? "Local core" : "Starting"}
+              {coreStatusLabel}
             </span>
             <button
               className={`workspace-toggle ${workspaceOpen ? "active" : ""}`}
@@ -264,6 +281,16 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
             )}
 
             <div className="composer-region">
+              {visibleCoreStatus && (
+                <div
+                  className={`status-banner ${coreState.core_lifecycle}`}
+                  role={
+                    coreState.core_lifecycle === "failed" ? "alert" : "status"
+                  }
+                >
+                  {visibleCoreStatus}
+                </div>
+              )}
               {visibleError && <div className="error-banner">{visibleError}</div>}
               <form className="composer" onSubmit={handleSubmit}>
                 <textarea

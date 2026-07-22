@@ -23,7 +23,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 export type ModelSelectorProps = {
   providers: ProviderSummary[];
   selection: ModelSelection;
-  disabled?: boolean;
+  selectionDisabled?: boolean;
   onSelect: (providerId: string, modelId: string) => void;
   onRefresh: (providerId: string) => void;
   refreshingProviderIds?: ReadonlySet<string>;
@@ -47,7 +47,7 @@ function providerStatusLabel(provider: ProviderSummary) {
 export function ModelSelector({
   providers,
   selection,
-  disabled = false,
+  selectionDisabled = false,
   onSelect,
   onRefresh,
   refreshingProviderIds = emptyRefreshingProviderIds,
@@ -64,22 +64,50 @@ export function ModelSelector({
   const selectedModel = selectedProvider?.models.find(
     (model) => model.model_id === selection.model_id,
   );
-  const selectedAvailability = !selectedProvider
-    ? "loading"
-    : selectedProvider.availability === "loading"
+  const selectionPending =
+    selection.provider_id.length === 0 || selection.model_id.length === 0;
+  const catalogIsLoading = providers.some(
+    (provider) => provider.availability === "loading",
+  );
+  const availableModelCount = providers.reduce(
+    (count, provider) =>
+      count +
+      (provider.availability === "ready"
+        ? provider.models.filter((model) => model.availability === "ready")
+            .length
+        : 0),
+    0,
+  );
+  const selectedAvailability = selectionPending
+    ? catalogIsLoading
       ? "loading"
-      : selectedProvider.availability === "unavailable" ||
-          selectedModel?.availability === "unavailable"
-        ? "unavailable"
-        : selectedModel
-          ? "ready"
-          : "unavailable";
+      : "pending"
+    : !selectedProvider
+      ? "unavailable"
+      : selectedProvider.availability === "loading"
+        ? "loading"
+        : selectedProvider.availability === "unavailable" ||
+            selectedModel?.availability === "unavailable"
+          ? "unavailable"
+          : selectedModel
+            ? "ready"
+            : "unavailable";
   const selectedStatus =
-    selectedAvailability === "loading"
-      ? "Loading model"
-      : selectedAvailability === "unavailable"
-        ? "Model unavailable"
-        : "Model ready";
+    selectionPending
+      ? "Workspace model selection pending"
+      : selectedAvailability === "loading"
+        ? "Loading model"
+        : selectedAvailability === "unavailable"
+          ? "Model unavailable"
+          : "Model ready";
+  const selectedTitle = selectionPending
+    ? "Workspace model pending"
+    : selectedModel?.display_name || selection.model_id;
+  const selectedProviderLabel = selectionPending
+    ? catalogIsLoading
+      ? "Discovering models"
+      : `${availableModelCount} model${availableModelCount === 1 ? "" : "s"} available`
+    : selectedProvider?.display_name ?? "Provider unavailable";
 
   const availableModelKeys = useMemo(
     () =>
@@ -145,14 +173,8 @@ export function ModelSelector({
     return () => cancelAnimationFrame(frame);
   }, [isOpen]);
 
-  useEffect(() => {
-    if (!disabled) return;
-    const frame = requestAnimationFrame(() => setIsOpen(false));
-    return () => cancelAnimationFrame(frame);
-  }, [disabled]);
-
   function selectModel(providerId: string, modelId: string) {
-    if (disabled) return;
+    if (selectionDisabled) return;
     if (
       providerId !== selection.provider_id ||
       modelId !== selection.model_id
@@ -226,21 +248,18 @@ export function ModelSelector({
         className={`model-selector ${selectedAvailability}`}
         type="button"
         ref={triggerRef}
-        aria-label={`${selectedModel?.display_name || selection.model_id || "Loading model"}. ${selectedStatus}.`}
+        aria-label={`${selectedTitle}. ${selectedStatus}.`}
         aria-haspopup="dialog"
         aria-expanded={isOpen}
         aria-controls={isOpen ? popoverId : undefined}
-        aria-disabled={disabled}
-        onClick={() => {
-          if (!disabled) setIsOpen((open) => !open);
-        }}
+        onClick={() => setIsOpen((open) => !open)}
       >
         <span className="model-selector-copy">
           <strong className="model-selector-title">
-            {selectedModel?.display_name || selection.model_id || "Loading model…"}
+            {selectedTitle}
           </strong>
           <small className="model-selector-provider">
-            {selectedProvider?.display_name ?? "Starting browser core"}
+            {selectedProviderLabel}
           </small>
         </span>
         <span
@@ -299,7 +318,6 @@ export function ModelSelector({
                         type="button"
                         data-model-selector-action
                         disabled={
-                          disabled ||
                           provider.availability === "loading" ||
                           isRefreshPending
                         }
@@ -354,7 +372,7 @@ export function ModelSelector({
                         const canSelect =
                           canSelectProvider &&
                           model.availability === "ready" &&
-                          !disabled;
+                          !selectionDisabled;
 
                         return (
                           <button

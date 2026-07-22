@@ -579,6 +579,10 @@ textarea:focus-visible {
   background: #d39421;
 }
 
+.model-selector-active-status.pending {
+  background: #9b9b9b;
+}
+
 .model-selector-active-status.unavailable {
   background: var(--danger);
 }
@@ -846,6 +850,14 @@ textarea:focus-visible {
 .core-status.online > span {
   background: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.core-status.waiting_for_writer > span {
+  background: #d39421;
+}
+
+.core-status.failed > span {
+  background: var(--danger);
 }
 
 .workspace-toggle {
@@ -1308,6 +1320,25 @@ textarea:focus-visible {
   background: #fff6f6;
   color: #923a3a;
   font-size: 11px;
+}
+
+.status-banner {
+  width: fit-content;
+  max-width: min(100%, 620px);
+  margin: 0 auto 8px;
+  padding: 7px 11px;
+  border: 1px solid #ead9af;
+  border-radius: 9px;
+  background: #fffaf0;
+  color: #785a19;
+  font-size: 11px;
+  text-align: center;
+}
+
+.status-banner.failed {
+  border-color: #f0caca;
+  background: #fff6f6;
+  color: #923a3a;
 }
 
 .workspace-panel {

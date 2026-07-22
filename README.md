@@ -87,8 +87,15 @@ canonical Pi transcripts, and project files in one versioned IndexedDB
 database. A new chat remains project-scoped draft state until its first prompt;
 its selected model, that prompt, its session, and its staged messages commit
 atomically before model transport starts. Existing chats retain their own model
-selection. One origin-wide Web Lock gives the browser core exclusive
-write ownership; another tab waits until the active core closes. The memory
-project store and filesystem provider remain deterministic test backends. ZIP
-import/export, native folders, iOS application storage, and an optional OPFS
-adapter can implement the same portable contracts.
+selection.
+
+Provider discovery starts independently from workspace ownership. A browser
+runtime coordinator exposes provider catalog snapshots immediately, routes
+catalog refreshes without waiting for IndexedDB, and creates the stateful core
+only after acquiring one origin-wide Web Lock. A contending tab reports that it
+is waiting and is promoted automatically when the active writer closes. Only
+the elected core can persist a model selection or start inference.
+
+The memory project store and filesystem provider remain deterministic test
+backends. ZIP import/export, native folders, iOS application storage, and an
+optional OPFS adapter can implement the same portable contracts.

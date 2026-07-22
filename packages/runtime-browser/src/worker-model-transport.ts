@@ -35,10 +35,13 @@ type PendingModels = {
   remove_abort_listener: () => void;
 };
 
+type FatalErrorListener = (error: Error) => void;
+
 export class WorkerModelTransport implements ModelTransport {
   private readonly worker: ModelWorker;
   private readonly streams = new Map<string, PendingStream>();
   private readonly modelRequests = new Map<string, PendingModels>();
+  private readonly fatalErrorListeners = new Set<FatalErrorListener>();
   private fatalError: Error | null = null;
   private isClosed = false;
 
@@ -47,6 +50,12 @@ export class WorkerModelTransport implements ModelTransport {
     this.worker.addEventListener("message", this.handleMessage);
     this.worker.addEventListener("error", this.handleWorkerError);
     this.worker.addEventListener("messageerror", this.handleMessageError);
+  }
+
+  subscribeFatalError(listener: FatalErrorListener): () => void {
+    this.fatalErrorListeners.add(listener);
+    if (this.fatalError) notifyFatalErrorListener(listener, this.fatalError);
+    return () => this.fatalErrorListeners.delete(listener);
   }
 
   listModels(
@@ -156,6 +165,7 @@ export class WorkerModelTransport implements ModelTransport {
     this.failAllModelRequests(
       new Error("The LLM worker transport was closed."),
     );
+    this.fatalErrorListeners.clear();
     this.isClosed = true;
     this.worker.terminate();
   }
@@ -291,8 +301,12 @@ export class WorkerModelTransport implements ModelTransport {
   }
 
   private failFatally(error: Error): void {
+    if (this.fatalError) return;
     this.fatalError = error;
     this.failAll(error);
+    for (const listener of this.fatalErrorListeners) {
+      notifyFatalErrorListener(listener, error);
+    }
   }
 
   private failAll(error: Error): void {
@@ -343,4 +357,15 @@ function failPending(
 
 function createAbortError(): Error {
   return new DOMException("The LLM request was aborted.", "AbortError");
+}
+
+function notifyFatalErrorListener(
+  listener: FatalErrorListener,
+  error: Error,
+): void {
+  try {
+    listener(error);
+  } catch {
+    // Transport health consumers are isolated from request failure handling.
+  }
 }

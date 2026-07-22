@@ -7,7 +7,7 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v4 command", () => {
+test("round-trips every protocol-v5 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("project_create", { name: "Docs" }),
@@ -127,6 +127,14 @@ test("round-trips every core event variant", () => {
     status: "complete",
   };
   const events = [
+    coreEvent("core_lifecycle", {
+      phase: "waiting_for_writer",
+      status_message: "Active in another tab.",
+    }),
+    coreEvent("provider_catalog_snapshot", {
+      catalog_revision: 2,
+      providers: [createMockProvider()],
+    }),
     coreEvent("ready", { state: createPersistedState() }),
     coreEvent(
       "state_snapshot",
@@ -199,6 +207,28 @@ test("round-trips every core event variant", () => {
   ];
 
   for (const event of events) assert.deepEqual(parseCoreEvent(event), event);
+});
+
+test("validates independent lifecycle and provider catalog events", () => {
+  assert.throws(
+    () =>
+      parseCoreEvent(
+        coreEvent("core_lifecycle", {
+          phase: "querying_models",
+        }),
+      ),
+    /Invalid core lifecycle phase/,
+  );
+  assert.throws(
+    () =>
+      parseCoreEvent(
+        coreEvent("provider_catalog_snapshot", {
+          catalog_revision: 1,
+          providers: [createMockProvider(), createMockProvider()],
+        }),
+      ),
+    /Duplicate provider_id/,
+  );
 });
 
 test("requires request correlation for filesystem and draft results", () => {
@@ -406,6 +436,7 @@ test("rejects runtime state on virtual new chat", () => {
 function createPersistedState() {
   return {
     state_revision: 1,
+    catalog_revision: 1,
     projects: [createProject()],
     sessions: [
       {
@@ -442,6 +473,7 @@ function createPersistedState() {
 function createVirtualState() {
   return {
     state_revision: 1,
+    catalog_revision: 1,
     projects: [createProject()],
     sessions: [],
     providers: [createMockProvider()],

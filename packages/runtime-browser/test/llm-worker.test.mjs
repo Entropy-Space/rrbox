@@ -255,6 +255,8 @@ test("aborts unfinished work when a consumer stops iterating", async () => {
 test("rejects all pending requests when the LLM worker crashes", async () => {
   const { worker, emitError, wasErrorPrevented } = createDetachedWorker();
   const transport = new WorkerModelTransport(worker);
+  const fatalErrors = [];
+  transport.subscribeFatalError((error) => fatalErrors.push(error.message));
   const alpha = collect(transport, request("alpha"));
   const beta = collect(transport, request("beta"));
   await Promise.resolve();
@@ -268,6 +270,13 @@ test("rejects all pending requests when the LLM worker crashes", async () => {
     collect(transport, request("future")),
     /worker crashed/,
   );
+  assert.deepEqual(fatalErrors, ["worker crashed"]);
+
+  const replayedFatalErrors = [];
+  transport.subscribeFatalError((error) =>
+    replayedFatalErrors.push(error.message),
+  );
+  assert.deepEqual(replayedFatalErrors, ["worker crashed"]);
   transport.close();
 });
 

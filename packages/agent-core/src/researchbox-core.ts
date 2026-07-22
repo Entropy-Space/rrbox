@@ -1,8 +1,5 @@
 import type { Model } from "@earendil-works/pi-ai";
-import type {
-  ModelDescriptor,
-  ModelTransport,
-} from "@researchbox/model-transport";
+import type { ModelTransport } from "@researchbox/model-transport";
 import {
   PROJECT_STORE_SCHEMA_VERSION,
   SESSION_DOCUMENT_FORMAT_VERSION,
@@ -20,8 +17,6 @@ import {
   type CoreStateSnapshot,
   type FileEntry,
   type ModelSelection,
-  type ModelSummary,
-  type ProviderSummary,
   type ViewerCommand,
 } from "@researchbox/protocol";
 import type {
@@ -38,48 +33,23 @@ import {
   decodeAgentMessages,
   encodeAgentMessages,
 } from "./session-codec.ts";
+import {
+  ProviderCatalogService,
+  type ModelProviderDefinition,
+  type ProviderModelCatalog,
+} from "./provider-catalog-service.ts";
 import { repairUnansweredToolCalls } from "./tool-transcript.ts";
 
 export type ResearchBoxCoreOptions = {
   projectStore: ProjectStore;
   workspaceProvider: ProjectFileSystemProvider;
   modelTransport: ModelTransport;
+  providerCatalog?: ProviderCatalogService;
   modelCatalog?: ProviderModelCatalog;
   model: Model<string>;
   providers?: ModelProviderDefinition[];
   systemPrompt: string;
   eventSink: CoreEventSink;
-};
-
-export type ProviderModelCatalog = {
-  listModels(
-    providerId: string,
-    signal: AbortSignal,
-  ): Promise<ModelDescriptor[]>;
-};
-
-export type ModelProviderDefinition = {
-  provider_id: string;
-  display_name: string;
-  kind: ProviderSummary["kind"];
-  models?: Model<string>[];
-  discover_models?: boolean;
-};
-
-type RegisteredModel = {
-  model: Model<string>;
-  availability: ModelSummary["availability"];
-  status_message?: string;
-};
-
-type ProviderState = {
-  provider_id: string;
-  display_name: string;
-  kind: ProviderSummary["kind"];
-  availability: ProviderSummary["availability"];
-  status_message?: string;
-  discover_models: boolean;
-  models: Map<string, RegisteredModel>;
 };
 
 export type AgentCoreOptions = ResearchBoxCoreOptions;
@@ -88,10 +58,9 @@ export class ResearchBoxCore {
   private readonly projectStore: ProjectStore;
   private readonly workspaceProvider: ProjectFileSystemProvider;
   private readonly modelTransport: ModelTransport;
-  private readonly modelCatalog?: ProviderModelCatalog;
+  private readonly providerCatalog: ProviderCatalogService;
   private readonly defaultModel: Model<string>;
   private readonly defaultModelSelection: ModelSelection;
-  private readonly providers = new Map<string, ProviderState>();
   private readonly systemPrompt: string;
   private readonly eventSink: CoreEventSink;
   private state: ProjectStoreState | null = null;
@@ -99,82 +68,26 @@ export class ResearchBoxCore {
   private runtime: SessionRuntime | null = null;
   private initialization: Promise<void> | null = null;
   private mutationTail: Promise<void> = Promise.resolve();
-  private providerRefreshStarted = false;
-  private readonly providerRefreshes = new Map<string, Promise<void>>();
+  private providerRefreshObserverStarted = false;
 
   constructor(options: ResearchBoxCoreOptions) {
     this.projectStore = options.projectStore;
     this.workspaceProvider = options.workspaceProvider;
     this.modelTransport = options.modelTransport;
-    this.modelCatalog = options.modelCatalog;
     this.defaultModel = options.model;
     this.defaultModelSelection = {
       provider_id: options.model.provider,
       model_id: options.model.id,
     };
-    this.initializeProviders(options.providers);
+    this.providerCatalog =
+      options.providerCatalog ??
+      new ProviderCatalogService({
+        model: options.model,
+        providers: options.providers,
+        modelCatalog: options.modelCatalog,
+      });
     this.systemPrompt = options.systemPrompt;
     this.eventSink = options.eventSink;
-  }
-
-  private initializeProviders(
-    definitions: ModelProviderDefinition[] | undefined,
-  ): void {
-    const configured =
-      definitions && definitions.length > 0
-        ? definitions
-        : [
-            {
-              provider_id: this.defaultModel.provider,
-              display_name: this.defaultModel.provider,
-              kind: "mock" as const,
-              models: [this.defaultModel],
-            },
-          ];
-
-    for (const definition of configured) {
-      if (this.providers.has(definition.provider_id)) {
-        throw new Error(`Duplicate model provider: ${definition.provider_id}`);
-      }
-      const models = new Map<string, RegisteredModel>();
-      for (const model of definition.models ?? []) {
-        if (model.provider !== definition.provider_id) {
-          throw new Error(
-            `Model ${model.id} does not belong to provider ${definition.provider_id}.`,
-          );
-        }
-        if (models.has(model.id)) {
-          throw new Error(`Duplicate model id: ${model.id}`);
-        }
-        models.set(model.id, { model, availability: "ready" });
-      }
-      this.providers.set(definition.provider_id, {
-        provider_id: definition.provider_id,
-        display_name: definition.display_name,
-        kind: definition.kind,
-        availability:
-          definition.discover_models && models.size === 0 ? "loading" : "ready",
-        discover_models: definition.discover_models ?? false,
-        models,
-      });
-    }
-
-    let defaultProvider = this.providers.get(this.defaultModel.provider);
-    if (!defaultProvider) {
-      defaultProvider = {
-        provider_id: this.defaultModel.provider,
-        display_name: this.defaultModel.provider,
-        kind: "mock",
-        availability: "ready",
-        discover_models: false,
-        models: new Map(),
-      };
-      this.providers.set(defaultProvider.provider_id, defaultProvider);
-    }
-    defaultProvider.models.set(this.defaultModel.id, {
-      model: this.defaultModel,
-      availability: "ready",
-    });
   }
 
   async handle(command: ViewerCommand): Promise<void> {
@@ -793,26 +706,24 @@ export class ResearchBoxCore {
   }
 
   private startProviderRefreshes(): void {
-    if (this.providerRefreshStarted) return;
-    this.providerRefreshStarted = true;
-    for (const provider of this.providers.values()) {
-      if (provider.discover_models) {
-        void this.refreshProvider(provider.provider_id).catch((error) => {
-          this.emitError(
-            "provider_refresh_failed",
-            toErrorMessage(error, "The provider refresh failed."),
-          );
-        });
-      }
-    }
+    if (this.providerRefreshObserverStarted) return;
+    this.providerRefreshObserverStarted = true;
+    void this.providerCatalog
+      .startRefreshes()
+      .then(() => this.emitStateSnapshot())
+      .catch((error: unknown) => {
+        this.emitError(
+          "provider_refresh_failed",
+          toErrorMessage(error, "The provider refresh failed."),
+        );
+      });
   }
 
   private async refreshProvider(
     providerId: string,
     requestId?: string,
   ): Promise<void> {
-    const provider = this.providers.get(providerId);
-    if (!provider) {
+    if (!this.providerCatalog.hasProvider(providerId)) {
       this.emitError(
         "provider_not_found",
         "The requested model provider is not configured.",
@@ -820,76 +731,19 @@ export class ResearchBoxCore {
       );
       return;
     }
-    if (!provider.discover_models || !this.modelCatalog) {
+    if (!this.providerCatalog.isDiscoverable(providerId)) {
       if (requestId) await this.emitStateSnapshot(requestId);
       return;
     }
-
-    const activeRefresh = this.providerRefreshes.get(providerId);
-    if (activeRefresh) {
-      await activeRefresh;
-      if (requestId) await this.emitStateSnapshot(requestId);
-      return;
-    }
-
-    provider.availability = "loading";
-    delete provider.status_message;
-    const controller = new AbortController();
-    const refresh = (async () => {
-      try {
-        const descriptors = await this.modelCatalog?.listModels(
-          providerId,
-          controller.signal,
-        );
-        if (!descriptors) throw new Error("Model discovery is unavailable.");
-        const models = new Map<string, RegisteredModel>();
-        for (const descriptor of descriptors) {
-          if (descriptor.provider_id !== providerId) {
-            throw new Error("Model discovery returned the wrong provider_id.");
-          }
-          if (models.has(descriptor.model_id)) {
-            throw new Error(
-              `Model discovery returned duplicate model_id: ${descriptor.model_id}`,
-            );
-          }
-          models.set(descriptor.model_id, {
-            model: modelFromDescriptor(descriptor),
-            availability: descriptor.supports_tools
-              ? "ready"
-              : "unavailable",
-            ...(descriptor.supports_tools
-              ? {}
-              : {
-                  status_message:
-                    "This model does not support the agent's tools.",
-                }),
-          });
-        }
-        provider.models = models;
-        provider.availability = "ready";
-        delete provider.status_message;
-        this.ensurePersistedModelsRegistered();
-      } catch (error) {
-        provider.availability = "unavailable";
-        provider.status_message = toErrorMessage(
-          error,
-          "The provider could not be reached.",
-        );
-      }
-    })();
-    this.providerRefreshes.set(providerId, refresh);
+    const refresh = this.providerCatalog.refreshProvider(providerId, {
+      force: requestId !== undefined,
+    });
     try {
-      try {
-        await this.emitStateSnapshot(requestId);
-      } catch {
-        // A final authoritative snapshot is attempted after discovery settles.
-      }
-      await refresh;
-    } finally {
-      if (this.providerRefreshes.get(providerId) === refresh) {
-        this.providerRefreshes.delete(providerId);
-      }
+      await this.emitStateSnapshot(requestId);
+    } catch {
+      // A final authoritative snapshot is attempted after discovery settles.
     }
+    await refresh;
     await this.emitStateSnapshot(requestId);
   }
 
@@ -901,28 +755,7 @@ export class ResearchBoxCore {
     for (const session of this.requireState().sessions) {
       selections.push(session.selected_model);
     }
-    for (const selection of selections) {
-      let provider = this.providers.get(selection.provider_id);
-      if (!provider) {
-        provider = {
-          provider_id: selection.provider_id,
-          display_name: selection.provider_id,
-          kind: "openai_compatible",
-          availability: "unavailable",
-          status_message: "This saved provider is no longer configured.",
-          discover_models: false,
-          models: new Map(),
-        };
-        this.providers.set(selection.provider_id, provider);
-      }
-      if (!provider.models.has(selection.model_id)) {
-        provider.models.set(selection.model_id, {
-          model: unavailableModel(selection),
-          availability: "unavailable",
-          status_message: "This saved model was not returned by the provider.",
-        });
-      }
-    }
+    this.providerCatalog.setPersistedSelections(selections);
   }
 
   private getActiveModelSelection(): ModelSelection {
@@ -933,18 +766,12 @@ export class ResearchBoxCore {
   }
 
   private isModelReady(selection: ModelSelection): boolean {
-    const provider = this.providers.get(selection.provider_id);
-    const model = provider?.models.get(selection.model_id);
-    return (
-      provider?.availability === "ready" && model?.availability === "ready"
-    );
+    return this.providerCatalog.isModelReady(selection);
   }
 
   private requireActiveModel(): Model<string> {
     const selection = this.getActiveModelSelection();
-    const model = this.providers
-      .get(selection.provider_id)
-      ?.models.get(selection.model_id)?.model;
+    const model = this.providerCatalog.getModel(selection);
     if (!model) throw new Error("The selected model is not registered.");
     return model;
   }
@@ -1036,6 +863,7 @@ export class ResearchBoxCore {
     assertProjectStoreInvariants(persisted);
     await this.projectStore.save(persisted, expectedRevision);
     state.state_revision = persisted.state_revision;
+    this.ensurePersistedModelsRegistered();
   }
 
   private async commitDraft(draft: ProjectStoreState): Promise<void> {
@@ -1052,6 +880,7 @@ export class ResearchBoxCore {
       this.runtime?.project_id === draft.active_project_id &&
       this.runtime.session_id === draft.active_session_id;
     this.state = draft;
+    this.ensurePersistedModelsRegistered();
     if (sameRuntime && draft.active_session_id !== null) {
       this.runtime?.bindDocument(this.requireDocument(draft.active_session_id));
     }
@@ -1086,8 +915,10 @@ export class ResearchBoxCore {
         : this.requireDocument(state.active_session_id);
     const activeProject = this.requireProject(state.active_project_id);
     const activeModel = this.getActiveModelSelection();
+    const catalog = this.providerCatalog.snapshot();
     return {
       state_revision: state.state_revision,
+      catalog_revision: catalog.catalog_revision,
       projects: [...state.projects]
         .sort(compareUpdatedDescending)
         .map(({ project_id, name, created_at, updated_at }) => ({
@@ -1106,26 +937,7 @@ export class ResearchBoxCore {
           updated_at,
           message_count: this.requireDocument(session_id).messages.length,
         })),
-      providers: [...this.providers.values()].map((provider) => ({
-        provider_id: provider.provider_id,
-        display_name: provider.display_name,
-        kind: provider.kind,
-        availability: provider.availability,
-        ...(provider.status_message === undefined
-          ? {}
-          : { status_message: provider.status_message }),
-        models: [...provider.models.values()]
-          .map(({ model, availability, status_message }) => ({
-            provider_id: provider.provider_id,
-            model_id: model.id,
-            display_name: model.name,
-            availability,
-            ...(status_message === undefined ? {} : { status_message }),
-          }))
-          .sort((left, right) =>
-            left.display_name.localeCompare(right.display_name),
-          ),
-      })),
+      providers: catalog.providers,
       active_model: { ...activeModel },
       active_project_id: state.active_project_id,
       active_session_id: state.active_session_id,
@@ -1612,46 +1424,6 @@ function deriveSessionTitle(prompt: string): string {
 
 function mapEntries(entries: VfsEntry[]): FileEntry[] {
   return entries.map((entry) => ({ ...entry }));
-}
-
-function modelFromDescriptor(descriptor: ModelDescriptor): Model<string> {
-  return {
-    id: descriptor.model_id,
-    name: descriptor.display_name,
-    api: "openai-completions",
-    provider: descriptor.provider_id,
-    baseUrl: "",
-    reasoning: descriptor.supports_reasoning,
-    input: ["text"],
-    cost: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-    },
-    contextWindow: descriptor.context_window ?? 128_000,
-    maxTokens: descriptor.max_output_tokens ?? 8_192,
-  };
-}
-
-function unavailableModel(selection: ModelSelection): Model<string> {
-  return {
-    id: selection.model_id,
-    name: selection.model_id,
-    api: "openai-completions",
-    provider: selection.provider_id,
-    baseUrl: "",
-    reasoning: false,
-    input: ["text"],
-    cost: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-    },
-    contextWindow: 128_000,
-    maxTokens: 8_192,
-  };
 }
 
 function capitalize(value: string): string {

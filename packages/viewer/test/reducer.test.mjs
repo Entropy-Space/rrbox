@@ -62,6 +62,89 @@ test("authoritative snapshots update providers and the active model", () => {
   });
 });
 
+test("catalog and lifecycle events stay independent from workspace state", () => {
+  const catalogProviders = [mockProvider(), localOpenAiProvider()];
+  let state = coreReducer(
+    initialAgentSessionState,
+    event("provider_catalog_snapshot", {
+      catalog_revision: 2,
+      providers: catalogProviders,
+    }),
+  );
+  state = coreReducer(
+    state,
+    event("core_lifecycle", {
+      phase: "waiting_for_writer",
+      status_message: "Active in another tab.",
+    }),
+  );
+
+  assert.deepEqual(state.providers, catalogProviders);
+  assert.equal(state.catalog_revision, 2);
+  assert.equal(state.is_ready, false);
+  assert.deepEqual(state.active_model, { provider_id: "", model_id: "" });
+  assert.deepEqual(state.projects, []);
+  assert.equal(state.core_lifecycle, "waiting_for_writer");
+
+  const olderWorkspace = snapshot("p1", null, 1, "keep draft");
+  olderWorkspace.catalog_revision = 1;
+  state = coreReducer(state, event("ready", { state: olderWorkspace }));
+  assert.deepEqual(state.providers, catalogProviders);
+  assert.equal(state.catalog_revision, 2);
+  assert.equal(state.input_draft, "keep draft");
+  assert.equal(state.core_lifecycle, "ready");
+
+  state = coreReducer(
+    state,
+    event("provider_catalog_snapshot", {
+      catalog_revision: 1,
+      providers: [mockProvider()],
+    }),
+  );
+  assert.deepEqual(state.providers, catalogProviders);
+  assert.equal(state.input_draft, "keep draft");
+});
+
+test("transport failure disables a previously ready core", () => {
+  let state = coreReducer(
+    initialAgentSessionState,
+    event("ready", { state: snapshot("p1", "s1", 1, "keep this draft") }),
+  );
+  state = coreReducer(state, {
+    type: "prompt_submitted",
+    request_id: "prompt-1",
+    project_id: "p1",
+    session_id: "s1",
+    input_draft: "keep this draft",
+    input_draft_generation: state.input_draft_generation,
+  });
+  state = coreReducer(state, {
+    type: "fs_list_requested",
+    request_id: "files-1",
+  });
+  state = coreReducer(
+    state,
+    event("run_state", {
+      project_id: "p1",
+      session_id: "s1",
+      is_running: true,
+    }),
+  );
+
+  state = coreReducer(state, {
+    type: "transport_failed",
+    message: "The browser core stopped.",
+  });
+
+  assert.equal(state.core_lifecycle, "failed");
+  assert.equal(state.is_ready, false);
+  assert.equal(state.is_running, false);
+  assert.equal(state.pending_prompt, null);
+  assert.equal(state.pending_fs_list_request_id, null);
+  assert.equal(state.input_draft, "keep this draft");
+  assert.equal(state.error_message, "The browser core stopped.");
+});
+
 test("tool activity is attached by tool call identity", () => {
   let state = coreReducer(
     initialAgentSessionState,
@@ -497,6 +580,7 @@ function snapshot(projectId, sessionId, revision, inputDraft = "") {
   const timestamp = "2026-07-22T00:00:00.000Z";
   return {
     state_revision: revision,
+    catalog_revision: revision,
     projects: [
       {
         project_id: projectId,

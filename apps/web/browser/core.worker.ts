@@ -1,11 +1,14 @@
 /// <reference lib="webworker" />
 
-import { ResearchBoxCore } from "@researchbox/agent-core";
 import {
-  attachWorkerHost,
+  ProviderCatalogService,
+  ResearchBoxCore,
+} from "@researchbox/agent-core";
+import {
   WorkerModelTransport,
   type WorkerHost,
 } from "@researchbox/runtime-browser";
+import { startBrowserRuntime } from "./browser-runtime.ts";
 import {
   IndexedDbProjectFileSystemProvider,
   IndexedDbProjectStore,
@@ -13,52 +16,70 @@ import {
 } from "./persistence";
 import { researchBoxSeedFiles } from "./seed-files";
 import { researchBoxMockModel, researchBoxSystemPrompt } from "./mock-model";
-import {
-  queueMessagesUntilStarted,
-  withExclusiveWriterLease,
-} from "./writer-lease";
 
 const host = self as unknown as WorkerHost;
-const workerLifetime = new Promise<void>(() => undefined);
-const drainQueuedMessages = queueMessagesUntilStarted(host);
+const providers = [
+  {
+    provider_id: researchBoxMockModel.provider,
+    display_name: "ResearchBox",
+    kind: "mock" as const,
+    models: [researchBoxMockModel],
+  },
+  {
+    provider_id: "local-openai",
+    display_name: "OpenAI-compatible · localhost:4141",
+    kind: "openai_compatible" as const,
+    discover_models: true,
+  },
+];
 
-void withExclusiveWriterLease(navigator.locks, async () => {
-  const llmWorker = new Worker(new URL("./llm.worker.ts", import.meta.url), {
-    type: "module",
-    name: "researchbox-llm",
-  });
-  const database = new ResearchBoxDatabase();
-  const modelGateway = new WorkerModelTransport(llmWorker);
-  const core = new ResearchBoxCore({
-    projectStore: new IndexedDbProjectStore(database),
-    workspaceProvider: new IndexedDbProjectFileSystemProvider(
-      database,
-      researchBoxSeedFiles,
-    ),
-    modelTransport: modelGateway,
-    modelCatalog: modelGateway,
-    model: researchBoxMockModel,
-    providers: [
-      {
-        provider_id: researchBoxMockModel.provider,
-        display_name: "ResearchBox",
-        kind: "mock",
-        models: [researchBoxMockModel],
+startBrowserRuntime({
+  host,
+  lockManager: navigator.locks,
+  createServices() {
+    const llmWorker = new Worker(new URL("./llm.worker.ts", import.meta.url), {
+      type: "module",
+      name: "researchbox-llm",
+    });
+    const modelGateway = new WorkerModelTransport(llmWorker);
+    const providerCatalog = new ProviderCatalogService({
+      model: researchBoxMockModel,
+      providers,
+      modelCatalog: modelGateway,
+    });
+    const unsubscribeTransportFailure = modelGateway.subscribeFatalError(
+      (error) => {
+        providerCatalog.markProvidersUnavailable(
+          providers.map((provider) => provider.provider_id),
+          error.message,
+        );
       },
-      {
-        provider_id: "local-openai",
-        display_name: "OpenAI-compatible · localhost:4141",
-        kind: "openai_compatible",
-        discover_models: true,
+    );
+    return {
+      providerCatalog,
+      modelTransport: modelGateway,
+      close() {
+        unsubscribeTransportFailure();
+        providerCatalog.close();
+        modelGateway.close();
       },
-    ],
-    systemPrompt: researchBoxSystemPrompt,
-    eventSink: (event) => host.postMessage(event),
-  });
-
-  attachWorkerHost(host, core);
-  drainQueuedMessages();
-  await workerLifetime;
+    };
+  },
+  createCore(services, eventSink) {
+    const database = new ResearchBoxDatabase();
+    return new ResearchBoxCore({
+      projectStore: new IndexedDbProjectStore(database),
+      workspaceProvider: new IndexedDbProjectFileSystemProvider(
+        database,
+        researchBoxSeedFiles,
+      ),
+      modelTransport: services.modelTransport,
+      providerCatalog: services.providerCatalog,
+      model: researchBoxMockModel,
+      systemPrompt: researchBoxSystemPrompt,
+      eventSink,
+    });
+  },
 });
 
 export {};

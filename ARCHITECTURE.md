@@ -71,12 +71,20 @@ identifier.
 ## Provider boundary
 
 The LLM worker routes the deterministic mock provider and an OpenAI-compatible
-provider whose models are discovered dynamically from `localhost:4141`. A model
-request contains the selected provider/model, system prompt, complete Pi text
-history, assistant tool calls, tool results, and tool schemas. OpenAI SSE tool
-call fragments are assembled in the LLM worker before compact model events are
-returned to the core. The viewer receives only validated provider/model
-summaries.
+provider whose models are discovered dynamically from `localhost:4141`. It is
+started before workspace writer election. A platform-neutral
+`ProviderCatalogService` in the browser runtime owns normalized availability,
+capabilities, refresh coalescing, and model lookup while the LLM worker remains
+the trusted home of provider endpoints and request adapters.
+
+Catalog discovery and refresh are read-only and never require the workspace
+writer lock. Provider catalog snapshots carry their own monotonic
+`catalog_revision`, independent from persisted workspace `state_revision`. A
+model request contains the selected provider/model, system prompt, complete Pi
+text history, assistant tool calls, tool results, and tool schemas. OpenAI SSE
+tool call fragments are assembled in the LLM worker before compact model events
+are returned to the elected core. The viewer receives only validated
+provider/model summaries.
 
 Provider URLs are application configuration, never viewer input. For the
 current local web runtime, two narrow same-origin server routes bridge model
@@ -88,17 +96,23 @@ changing the core/viewer protocol.
 
 ## Project and session persistence
 
-The browser core worker owns one IndexedDB database with `meta`, `projects`,
+The browser runtime attaches its JSON command coordinator immediately. Provider
+refresh commands remain available in every tab; workspace commands wait for an
+elected core. Writer election first probes conditionally, reports
+`waiting_for_writer` rather than silently blocking, then queues an abortable
+request for automatic promotion.
+
+The elected browser core owns one IndexedDB database with `meta`, `projects`,
 `sessions`, `session_documents`, `project_filesystems`, and `files` stores.
 Catalog writes use a monotonic `state_revision` guard. Draft-only writes update
 one project or session document without rewriting the catalog; this relies on
-the origin-wide exclusive Web Lock that gives one browser core write ownership
-while another tab waits. Session documents persist the existing-session input
-draft, viewer messages, and a versioned snake-case codec of the canonical Pi
-transcript, including tool calls and results. Projects persist their virtual
-new-chat draft and model selection; durable sessions persist their own model
-selection. Incomplete streams are recovered as interrupted only after the prior
-writer has released its lease.
+the origin-wide exclusive Web Lock that gives exactly one core write ownership.
+Session documents persist the existing-session input draft, viewer messages,
+and a versioned snake-case codec of the canonical Pi transcript, including tool
+calls and results. Projects persist their virtual new-chat draft and model
+selection; durable sessions persist their own model selection. Incomplete
+streams are recovered as interrupted only after the prior writer has released
+its lease.
 
 A project owns one virtual filesystem and zero or more durable sessions.
 Switching a project restores its last selected session or its virtual new chat.

@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 4 as const;
+export const PROTOCOL_VERSION = 5 as const;
 
 export type MessageRole = "user" | "assistant";
 
@@ -62,8 +62,16 @@ export type ProviderSummary = {
   models: ModelSummary[];
 };
 
+export type CoreLifecyclePhase =
+  | "electing"
+  | "waiting_for_writer"
+  | "initializing_workspace"
+  | "ready"
+  | "failed";
+
 export type CoreStateSnapshot = {
   state_revision: number;
+  catalog_revision: number;
   projects: ProjectSummary[];
   sessions: SessionSummary[];
   providers: ProviderSummary[];
@@ -147,6 +155,14 @@ type SessionScope = {
 };
 
 export type CoreEvent =
+  | EventEnvelope<
+      "core_lifecycle",
+      { phase: CoreLifecyclePhase; status_message?: string }
+    >
+  | EventEnvelope<
+      "provider_catalog_snapshot",
+      { catalog_revision: number; providers: ProviderSummary[] }
+    >
   | EventEnvelope<"ready", { state: CoreStateSnapshot }>
   | EventEnvelope<"state_snapshot", { state: CoreStateSnapshot }>
   | EventEnvelope<"run_state", SessionScope & { is_running: boolean }>
@@ -310,6 +326,33 @@ export function parseCoreEvent(value: unknown): CoreEvent {
   const payload = value.payload;
 
   switch (value.type) {
+    case "core_lifecycle": {
+      const statusMessage = optionalString(payload, "status_message", true);
+      return eventEnvelope(
+        "core_lifecycle",
+        eventId,
+        {
+          phase: parseCoreLifecyclePhase(payload.phase),
+          ...(statusMessage === undefined
+            ? {}
+            : { status_message: statusMessage }),
+        },
+        requestId,
+      );
+    }
+    case "provider_catalog_snapshot":
+      return eventEnvelope(
+        "provider_catalog_snapshot",
+        eventId,
+        {
+          catalog_revision: requireNonNegativeInteger(
+            payload,
+            "catalog_revision",
+          ),
+          providers: parseProviderSummaries(payload.providers),
+        },
+        requestId,
+      );
     case "ready":
       return eventEnvelope(
         "ready",
@@ -484,6 +527,7 @@ function parseCoreStateSnapshot(value: unknown): CoreStateSnapshot {
   if (!isRecord(value)) throw new Error("Core state must be an object.");
   const snapshot: CoreStateSnapshot = {
     state_revision: requireNonNegativeInteger(value, "state_revision"),
+    catalog_revision: requireNonNegativeInteger(value, "catalog_revision"),
     projects: requireArray(value, "projects").map(parseProjectSummary),
     sessions: requireArray(value, "sessions").map(parseSessionSummary),
     providers: requireArray(value, "providers").map(parseProviderSummary),
@@ -636,6 +680,32 @@ function parseProviderSummary(value: unknown): ProviderSummary {
     ...(statusMessage === undefined ? {} : { status_message: statusMessage }),
     models,
   };
+}
+
+function parseProviderSummaries(value: unknown): ProviderSummary[] {
+  if (!Array.isArray(value)) throw new Error("providers must be an array.");
+  const providers = value.map(parseProviderSummary);
+  const providerIds = new Set<string>();
+  for (const provider of providers) {
+    if (providerIds.has(provider.provider_id)) {
+      throw new Error("Duplicate provider_id.");
+    }
+    providerIds.add(provider.provider_id);
+  }
+  return providers;
+}
+
+function parseCoreLifecyclePhase(value: unknown): CoreLifecyclePhase {
+  if (
+    value !== "electing" &&
+    value !== "waiting_for_writer" &&
+    value !== "initializing_workspace" &&
+    value !== "ready" &&
+    value !== "failed"
+  ) {
+    throw new Error("Invalid core lifecycle phase.");
+  }
+  return value;
 }
 
 function parseSessionScope(value: Record<string, unknown>): SessionScope {

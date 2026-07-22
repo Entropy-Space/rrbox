@@ -94,7 +94,7 @@ test("keeps package boundaries explicit", async () => {
   assert.doesNotMatch(viewer, /from "@earendil-works\/pi-agent-core"/);
   assert.match(coreWorker, /new Worker\(new URL\("\.\/llm\.worker\.ts"/);
   assert.match(coreWorker, /WorkerModelTransport/);
-  assert.match(coreWorker, /attachWorkerHost/);
+  assert.match(coreWorker, /startBrowserRuntime/);
   assert.match(coreWorker, /new ResearchBoxCore/);
   assert.match(coreWorker, /IndexedDbProjectStore/);
   assert.doesNotMatch(coreWorker, /HttpNdjsonModelTransport/);
@@ -105,7 +105,7 @@ test("keeps package boundaries explicit", async () => {
   assert.match(core, /ProjectFileSystemProvider/);
   assert.match(runtime, /new Agent\(/);
   assert.match(runtime, /VirtualFileSystem/);
-  assert.match(protocol, /PROTOCOL_VERSION = 4/);
+  assert.match(protocol, /PROTOCOL_VERSION = 5/);
 
   await assert.rejects(
     access(new URL("../.openai/hosting.json", import.meta.url)),

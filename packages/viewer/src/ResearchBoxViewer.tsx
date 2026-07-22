@@ -45,6 +45,11 @@ export type ResearchBoxViewerProps = {
 
 const suggestions = [
   {
+    icon: FileText,
+    label: "Create a workspace note",
+    prompt: "Create a workspace note that summarizes this prototype.",
+  },
+  {
     icon: FolderOpen,
     label: "Inspect the workspace",
     prompt: "Inspect the workspace and tell me what is already implemented.",
@@ -426,7 +431,7 @@ function MessageRow({
         {activities.length > 0 && (
           <div className="tool-stack">
             {activities.map((activity) => (
-              <div className="tool-card" key={activity.tool_call_id}>
+              <div className="tool-card" key={activity.activity_id}>
                 <span className={`tool-icon ${activity.status}`}>
                   {activity.status === "running" ? (
                     <LoaderCircle size={15} className="spin" />
@@ -434,9 +439,27 @@ function MessageRow({
                     <Check size={14} />
                   )}
                 </span>
-                <span>
+                <span className="tool-copy">
                   <strong>{activity.label}</strong>
                   {activity.summary && <small>{activity.summary}</small>}
+                  {activity.file_change && (
+                    <span className="tool-file-change">
+                      <code title={activity.file_change.path}>
+                        {activity.file_change.path}
+                      </code>
+                      <span
+                        className="tool-change-stats"
+                        aria-label={`${activity.file_change.additions} additions and ${activity.file_change.deletions} deletions`}
+                      >
+                        <span className="tool-additions">
+                          +{activity.file_change.additions}
+                        </span>
+                        <span className="tool-deletions">
+                          −{activity.file_change.deletions}
+                        </span>
+                      </span>
+                    </span>
+                  )}
                 </span>
               </div>
             ))}

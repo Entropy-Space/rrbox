@@ -2,6 +2,7 @@ import type {
   ChatMessage,
   ModelSelection,
   ToolActivity,
+  WorkspaceChangeSummary,
 } from "@researchbox/protocol";
 
 export const PROJECT_STORE_SCHEMA_VERSION = 3 as const;
@@ -170,6 +171,11 @@ export function assertProjectStoreInvariants(state: ProjectStoreState): void {
     if (isUnsubmittedNewChat(session, document)) {
       throw new Error("Unsubmitted new chats must not be persisted as sessions.");
     }
+    uniqueMap(
+      document.activities,
+      (activity) => activity.activity_id,
+      "tool activity",
+    );
   }
 
   if (documents.size !== sessions.size) {
@@ -237,11 +243,14 @@ function parseSessionDocument(
   if (value.format_version !== expectedFormat) {
     throw new Error("Unsupported session document format version.");
   }
+  const sessionId = requireString(value, "session_id");
   const messages = requireArray(value, "messages").map(parseChatMessage);
-  const activities = requireArray(value, "activities").map(parseToolActivity);
+  const activities = requireArray(value, "activities").map((activity, index) =>
+    parseToolActivity(activity, `legacy:${sessionId}:${index}`),
+  );
   return {
     format_version: SESSION_DOCUMENT_FORMAT_VERSION,
-    session_id: requireString(value, "session_id"),
+    session_id: sessionId,
     project_id: requireString(value, "project_id"),
     input_draft: legacy ? "" : requireString(value, "input_draft", true),
     messages,
@@ -317,20 +326,57 @@ function parseChatMessage(value: unknown): ChatMessage {
   };
 }
 
-function parseToolActivity(value: unknown): ToolActivity {
+function parseToolActivity(
+  value: unknown,
+  legacyActivityId: string,
+): ToolActivity {
   if (!isRecord(value)) throw new Error("Stored tool activity must be an object.");
   const status = value.status;
   if (status !== "running" && status !== "complete" && status !== "error") {
     throw new Error("Stored tool activity status is invalid.");
   }
   const summary = optionalString(value, "summary", true);
+  const toolCallId = requireString(value, "tool_call_id");
+  const fileChange =
+    value.file_change === undefined
+      ? undefined
+      : parseWorkspaceChangeSummary(value.file_change);
+  if (fileChange && fileChange.tool_call_id !== toolCallId) {
+    throw new Error(
+      "Stored tool activity file_change must match tool_call_id.",
+    );
+  }
   return {
-    tool_call_id: requireString(value, "tool_call_id"),
+    activity_id:
+      value.activity_id === undefined
+        ? legacyActivityId
+        : requireString(value, "activity_id"),
+    tool_call_id: toolCallId,
     message_id: requireString(value, "message_id"),
     tool_name: requireString(value, "tool_name"),
     label: requireString(value, "label"),
     status,
     ...(summary === undefined ? {} : { summary }),
+    ...(fileChange === undefined ? {} : { file_change: fileChange }),
+  };
+}
+
+function parseWorkspaceChangeSummary(value: unknown): WorkspaceChangeSummary {
+  if (!isRecord(value)) {
+    throw new Error("Stored workspace change summary must be an object.");
+  }
+  const changeKind = value.change_kind;
+  if (changeKind !== "created" && changeKind !== "updated") {
+    throw new Error("Stored workspace change kind is invalid.");
+  }
+  return {
+    change_id: requireString(value, "change_id"),
+    tool_call_id: requireString(value, "tool_call_id"),
+    path: requireString(value, "path"),
+    change_kind: changeKind,
+    additions: requireNonNegativeInteger(value, "additions"),
+    deletions: requireNonNegativeInteger(value, "deletions"),
+    byte_size: requireNonNegativeInteger(value, "byte_size"),
   };
 }
 

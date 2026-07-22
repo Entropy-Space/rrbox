@@ -1,17 +1,25 @@
 import {
+  assertVfsWriteExpectation,
+  createVfsWriteResult,
   normalizeFilePath,
   normalizePath,
+  normalizeVfsSeedFiles,
   VfsError,
   type VfsEntry,
+  type VfsRemoveOptions,
+  type VfsWriteOptions,
+  type VfsWriteResult,
   type VirtualFileSystem,
+  type WorkspaceChangeRecord,
 } from "../filesystem.ts";
 
 export class MemoryFileSystem implements VirtualFileSystem {
   private readonly files = new Map<string, string>();
+  private readonly changes = new Map<string, WorkspaceChangeRecord>();
 
   constructor(seed: Record<string, string> = {}) {
-    for (const [path, content] of Object.entries(seed)) {
-      this.setFile(path, content);
+    for (const { path, content } of normalizeVfsSeedFiles(seed)) {
+      this.files.set(path, content);
     }
   }
 
@@ -70,12 +78,71 @@ export class MemoryFileSystem implements VirtualFileSystem {
     throw new VfsError("not_found", `File not found: ${normalizedPath}`);
   }
 
-  async write(path: string, content: string): Promise<void> {
-    this.setFile(path, content);
+  async write(
+    path: string,
+    content: string,
+    options?: VfsWriteOptions,
+  ): Promise<VfsWriteResult> {
+    const normalizedPath = normalizeFilePath(path);
+    this.assertWritablePath(normalizedPath);
+    const beforeContent = this.files.get(normalizedPath) ?? null;
+    assertVfsWriteExpectation(normalizedPath, beforeContent, options);
+    const result = createVfsWriteResult(
+      normalizedPath,
+      beforeContent,
+      content,
+      options?.change,
+    );
+    if (result.change_kind === "unchanged") return result;
+    if (result.change && this.changes.has(result.change.change_id)) {
+      throw new VfsError(
+        "conflict",
+        `Workspace change already exists: ${result.change.change_id}`,
+      );
+    }
+
+    this.files.set(normalizedPath, content);
+    if (result.change) {
+      this.changes.set(result.change.change_id, { ...result.change });
+    }
+    return result;
   }
 
-  private setFile(path: string, content: string): void {
+  async remove(path: string, options?: VfsRemoveOptions): Promise<void> {
     const normalizedPath = normalizeFilePath(path);
+    const content = this.files.get(normalizedPath);
+    if (content === undefined) {
+      if (this.hasDescendants(normalizedPath)) {
+        throw new VfsError(
+          "is_directory",
+          `Cannot remove a directory as a file: ${normalizedPath}`,
+        );
+      }
+      throw new VfsError("not_found", `File not found: ${normalizedPath}`);
+    }
+    if (
+      options?.expected_content !== undefined &&
+      options.expected_content !== content
+    ) {
+      throw new VfsError(
+        "conflict",
+        `File changed before it could be removed: ${normalizedPath}`,
+      );
+    }
+    this.files.delete(normalizedPath);
+  }
+
+  async listChanges(): Promise<WorkspaceChangeRecord[]> {
+    return [...this.changes.values()]
+      .sort((left, right) =>
+        left.created_at === right.created_at
+          ? left.change_id.localeCompare(right.change_id)
+          : left.created_at.localeCompare(right.created_at),
+      )
+      .map((change) => ({ ...change }));
+  }
+
+  private assertWritablePath(normalizedPath: string): void {
     if (this.hasDescendants(normalizedPath)) {
       throw new VfsError(
         "is_directory",
@@ -93,8 +160,6 @@ export class MemoryFileSystem implements VirtualFileSystem {
         );
       }
     }
-
-    this.files.set(normalizedPath, content);
   }
 
   private hasDescendants(path: string): boolean {

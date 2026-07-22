@@ -1,5 +1,5 @@
 import {
-  parseModelStreamEvent,
+  parseModelToolCall,
   type ModelCatalogTransport,
   type ModelConversationMessage,
   type ModelDescriptor,
@@ -380,20 +380,11 @@ function finalizeToolCalls(
       }
 
       try {
-        const event = parseModelStreamEvent({
-          type: "tool_call",
+        return parseModelToolCall({
           tool_call_id: pending.tool_call_id,
           tool_name: pending.tool_name,
           arguments: argumentsValue,
         });
-        if (event.type !== "tool_call") {
-          throw new Error("Expected a tool call event.");
-        }
-        return {
-          tool_call_id: event.tool_call_id,
-          tool_name: event.tool_name,
-          arguments: event.arguments,
-        };
       } catch (error) {
         throw new Error(
           `Invalid tool call at index ${index}: ${errorMessage(error)}`,

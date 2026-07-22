@@ -65,6 +65,222 @@ test("IndexedDB project state and files survive reopening the database", async (
   );
 });
 
+test("IndexedDB seed validation cannot leave a partial workspace", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-invalid-seed-${crypto.randomUUID()}`,
+  );
+
+  assert.throws(
+    () =>
+      new IndexedDbProjectFileSystemProvider(database, {
+        "/valid.txt": "valid",
+        "../../invalid.txt": "invalid",
+      }),
+    (error) => error.code === "invalid_path",
+  );
+  assert.throws(
+    () =>
+      new IndexedDbProjectFileSystemProvider(database, {
+        "/a": "file",
+        "/a/b": "nested",
+      }),
+    (error) => error.code === "not_directory",
+  );
+
+  const provider = new IndexedDbProjectFileSystemProvider(database, {});
+  await assert.rejects(provider.open("project-1"), /does not exist/);
+  database.close();
+});
+
+test("IndexedDB atomically persists file writes and workspace change receipts", async () => {
+  const factory = new IDBFactory();
+  const databaseName = `researchbox-file-changes-${crypto.randomUUID()}`;
+  const firstDatabase = new ResearchBoxDatabase(factory, databaseName);
+  const firstProvider = new IndexedDbProjectFileSystemProvider(firstDatabase, {});
+  const filesystem = await firstProvider.create("project-1");
+
+  const created = await filesystem.write(
+    "/notes.txt",
+    "alpha\nbeta\n",
+    { change: workspaceChangeMetadata("change-1", "write_file") },
+  );
+  assert.equal(created.change_kind, "created");
+  assert.deepEqual(
+    {
+      additions: created.change.additions,
+      deletions: created.change.deletions,
+      byte_size: created.change.byte_size,
+    },
+    { additions: 2, deletions: 0, byte_size: 11 },
+  );
+
+  const updated = await filesystem.write(
+    "/notes.txt",
+    "alpha\ngamma\n",
+    {
+      expected_content: "alpha\nbeta\n",
+      change: workspaceChangeMetadata("change-2", "replace_text"),
+    },
+  );
+  assert.equal(updated.change_kind, "updated");
+  assert.deepEqual(
+    {
+      additions: updated.change.additions,
+      deletions: updated.change.deletions,
+      byte_size: updated.change.byte_size,
+    },
+    { additions: 1, deletions: 1, byte_size: 12 },
+  );
+
+  const unchanged = await filesystem.write(
+    "/notes.txt",
+    "alpha\ngamma\n",
+    { change: workspaceChangeMetadata("change-3", "write_file") },
+  );
+  assert.equal(unchanged.change_kind, "unchanged");
+  assert.equal(unchanged.change, null);
+  firstDatabase.close();
+
+  const reopenedDatabase = new ResearchBoxDatabase(factory, databaseName);
+  const reopenedProvider = new IndexedDbProjectFileSystemProvider(
+    reopenedDatabase,
+    {},
+  );
+  const reopened = await reopenedProvider.open("project-1");
+  assert.equal(await reopened.read("/notes.txt"), "alpha\ngamma\n");
+  assert.deepEqual(
+    (await reopened.listChanges()).map((change) => ({
+      change_id: change.change_id,
+      path: change.path,
+      change_kind: change.change_kind,
+      before_content: change.before_content,
+      after_content: change.after_content,
+    })),
+    [
+      {
+        change_id: "change-1",
+        path: "/notes.txt",
+        change_kind: "created",
+        before_content: null,
+        after_content: "alpha\nbeta\n",
+      },
+      {
+        change_id: "change-2",
+        path: "/notes.txt",
+        change_kind: "updated",
+        before_content: "alpha\nbeta\n",
+        after_content: "alpha\ngamma\n",
+      },
+    ],
+  );
+
+  await assert.rejects(
+    reopened.write("/duplicate.txt", "must roll back", {
+      change: workspaceChangeMetadata("change-2", "write_file"),
+    }),
+    (error) => error.code === "conflict",
+  );
+  await assert.rejects(reopened.read("/duplicate.txt"), /File not found/);
+
+  await reopenedProvider.delete("project-1");
+  const recreated = await reopenedProvider.create("project-1");
+  assert.deepEqual(await recreated.list("/"), []);
+  assert.deepEqual(await recreated.listChanges(), []);
+  reopenedDatabase.close();
+});
+
+test("concurrent IndexedDB compare-and-swap writes allow one winner", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-file-cas-${crypto.randomUUID()}`,
+  );
+  const provider = new IndexedDbProjectFileSystemProvider(database, {
+    "/notes.txt": "original",
+  });
+  const filesystem = await provider.create("project-1");
+
+  const results = await Promise.allSettled([
+    filesystem.write("/notes.txt", "first", {
+      expected_content: "original",
+      change: workspaceChangeMetadata("first-change", "write_file"),
+    }),
+    filesystem.write("/notes.txt", "second", {
+      expected_content: "original",
+      change: workspaceChangeMetadata("second-change", "write_file"),
+    }),
+  ]);
+  assert.equal(
+    results.filter((result) => result.status === "fulfilled").length,
+    1,
+  );
+  assert.equal(
+    results.filter((result) => result.status === "rejected").length,
+    1,
+  );
+  const rejection = results.find((result) => result.status === "rejected");
+  assert.equal(rejection.reason.code, "conflict");
+  assert.ok(["first", "second"].includes(await filesystem.read("/notes.txt")));
+  assert.equal((await filesystem.listChanges()).length, 1);
+
+  const winner = await filesystem.read("/notes.txt");
+  await assert.rejects(
+    filesystem.remove("/notes.txt", { expected_content: "original" }),
+    /changed before it could be removed/,
+  );
+  await filesystem.remove("/notes.txt", { expected_content: winner });
+  await assert.rejects(filesystem.read("/notes.txt"), /File not found/);
+  database.close();
+});
+
+test("stale IndexedDB handles cannot mutate a deleted or recreated project", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-stale-filesystem-${crypto.randomUUID()}`,
+  );
+  const provider = new IndexedDbProjectFileSystemProvider(database, {});
+  const stale = await provider.create("project-1");
+
+  await provider.delete("project-1");
+  await assert.rejects(
+    stale.write("/ghost.txt", "ghost", {
+      change: workspaceChangeMetadata("ghost-change", "write_file"),
+    }),
+    (error) => error.code === "not_found",
+  );
+  await assert.rejects(
+    stale.list("/"),
+    (error) => error.code === "not_found",
+  );
+
+  const current = await provider.create("project-1");
+  await current.write("/current.txt", "current");
+  await assert.rejects(
+    stale.write("/ghost.txt", "ghost", {
+      change: workspaceChangeMetadata("second-ghost", "write_file"),
+    }),
+    (error) => error.code === "conflict",
+  );
+  await assert.rejects(
+    stale.remove("/current.txt", { expected_content: "current" }),
+    (error) => error.code === "conflict",
+  );
+  await assert.rejects(
+    stale.read("/current.txt"),
+    (error) => error.code === "conflict",
+  );
+  await assert.rejects(
+    stale.listChanges(),
+    (error) => error.code === "conflict",
+  );
+  assert.equal(await current.read("/current.txt"), "current");
+  assert.deepEqual(await current.listChanges(), []);
+  database.close();
+});
+
 test("IndexedDB v1 project-store migration is persisted exactly once", async () => {
   const factory = new IDBFactory();
   const databaseName = `researchbox-store-migration-${crypto.randomUUID()}`;
@@ -335,6 +551,93 @@ test("IndexedDB v1 projects gain filesystem markers during migration", async () 
   database.close();
 });
 
+test("IndexedDB v2 filesystem markers gain stable incarnation ids", async () => {
+  const factory = new IDBFactory();
+  const databaseName = `researchbox-incarnation-migration-${crypto.randomUUID()}`;
+  const legacyDatabase = await openVersionTwoDatabase(factory, databaseName);
+  const transaction = legacyDatabase.transaction(
+    ["projects", "project_filesystems", "files"],
+    "readwrite",
+  );
+  const completion = transactionComplete(transaction);
+  transaction.objectStore("projects").put({
+    project_id: "legacy-project",
+    name: "Legacy project",
+  });
+  transaction.objectStore("project_filesystems").put({
+    project_id: "legacy-project",
+  });
+  transaction.objectStore("files").put({
+    project_id: "legacy-project",
+    path: "/legacy.txt",
+    content: "legacy",
+  });
+  await completion;
+  legacyDatabase.close();
+
+  const database = new ResearchBoxDatabase(factory, databaseName);
+  const provider = new IndexedDbProjectFileSystemProvider(database, {});
+  const filesystem = await provider.open("legacy-project");
+  assert.equal(await filesystem.read("/legacy.txt"), "legacy");
+
+  const connection = await database.open();
+  const verification = connection.transaction(
+    "project_filesystems",
+    "readonly",
+  );
+  const verificationComplete = transactionComplete(verification);
+  const marker = await requestValue(
+    verification.objectStore("project_filesystems").get("legacy-project"),
+  );
+  await verificationComplete;
+  assert.equal(typeof marker.incarnation_id, "string");
+  assert.notEqual(marker.incarnation_id, "");
+
+  const secondHandle = await provider.open("legacy-project");
+  await secondHandle.write("/legacy.txt", "updated", {
+    expected_content: "legacy",
+  });
+  assert.equal(await filesystem.read("/legacy.txt"), "updated");
+  database.close();
+});
+
+test("current IndexedDB markers missing incarnation ids are repaired lazily", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-incarnation-repair-${crypto.randomUUID()}`,
+  );
+  const provider = new IndexedDbProjectFileSystemProvider(database, {});
+  const oldHandle = await provider.create("project-1");
+  await oldHandle.write("/notes.txt", "persisted");
+
+  const connection = await database.open();
+  const damage = connection.transaction("project_filesystems", "readwrite");
+  const damageComplete = transactionComplete(damage);
+  damage.objectStore("project_filesystems").put({ project_id: "project-1" });
+  await damageComplete;
+
+  const repairedHandle = await provider.open("project-1");
+  assert.equal(await repairedHandle.read("/notes.txt"), "persisted");
+  await assert.rejects(
+    oldHandle.read("/notes.txt"),
+    (error) => error.code === "conflict",
+  );
+
+  const verification = connection.transaction(
+    "project_filesystems",
+    "readonly",
+  );
+  const verificationComplete = transactionComplete(verification);
+  const marker = await requestValue(
+    verification.objectStore("project_filesystems").get("project-1"),
+  );
+  await verificationComplete;
+  assert.equal(typeof marker.incarnation_id, "string");
+  assert.notEqual(marker.incarnation_id, "");
+  database.close();
+});
+
 test("a blocked IndexedDB upgrade can be retried without leaking its late connection", async () => {
   const factory = new IDBFactory();
   const databaseName = `researchbox-blocked-${crypto.randomUUID()}`;
@@ -348,7 +651,7 @@ test("a blocked IndexedDB upgrade can be retried without leaking its late connec
 
   legacyDatabase.close();
   const connection = await database.open();
-  assert.equal(connection.version, 2);
+  assert.equal(connection.version, 3);
 
   database.close();
   await Promise.resolve();
@@ -464,6 +767,20 @@ function createDefaultModelSelection() {
   };
 }
 
+function workspaceChangeMetadata(changeId, toolName) {
+  return {
+    change_id: changeId,
+    session_id: "session-1",
+    message_id: "message-1",
+    assistant_message_index: 1,
+    tool_call_id: `tool-${changeId}`,
+    tool_name: toolName,
+    created_at: `2026-07-23T00:00:00.${changeId.length
+      .toString()
+      .padStart(3, "0")}Z`,
+  };
+}
+
 function requestValue(request) {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
@@ -484,6 +801,33 @@ function openLegacyDatabase(factory, databaseName) {
       sessions.createIndex("by_project", "project_id", { unique: false });
       database.createObjectStore("session_documents", {
         keyPath: "session_id",
+      });
+      const files = database.createObjectStore("files", {
+        keyPath: ["project_id", "path"],
+      });
+      files.createIndex("by_project", "project_id", { unique: false });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function openVersionTwoDatabase(factory, databaseName) {
+  return new Promise((resolve, reject) => {
+    const request = factory.open(databaseName, 2);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      database.createObjectStore("meta", { keyPath: "key" });
+      database.createObjectStore("projects", { keyPath: "project_id" });
+      const sessions = database.createObjectStore("sessions", {
+        keyPath: "session_id",
+      });
+      sessions.createIndex("by_project", "project_id", { unique: false });
+      database.createObjectStore("session_documents", {
+        keyPath: "session_id",
+      });
+      database.createObjectStore("project_filesystems", {
+        keyPath: "project_id",
       });
       const files = database.createObjectStore("files", {
         keyPath: ["project_id", "path"],

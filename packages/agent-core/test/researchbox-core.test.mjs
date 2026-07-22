@@ -864,6 +864,509 @@ test("abort repairs unexecuted sequential tool calls before the next prompt", as
   );
 });
 
+test("workspace mutation tools persist receipts and emit live change events", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const requests = [];
+  const initialContent = "# Agent note\n\nfirst draft\n";
+  const finalContent = "# Agent note\n\nready to review\n";
+  const core = createCore(store, provider, events, {
+    async *stream(request) {
+      requests.push(structuredClone(request));
+      if (requests.length === 1) {
+        yield {
+          type: "tool_call",
+          tool_call_id: "write-note",
+          tool_name: "write_file",
+          arguments: {
+            path: "/notes/agent-note.md",
+            content: initialContent,
+          },
+        };
+        yield { type: "done", stop_reason: "tool_use" };
+        return;
+      }
+      if (requests.length === 2) {
+        const writeResult = request.messages.at(-1);
+        assert.equal(writeResult.role, "tool");
+        assert.equal(writeResult.tool_call_id, "write-note");
+        assert.equal(writeResult.tool_name, "write_file");
+        assert.equal(writeResult.is_error, false);
+        yield {
+          type: "tool_call",
+          tool_call_id: "revise-note",
+          tool_name: "replace_text",
+          arguments: {
+            path: "/notes/agent-note.md",
+            old_text: "first draft",
+            new_text: "ready to review",
+          },
+        };
+        yield { type: "done", stop_reason: "tool_use" };
+        return;
+      }
+      const replaceResult = request.messages.at(-1);
+      assert.equal(replaceResult.role, "tool");
+      assert.equal(replaceResult.tool_call_id, "revise-note");
+      assert.equal(replaceResult.tool_name, "replace_text");
+      assert.equal(replaceResult.is_error, false);
+      yield { type: "text_delta", text_delta: "The note is ready." };
+      yield { type: "done", stop_reason: "stop" };
+    },
+  });
+
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  assert.equal(initial.workspace_revision, 0);
+  await core.handle(
+    createCommand("prompt", {
+      project_id: initial.active_project_id,
+      session_id: null,
+      text: "Create and revise a note",
+    }),
+  );
+
+  const workspace = await provider.open(initial.active_project_id);
+  assert.equal(await workspace.read("/notes/agent-note.md"), finalContent);
+  const changes = await workspace.listChanges();
+  assert.equal(changes.length, 2);
+  assert.deepEqual(
+    changes.map((change) => ({
+      tool_call_id: change.tool_call_id,
+      tool_name: change.tool_name,
+      path: change.path,
+      change_kind: change.change_kind,
+      before_content: change.before_content,
+      after_content: change.after_content,
+    })),
+    [
+      {
+        tool_call_id: "write-note",
+        tool_name: "write_file",
+        path: "/notes/agent-note.md",
+        change_kind: "created",
+        before_content: null,
+        after_content: initialContent,
+      },
+      {
+        tool_call_id: "revise-note",
+        tool_name: "replace_text",
+        path: "/notes/agent-note.md",
+        change_kind: "updated",
+        before_content: initialContent,
+        after_content: finalContent,
+      },
+    ],
+  );
+
+  const changeEvents = events.filter(
+    (event) => event.type === "workspace_changed",
+  );
+  assert.deepEqual(
+    changeEvents.map((event) => ({
+      workspace_revision: event.payload.workspace_revision,
+      tool_call_id: event.payload.change.tool_call_id,
+      path: event.payload.change.path,
+    })),
+    [
+      {
+        workspace_revision: 1,
+        tool_call_id: "write-note",
+        path: "/notes/agent-note.md",
+      },
+      {
+        workspace_revision: 2,
+        tool_call_id: "revise-note",
+        path: "/notes/agent-note.md",
+      },
+    ],
+  );
+
+  const persisted = await store.load();
+  assert.deepEqual(
+    persisted.documents[0].activities.map((activity) => ({
+      tool_call_id: activity.tool_call_id,
+      status: activity.status,
+      path: activity.file_change?.path,
+      summary: activity.summary,
+    })),
+    [
+      {
+        tool_call_id: "write-note",
+        status: "complete",
+        path: "/notes/agent-note.md",
+        summary: "Created · +3 −0",
+      },
+      {
+        tool_call_id: "revise-note",
+        status: "complete",
+        path: "/notes/agent-note.md",
+        summary: "Updated · +1 −1",
+      },
+    ],
+  );
+  assert.equal(
+    persisted.documents[0].agent_messages.filter(
+      (message) => message.role === "tool_result" && !message.is_error,
+    ).length,
+    2,
+  );
+  assert.equal(latestState(events).workspace_revision, 2);
+
+  const reloadedEvents = [];
+  const reloaded = createCore(store, provider, reloadedEvents);
+  await reloaded.handle(createCommand("bootstrap", {}));
+  assert.equal(
+    latestState(reloadedEvents).activities.every(
+      (activity) => activity.status === "complete",
+    ),
+    true,
+  );
+  assert.equal(await workspace.read("/notes/agent-note.md"), finalContent);
+});
+
+test("reload recovers a committed mutation from its durable receipt", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  let requestCount = 0;
+  const core = createCore(store, provider, events, {
+    async *stream() {
+      requestCount += 1;
+      if (requestCount === 1) {
+        yield {
+          type: "tool_call",
+          tool_call_id: "recover-write",
+          tool_name: "write_file",
+          arguments: {
+            path: "/recovered.txt",
+            content: "committed before reload\n",
+          },
+        };
+        yield { type: "done", stop_reason: "tool_use" };
+        return;
+      }
+      yield { type: "text_delta", text_delta: "Saved." };
+      yield { type: "done", stop_reason: "stop" };
+    },
+  });
+
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await core.handle(
+    createCommand("prompt", {
+      project_id: initial.active_project_id,
+      session_id: null,
+      text: "Write a recoverable file",
+    }),
+  );
+
+  const crashed = await store.load();
+  const document = crashed.documents[0];
+  assert.deepEqual(
+    document.agent_messages.map((message) => message.role),
+    ["user", "assistant", "tool_result", "assistant"],
+  );
+  document.agent_messages = document.agent_messages.slice(0, 2);
+  document.messages.at(-1).content = "";
+  document.messages.at(-1).status = "streaming";
+  document.activities[0].status = "running";
+  delete document.activities[0].summary;
+  delete document.activities[0].file_change;
+  const expectedRevision = crashed.state_revision;
+  crashed.state_revision += 1;
+  await store.save(crashed, expectedRevision);
+
+  const reloadedEvents = [];
+  const reloaded = createCore(store, provider, reloadedEvents);
+  await reloaded.handle(createCommand("bootstrap", {}));
+
+  const recovered = (await store.load()).documents[0];
+  assert.equal(recovered.messages.at(-1).status, "aborted");
+  assert.deepEqual(
+    recovered.agent_messages.map((message) => message.role),
+    ["user", "assistant", "tool_result"],
+  );
+  assert.equal(recovered.agent_messages.at(-1).tool_call_id, "recover-write");
+  assert.equal(recovered.agent_messages.at(-1).is_error, false);
+  assert.deepEqual(
+    {
+      status: recovered.activities[0].status,
+      summary: recovered.activities[0].summary,
+      path: recovered.activities[0].file_change?.path,
+      change_kind: recovered.activities[0].file_change?.change_kind,
+    },
+    {
+      status: "complete",
+      summary: "Created · +1 −0",
+      path: "/recovered.txt",
+      change_kind: "created",
+    },
+  );
+  assert.equal(
+    await (await provider.open(initial.active_project_id)).read("/recovered.txt"),
+    "committed before reload\n",
+  );
+});
+
+test("reload recovers a later sequential mutation after prior tool results", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  let requestCount = 0;
+  const core = createCore(store, provider, events, {
+    async *stream() {
+      requestCount += 1;
+      if (requestCount === 1) {
+        yield {
+          type: "tool_call",
+          tool_call_id: "first-write",
+          tool_name: "write_file",
+          arguments: {
+            path: "/first.txt",
+            content: "first\n",
+          },
+        };
+        yield {
+          type: "tool_call",
+          tool_call_id: "second-write",
+          tool_name: "write_file",
+          arguments: {
+            path: "/second.txt",
+            content: "second\n",
+          },
+        };
+        yield { type: "done", stop_reason: "tool_use" };
+        return;
+      }
+      yield { type: "text_delta", text_delta: "Both files are saved." };
+      yield { type: "done", stop_reason: "stop" };
+    },
+  });
+
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await core.handle(
+    createCommand("prompt", {
+      project_id: initial.active_project_id,
+      session_id: null,
+      text: "Write two files",
+    }),
+  );
+
+  const crashed = await store.load();
+  const document = crashed.documents[0];
+  assert.equal(document.activities.length, 2);
+  assert.deepEqual(
+    document.activities.map((activity) => activity.tool_call_id),
+    ["first-write", "second-write"],
+  );
+  assert.notEqual(
+    document.activities[0].activity_id,
+    document.activities[1].activity_id,
+  );
+  assert.equal(
+    document.activities[0].message_id,
+    document.activities[1].message_id,
+  );
+  assert.deepEqual(
+    document.agent_messages.map((message) => message.role),
+    ["user", "assistant", "tool_result", "tool_result", "assistant"],
+  );
+  document.agent_messages = document.agent_messages.slice(0, 3);
+  document.messages.at(-1).content = "";
+  document.messages.at(-1).status = "streaming";
+  const secondActivity = document.activities.find(
+    (activity) => activity.tool_call_id === "second-write",
+  );
+  assert.ok(secondActivity);
+  secondActivity.status = "running";
+  delete secondActivity.summary;
+  delete secondActivity.file_change;
+  const expectedRevision = crashed.state_revision;
+  crashed.state_revision += 1;
+  await store.save(crashed, expectedRevision);
+
+  const reloaded = createCore(store, provider, []);
+  await reloaded.handle(createCommand("bootstrap", {}));
+
+  const recovered = (await store.load()).documents[0];
+  assert.deepEqual(
+    recovered.agent_messages.map((message) => message.role),
+    ["user", "assistant", "tool_result", "tool_result"],
+  );
+  assert.deepEqual(
+    {
+      tool_call_id: recovered.agent_messages.at(-1).tool_call_id,
+      is_error: recovered.agent_messages.at(-1).is_error,
+      status: recovered.activities.find(
+        (activity) => activity.tool_call_id === "second-write",
+      )?.status,
+      path: recovered.activities.find(
+        (activity) => activity.tool_call_id === "second-write",
+      )?.file_change?.path,
+    },
+    {
+      tool_call_id: "second-write",
+      is_error: false,
+      status: "complete",
+      path: "/second.txt",
+    },
+  );
+});
+
+test("reload never reuses an old receipt for a repeated provider tool id", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  let requestCount = 0;
+  const core = createCore(store, provider, events, {
+    async *stream() {
+      requestCount += 1;
+      if (requestCount <= 2) {
+        yield {
+          type: "tool_call",
+          tool_call_id: "reused-write-id",
+          tool_name: "write_file",
+          arguments: {
+            path: "/same.txt",
+            content: "same content\n",
+          },
+        };
+        yield { type: "done", stop_reason: "tool_use" };
+        return;
+      }
+      yield { type: "text_delta", text_delta: "No further changes." };
+      yield { type: "done", stop_reason: "stop" };
+    },
+  });
+
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await core.handle(
+    createCommand("prompt", {
+      project_id: initial.active_project_id,
+      session_id: null,
+      text: "Write the same content twice",
+    }),
+  );
+
+  const workspace = await provider.open(initial.active_project_id);
+  const changes = await workspace.listChanges();
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].assistant_message_index, 1);
+
+  const crashed = await store.load();
+  const document = crashed.documents[0];
+  assert.equal(document.activities.length, 2);
+  assert.deepEqual(
+    document.activities.map((activity) => activity.tool_call_id),
+    ["reused-write-id", "reused-write-id"],
+  );
+  assert.notEqual(
+    document.activities[0].activity_id,
+    document.activities[1].activity_id,
+  );
+  assert.equal(
+    document.activities[0].message_id,
+    document.activities[1].message_id,
+  );
+  assert.deepEqual(
+    document.agent_messages.map((message) => message.role),
+    [
+      "user",
+      "assistant",
+      "tool_result",
+      "assistant",
+      "tool_result",
+      "assistant",
+    ],
+  );
+  document.agent_messages = document.agent_messages.slice(0, 4);
+  document.messages.at(-1).content = "";
+  document.messages.at(-1).status = "streaming";
+  const repeatedActivity = document.activities.at(-1);
+  repeatedActivity.status = "running";
+  delete repeatedActivity.summary;
+  delete repeatedActivity.file_change;
+  const expectedRevision = crashed.state_revision;
+  crashed.state_revision += 1;
+  await store.save(crashed, expectedRevision);
+
+  const reloaded = createCore(store, provider, []);
+  await reloaded.handle(createCommand("bootstrap", {}));
+
+  const recovered = (await store.load()).documents[0];
+  assert.deepEqual(
+    recovered.agent_messages.map((message) => message.role),
+    ["user", "assistant", "tool_result", "assistant", "tool_result"],
+  );
+  assert.equal(recovered.agent_messages.at(-1).tool_call_id, "reused-write-id");
+  assert.equal(recovered.agent_messages.at(-1).is_error, true);
+  assert.equal(recovered.activities.length, 2);
+  assert.equal(recovered.activities[0].status, "complete");
+  assert.equal(recovered.activities[0].file_change?.path, "/same.txt");
+  assert.equal(recovered.activities[1].status, "error");
+  assert.equal(recovered.activities[1].file_change, undefined);
+  assert.equal(await workspace.read("/same.txt"), "same content\n");
+});
+
+test("replace_text rejects overlapping matches without changing the file", async () => {
+  const store = new MemoryProjectStore();
+  const workspace = new MemoryFileSystem({ "/overlap.txt": "aaa" });
+  const provider = new MemoryProjectFileSystemProvider(() => workspace);
+  const events = [];
+  let requestCount = 0;
+  const core = createCore(store, provider, events, {
+    async *stream(request) {
+      requestCount += 1;
+      if (requestCount === 1) {
+        yield {
+          type: "tool_call",
+          tool_call_id: "ambiguous-replace",
+          tool_name: "replace_text",
+          arguments: {
+            path: "/overlap.txt",
+            old_text: "aa",
+            new_text: "b",
+          },
+        };
+        yield { type: "done", stop_reason: "tool_use" };
+        return;
+      }
+      const result = request.messages.at(-1);
+      assert.equal(result.role, "tool");
+      assert.equal(result.tool_call_id, "ambiguous-replace");
+      assert.equal(result.is_error, true);
+      assert.match(result.content, /more than once/);
+      yield { type: "text_delta", text_delta: "I need a unique match." };
+      yield { type: "done", stop_reason: "stop" };
+    },
+  });
+
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await core.handle(
+    createCommand("prompt", {
+      project_id: initial.active_project_id,
+      session_id: null,
+      text: "Make an ambiguous replacement",
+    }),
+  );
+
+  assert.equal(await workspace.read("/overlap.txt"), "aaa");
+  assert.deepEqual(await workspace.listChanges(), []);
+  assert.equal(
+    (await store.load()).documents[0].activities[0].status,
+    "error",
+  );
+  assert.equal(
+    events.some((event) => event.type === "workspace_changed"),
+    false,
+  );
+});
+
 test("length stops surface as a terminal core error", async () => {
   const store = new MemoryProjectStore();
   const provider = createWorkspaceProvider();
@@ -1108,7 +1611,7 @@ function promptFromRequest(request) {
   assert.equal(request.system_prompt, "You are a test agent.");
   assert.deepEqual(
     request.tools.map((tool) => tool.name),
-    ["list_files", "read_file"],
+    ["list_files", "read_file", "write_file", "replace_text"],
   );
   const message = [...request.messages]
     .reverse()

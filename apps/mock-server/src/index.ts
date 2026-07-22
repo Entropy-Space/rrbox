@@ -66,9 +66,36 @@ function createMockResponse(request: ModelRequest): ModelStreamEvent[] {
       > => message.role === "tool",
     );
   const normalizedPrompt = prompt.toLowerCase();
+  const shouldCreateNote =
+    normalizedPrompt.includes("create") &&
+    normalizedPrompt.includes("note");
   const shouldInspectFiles = ["file", "workspace", "readme", "project"].some(
     (term) => normalizedPrompt.includes(term),
   );
+
+  if (shouldCreateNote && toolResults.length === 0) {
+    return [
+      {
+        type: "tool_call",
+        tool_call_id: crypto.randomUUID(),
+        tool_name: "write_file",
+        arguments: {
+          path: "/notes/agent-note.md",
+          content: [
+            "# Agent note",
+            "",
+            "Created by the ResearchBox mock agent.",
+            "",
+            "- The agent core runs in a Web Worker.",
+            "- Files live behind a portable virtual filesystem.",
+            "- Viewer and core communicate through versioned JSON.",
+            "",
+          ].join("\n"),
+        },
+      },
+      { type: "done", stop_reason: "tool_use" },
+    ];
+  }
 
   if (shouldInspectFiles && toolResults.length === 0) {
     return [
@@ -86,7 +113,7 @@ function createMockResponse(request: ModelRequest): ModelStreamEvent[] {
     ];
   }
 
-  const response = shouldInspectFiles
+  const response = shouldCreateNote || shouldInspectFiles
     ? responseFromToolResult(toolResults[0])
     : "This prototype is running through a versioned JSON boundary. The viewer only renders events; the agent core owns the conversation and tools inside a Web Worker. That gives us a clean path from today’s mock model to Pi without coupling the interface to either one.";
 
@@ -110,7 +137,13 @@ function responseFromToolResult(
     return "The workspace tool returned no result, so I could not inspect it.";
   }
   if (result.is_error) {
-    return `I tried to inspect the workspace, but the tool reported: ${result.content}`;
+    return `I tried to use the workspace, but the tool reported: ${result.content}`;
+  }
+  if (result.tool_name === "write_file") {
+    return "I created `/notes/agent-note.md` in the project workspace. It is already visible in the file browser, and the change card records the path and line statistics.";
+  }
+  if (result.tool_name === "replace_text") {
+    return "I updated the requested text in the workspace. The exact-match edit and its durable change record both completed successfully.";
   }
   if (result.tool_name === "read_file") {
     return "I read the project README. It confirms the intended architecture: a versioned viewer protocol, a worker-hosted agent core, and storage behind a virtual filesystem interface. The next useful step is an OPFS adapter so this workspace persists across browser sessions without changing the agent tools.";

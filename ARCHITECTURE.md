@@ -27,16 +27,19 @@ apps/web
                   └─ same-origin bridge → localhost:4141/v1
 ```
 
-The viewer and core worker exchange only protocol-v4 JSON values. A
+The viewer and core worker exchange only protocol-v6 JSON values. A
 `project_id` plus nullable `session_id` scopes the active composer: `null`
 identifies that project's single virtual new chat, while incremental run events
 always identify a durable session. Filesystem and draft acknowledgements use a
 required request identifier, while authoritative snapshots use a monotonic
-state revision. Together these prevent late work from replacing a newer
-project, chat, draft, or file-navigation result. The core and LLM workers use a
-separate protocol-v2 JSON contract so provider discovery, full conversation
-requests, provider I/O, cancellation, and future credentials stay outside the
-agent runtime. The viewer never imports Pi,
+state revision. Workspace reads also carry a project-scoped
+`workspace_revision`; mutation events identify the changed path so the viewer
+can refresh its directory and selected file without accepting stale responses.
+Together these prevent late work from replacing a newer project, chat, draft,
+or file-navigation result. The core and LLM workers use a separate protocol-v3
+JSON contract so provider discovery, full conversation requests, provider I/O,
+cancellation, and future credentials stay outside the agent runtime. The viewer
+never imports Pi,
 filesystem implementations, model transports, or either worker runtime.
 
 The LLM worker is an isolation and lifecycle boundary, not a security boundary
@@ -103,16 +106,22 @@ elected core. Writer election first probes conditionally, reports
 request for automatic promotion.
 
 The elected browser core owns one IndexedDB database with `meta`, `projects`,
-`sessions`, `session_documents`, `project_filesystems`, and `files` stores.
-Catalog writes use a monotonic `state_revision` guard. Draft-only writes update
-one project or session document without rewriting the catalog; this relies on
-the origin-wide exclusive Web Lock that gives exactly one core write ownership.
-Session documents persist the existing-session input draft, viewer messages,
-and a versioned snake-case codec of the canonical Pi transcript, including tool
-calls and results. Projects persist their virtual new-chat draft and model
-selection; durable sessions persist their own model selection. Incomplete
-streams are recovered as interrupted only after the prior writer has released
-its lease.
+`sessions`, `session_documents`, `project_filesystems`, `files`, and
+`file_changes` stores. Catalog writes use a monotonic `state_revision` guard.
+Draft-only writes update one project or session document without rewriting the
+catalog; this relies on the origin-wide exclusive Web Lock that gives exactly
+one core write ownership. Session documents persist the existing-session input
+draft, viewer messages, tool activity, and a versioned snake-case codec of the
+canonical Pi transcript, including tool calls and results. Projects persist
+their virtual new-chat draft and model selection; durable sessions persist
+their own model selection.
+
+`write_file` and exact-match `replace_text` use compare-and-swap VFS writes.
+IndexedDB commits the file and an undo-ready before/after receipt in one
+transaction. The core checkpoints a mutation before execution and after its
+tool result; if a worker stops between those checkpoints, reload reconciliation
+uses the durable receipt to record truthful success before the remaining stream
+is marked interrupted.
 
 A project owns one virtual filesystem and zero or more durable sessions.
 Switching a project restores its last selected session or its virtual new chat.

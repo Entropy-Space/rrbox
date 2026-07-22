@@ -12,12 +12,14 @@ import {
   type SessionSummary,
   type ToolActivity,
   type ViewerCommand,
+  type WorkspaceChangeSummary,
 } from "@researchbox/protocol";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
 export type AgentSessionState = {
   state_revision: number;
   catalog_revision: number;
+  workspace_revision: number;
   projects: ProjectSummary[];
   sessions: SessionSummary[];
   providers: ProviderSummary[];
@@ -41,13 +43,15 @@ export type AgentSessionState = {
   is_ready: boolean;
   is_running: boolean;
   error_message: string | null;
-  pending_fs_list_request_id: string | null;
-  pending_fs_read_request_id: string | null;
+  pending_fs_list: PendingFileSystemRequest | null;
+  pending_fs_read: PendingFileSystemRequest | null;
+  pending_workspace_refresh: PendingWorkspaceRefresh | null;
 };
 
 export const initialAgentSessionState: AgentSessionState = {
   state_revision: 0,
   catalog_revision: 0,
+  workspace_revision: 0,
   projects: [],
   sessions: [],
   providers: [],
@@ -74,8 +78,9 @@ export const initialAgentSessionState: AgentSessionState = {
   is_ready: false,
   is_running: false,
   error_message: null,
-  pending_fs_list_request_id: null,
-  pending_fs_read_request_id: null,
+  pending_fs_list: null,
+  pending_fs_read: null,
+  pending_workspace_refresh: null,
 };
 
 type PendingPrompt = {
@@ -91,10 +96,23 @@ type DraftScope = {
   session_id: string | null;
 };
 
+type PendingFileSystemRequest = {
+  request_id: string;
+  path: string;
+  expected_workspace_revision: number;
+  request_kind: "navigation" | "workspace_refresh";
+};
+
+type PendingWorkspaceRefresh = {
+  workspace_revision: number;
+  changed_paths: string[];
+};
+
 type AgentSessionAction =
   | CoreEvent
-  | { type: "fs_list_requested"; request_id: string }
-  | { type: "fs_read_requested"; request_id: string }
+  | ({ type: "fs_list_requested" } & PendingFileSystemRequest)
+  | ({ type: "fs_read_requested" } & PendingFileSystemRequest)
+  | { type: "workspace_refresh_started"; workspace_revision: number }
   | {
       type: "input_draft_changed";
       request_id: string;
@@ -145,6 +163,7 @@ export function useAgentSession(createWorker: () => Worker) {
   const workerRef = useRef<Worker | null>(null);
   const pendingManagementRequestRef = useRef<string | null>(null);
   const pendingProviderRefreshRequestRef = useRef(new Map<string, string>());
+  const lastWorkspaceRefreshRef = useRef<string | null>(null);
   const isInputDraftPending =
     coreState.pending_input_draft_request_id !== null ||
     coreState.input_draft_needs_sync;
@@ -225,6 +244,7 @@ export function useAgentSession(createWorker: () => Worker) {
   const sendFileSystemCommand = useCallback(
     (
       command: Extract<ViewerCommand, { type: "fs_list" | "fs_read" }>,
+      options: Omit<PendingFileSystemRequest, "request_id" | "path">,
     ) => {
       dispatch({
         type:
@@ -232,11 +252,62 @@ export function useAgentSession(createWorker: () => Worker) {
             ? "fs_list_requested"
             : "fs_read_requested",
         request_id: command.request_id,
+        path: command.payload.path,
+        ...options,
       });
       sendCommand(command);
     },
     [sendCommand],
   );
+
+  useEffect(() => {
+    const refresh = coreState.pending_workspace_refresh;
+    const projectId = coreState.active_project_id;
+    if (!refresh || !projectId) return;
+
+    const refreshKey = [
+      projectId,
+      refresh.workspace_revision,
+      ...refresh.changed_paths,
+    ].join("\0");
+    if (lastWorkspaceRefreshRef.current === refreshKey) return;
+    lastWorkspaceRefreshRef.current = refreshKey;
+    dispatch({
+      type: "workspace_refresh_started",
+      workspace_revision: refresh.workspace_revision,
+    });
+
+    sendFileSystemCommand(
+      createCommand("fs_list", {
+        project_id: projectId,
+        path: coreState.current_path,
+      }),
+      {
+        expected_workspace_revision: refresh.workspace_revision,
+        request_kind: "workspace_refresh",
+      },
+    );
+
+    const selectedPath = coreState.selected_file?.path;
+    if (selectedPath && refresh.changed_paths.includes(selectedPath)) {
+      sendFileSystemCommand(
+        createCommand("fs_read", {
+          project_id: projectId,
+          path: selectedPath,
+        }),
+        {
+          expected_workspace_revision: refresh.workspace_revision,
+          request_kind: "workspace_refresh",
+        },
+      );
+    }
+  }, [
+    coreState.active_project_id,
+    coreState.current_path,
+    coreState.pending_workspace_refresh,
+    coreState.selected_file?.path,
+    sendFileSystemCommand,
+  ]);
 
   useEffect(() => {
     const worker = createWorker();
@@ -517,9 +588,17 @@ export function useAgentSession(createWorker: () => Worker) {
           project_id: coreState.active_project_id,
           path: entry.path,
         }),
+        {
+          expected_workspace_revision: coreState.workspace_revision,
+          request_kind: "navigation",
+        },
       );
     },
-    [coreState.active_project_id, sendFileSystemCommand],
+    [
+      coreState.active_project_id,
+      coreState.workspace_revision,
+      sendFileSystemCommand,
+    ],
   );
 
   const navigateToParent = useCallback(() => {
@@ -531,10 +610,15 @@ export function useAgentSession(createWorker: () => Worker) {
         project_id: coreState.active_project_id,
         path: segments.length > 0 ? `/${segments.join("/")}` : "/",
       }),
+      {
+        expected_workspace_revision: coreState.workspace_revision,
+        request_kind: "navigation",
+      },
     );
   }, [
     coreState.active_project_id,
     coreState.current_path,
+    coreState.workspace_revision,
     sendFileSystemCommand,
   ]);
 
@@ -611,19 +695,39 @@ export function coreReducer(
     case "fs_list_requested":
       return {
         ...state,
-        pending_fs_list_request_id: event.request_id,
-        pending_fs_read_request_id: null,
-        selected_file: null,
+        pending_fs_list: toPendingFileSystemRequest(event),
+        pending_fs_read: event.request_kind === "workspace_refresh"
+          ? state.pending_fs_read
+          : null,
+        selected_file:
+          event.request_kind === "workspace_refresh"
+            ? state.selected_file
+            : null,
         error_message: null,
       };
     case "fs_read_requested":
       return {
         ...state,
-        pending_fs_list_request_id: null,
-        pending_fs_read_request_id: event.request_id,
-        selected_file: null,
+        pending_fs_list:
+          state.pending_fs_list?.request_kind === "navigation"
+            ? null
+            : state.pending_fs_list,
+        pending_fs_read: toPendingFileSystemRequest(event),
+        selected_file:
+          event.request_kind === "workspace_refresh"
+            ? state.selected_file
+            : null,
         error_message: null,
       };
+    case "workspace_refresh_started":
+      if (
+        !state.pending_workspace_refresh ||
+        state.pending_workspace_refresh.workspace_revision >
+          event.workspace_revision
+      ) {
+        return state;
+      }
+      return { ...state, pending_workspace_refresh: null };
     case "transport_failed":
       return {
         ...state,
@@ -637,8 +741,9 @@ export function coreReducer(
         input_draft_retry_count: 0,
         input_draft_cleanup_scope: null,
         pending_prompt: null,
-        pending_fs_list_request_id: null,
-        pending_fs_read_request_id: null,
+        pending_fs_list: null,
+        pending_fs_read: null,
+        pending_workspace_refresh: null,
       };
     case "core_lifecycle":
       return {
@@ -705,32 +810,96 @@ export function coreReducer(
         ...state,
         activities: upsertActivity(state.activities, event.payload.activity),
       };
-    case "files_snapshot":
+    case "workspace_changed": {
       if (
-        event.payload.project_id !== state.active_project_id ||
-        event.request_id !== state.pending_fs_list_request_id
+        !isActiveSessionEvent(state, event.payload) ||
+        event.payload.workspace_revision <= state.workspace_revision
       ) {
         return state;
       }
+      const inFlightRefreshPath =
+        state.pending_fs_read?.request_kind === "workspace_refresh" &&
+        state.pending_fs_read.expected_workspace_revision <
+          event.payload.workspace_revision
+          ? state.pending_fs_read.path
+          : null;
+      const changedPaths = appendChangedPath(
+        appendPath(
+          state.pending_workspace_refresh?.changed_paths ?? [],
+          inFlightRefreshPath,
+        ),
+        event.payload.change,
+      );
       return {
         ...state,
+        workspace_revision: event.payload.workspace_revision,
+        pending_fs_list: invalidateStaleFileSystemRequest(
+          state.pending_fs_list,
+          event.payload.workspace_revision,
+        ),
+        pending_fs_read: invalidateStaleFileSystemRequest(
+          state.pending_fs_read,
+          event.payload.workspace_revision,
+        ),
+        pending_workspace_refresh: {
+          workspace_revision: event.payload.workspace_revision,
+          changed_paths: changedPaths,
+        },
+      };
+    }
+    case "files_snapshot": {
+      const pending = state.pending_fs_list;
+      if (
+        event.payload.project_id !== state.active_project_id ||
+        event.request_id !== pending?.request_id ||
+        event.payload.path !== pending.path
+      ) {
+        return state;
+      }
+      if (
+        event.payload.workspace_revision < state.workspace_revision ||
+        event.payload.workspace_revision <
+          pending.expected_workspace_revision
+      ) {
+        return { ...state, pending_fs_list: null };
+      }
+      return {
+        ...state,
+        workspace_revision: event.payload.workspace_revision,
         current_path: event.payload.path,
         files: event.payload.files,
-        selected_file: null,
-        pending_fs_list_request_id: null,
+        selected_file: pending.request_kind === "workspace_refresh"
+          ? state.selected_file
+          : null,
+        pending_fs_list: null,
       };
-    case "file_content":
-      return event.payload.project_id === state.active_project_id &&
-        event.request_id === state.pending_fs_read_request_id
-        ? {
-            ...state,
-            selected_file: {
-              path: event.payload.path,
-              content: event.payload.content,
-            },
-            pending_fs_read_request_id: null,
-          }
-        : state;
+    }
+    case "file_content": {
+      const pending = state.pending_fs_read;
+      if (
+        event.payload.project_id !== state.active_project_id ||
+        event.request_id !== pending?.request_id ||
+        event.payload.path !== pending.path
+      ) {
+        return state;
+      }
+      if (
+        event.payload.workspace_revision < state.workspace_revision ||
+        event.payload.workspace_revision <
+          pending.expected_workspace_revision
+      ) {
+        return { ...state, pending_fs_read: null };
+      }
+      return {
+        ...state,
+        workspace_revision: event.payload.workspace_revision,
+        selected_file: {
+          path: event.payload.path,
+          content: event.payload.content,
+        },
+        pending_fs_read: null,
+      };
+    }
     case "input_draft_saved":
       if (
         !isActiveDraftScope(state, event.payload) ||
@@ -763,9 +932,9 @@ export function coreReducer(
       }
       if (
         (event.payload.code === "fs_list_failed" &&
-          event.request_id !== nextState.pending_fs_list_request_id) ||
+          event.request_id !== nextState.pending_fs_list?.request_id) ||
         (event.payload.code === "fs_read_failed" &&
-          event.request_id !== nextState.pending_fs_read_request_id)
+          event.request_id !== nextState.pending_fs_read?.request_id)
       ) {
         return nextState;
       }
@@ -780,14 +949,14 @@ export function coreReducer(
       return {
         ...nextState,
         error_message: event.payload.message,
-        pending_fs_list_request_id:
+        pending_fs_list:
           event.payload.code === "fs_list_failed"
             ? null
-            : nextState.pending_fs_list_request_id,
-        pending_fs_read_request_id:
+            : nextState.pending_fs_list,
+        pending_fs_read:
           event.payload.code === "fs_read_failed"
             ? null
-            : nextState.pending_fs_read_request_id,
+            : nextState.pending_fs_read,
       };
     }
   }
@@ -831,6 +1000,9 @@ function applySnapshot(
       state.catalog_revision,
       snapshot.catalog_revision,
     ),
+    workspace_revision: preserveWorkspace
+      ? Math.max(state.workspace_revision, snapshot.workspace_revision)
+      : snapshot.workspace_revision,
     projects: snapshot.projects,
     sessions: snapshot.sessions,
     providers:
@@ -875,11 +1047,20 @@ function applySnapshot(
     is_ready: true,
     is_running: snapshot.is_running,
     error_message: null,
-    pending_fs_list_request_id: preserveWorkspace
-      ? state.pending_fs_list_request_id
+    pending_fs_list: preserveWorkspace
+      ? invalidateStaleFileSystemRequest(
+          state.pending_fs_list,
+          snapshot.workspace_revision,
+        )
       : null,
-    pending_fs_read_request_id: preserveWorkspace
-      ? state.pending_fs_read_request_id
+    pending_fs_read: preserveWorkspace
+      ? invalidateStaleFileSystemRequest(
+          state.pending_fs_read,
+          snapshot.workspace_revision,
+        )
+      : null,
+    pending_workspace_refresh: preserveWorkspace
+      ? state.pending_workspace_refresh
       : null,
   };
 }
@@ -934,16 +1115,50 @@ function isActiveDraftScope(
   );
 }
 
+function toPendingFileSystemRequest(
+  request: PendingFileSystemRequest,
+): PendingFileSystemRequest {
+  return {
+    request_id: request.request_id,
+    path: request.path,
+    expected_workspace_revision: request.expected_workspace_revision,
+    request_kind: request.request_kind,
+  };
+}
+
+function invalidateStaleFileSystemRequest(
+  request: PendingFileSystemRequest | null,
+  workspaceRevision: number,
+): PendingFileSystemRequest | null {
+  return request &&
+    request.expected_workspace_revision >= workspaceRevision
+    ? request
+    : null;
+}
+
+function appendChangedPath(
+  paths: string[],
+  change: WorkspaceChangeSummary,
+): string[] {
+  return appendPath(paths, change.path);
+}
+
+function appendPath(paths: string[], path: string | null): string[] {
+  return path === null || paths.includes(path) ? paths : [...paths, path];
+}
+
 function upsertActivity(
   activities: ToolActivity[],
   activity: ToolActivity,
 ): ToolActivity[] {
   const exists = activities.some(
-    (candidate) => candidate.tool_call_id === activity.tool_call_id,
+    (candidate) => candidate.activity_id === activity.activity_id,
   );
   return exists
     ? activities.map((candidate) =>
-        candidate.tool_call_id === activity.tool_call_id ? activity : candidate,
+        candidate.activity_id === activity.activity_id
+          ? activity
+          : candidate,
       )
     : [...activities, activity];
 }

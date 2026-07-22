@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  isModelToolName,
+  parseModelToolCall,
   parseModelRequest,
   parseModelStreamEvent,
 } from "../src/model-transport.ts";
@@ -100,6 +102,108 @@ test("rejects unsupported model tools", () => {
       }),
     /Unsupported tool/,
   );
+});
+
+test("parses each model tool with its exact discriminated arguments", () => {
+  const multilineContent = "first line\n\n  indented line\nlast line\n";
+  const multilineOldText = "before\n  nested\n";
+  const multilineNewText = "after\n\n  still nested\n";
+  const calls = [
+    {
+      tool_call_id: "list-1",
+      tool_name: "list_files",
+      arguments: { path: "/src", ignored: "not forwarded" },
+    },
+    {
+      tool_call_id: "read-1",
+      tool_name: "read_file",
+      arguments: { path: "/README.md" },
+    },
+    {
+      tool_call_id: "write-1",
+      tool_name: "write_file",
+      arguments: { path: "/notes.md", content: multilineContent },
+    },
+    {
+      tool_call_id: "replace-1",
+      tool_name: "replace_text",
+      arguments: {
+        path: "/src/index.ts",
+        old_text: multilineOldText,
+        new_text: multilineNewText,
+      },
+    },
+  ];
+
+  assert.deepEqual(calls.map(parseModelToolCall), [
+    {
+      tool_call_id: "list-1",
+      tool_name: "list_files",
+      arguments: { path: "/src" },
+    },
+    calls[1],
+    calls[2],
+    calls[3],
+  ]);
+  for (const name of [
+    "list_files",
+    "read_file",
+    "write_file",
+    "replace_text",
+  ]) {
+    assert.equal(isModelToolName(name), true);
+  }
+  assert.equal(isModelToolName("run_shell"), false);
+});
+
+test("validates tool arguments according to the tool name", () => {
+  assert.throws(
+    () =>
+      parseModelToolCall({
+        tool_call_id: "write-1",
+        tool_name: "write_file",
+        arguments: { path: "/notes.md" },
+      }),
+    /content must be a string/,
+  );
+  assert.throws(
+    () =>
+      parseModelToolCall({
+        tool_call_id: "replace-1",
+        tool_name: "replace_text",
+        arguments: {
+          path: "/notes.md",
+          old_text: "before",
+        },
+      }),
+    /new_text must be a string/,
+  );
+  assert.throws(
+    () =>
+      parseModelToolCall({
+        tool_call_id: "read-1",
+        tool_name: "read_file",
+        arguments: { path: "" },
+      }),
+    /path must be a string/,
+  );
+});
+
+test("NDJSON transport preserves multiline mutation arguments", async () => {
+  const writeCall = {
+    type: "tool_call",
+    tool_call_id: "write-1",
+    tool_name: "write_file",
+    arguments: {
+      path: "/notes.md",
+      content: "line one\n\nline three\n",
+    },
+  };
+  const events = await collectStream(
+    `${JSON.stringify(writeCall)}\n${JSON.stringify({ type: "done" })}\n`,
+  );
+
+  assert.deepEqual(events, [writeCall, { type: "done" }]);
 });
 
 test("rejects a model stream that ends without done", async () => {

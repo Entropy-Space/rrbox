@@ -1,10 +1,18 @@
 import {
+  assertVfsWriteExpectation,
+  createVfsWriteResult,
   normalizeFilePath,
   normalizePath,
+  normalizeVfsSeedFiles,
   VfsError,
   type ProjectFileSystemProvider,
   type VfsEntry,
+  type VfsRemoveOptions,
+  type VfsSeedFile,
+  type VfsWriteOptions,
+  type VfsWriteResult,
   type VirtualFileSystem,
+  type WorkspaceChangeRecord,
 } from "@researchbox/vfs";
 import {
   databaseStores,
@@ -21,80 +29,134 @@ type FileRecord = {
 
 type ProjectFileSystemRecord = {
   project_id: string;
+  incarnation_id: string;
+};
+
+type WorkspaceChangeStorageRecord = WorkspaceChangeRecord & {
+  project_id: string;
 };
 
 export class IndexedDbProjectFileSystemProvider
   implements ProjectFileSystemProvider
 {
   private readonly database: ResearchBoxDatabase;
-  private readonly seedFiles: Record<string, string>;
+  private readonly seedFiles: VfsSeedFile[];
 
   constructor(
     database: ResearchBoxDatabase,
     seedFiles: Record<string, string>,
   ) {
     this.database = database;
-    this.seedFiles = { ...seedFiles };
+    this.seedFiles = normalizeVfsSeedFiles(seedFiles);
   }
 
   async create(projectId: string): Promise<VirtualFileSystem> {
+    const incarnationId = crypto.randomUUID();
     const database = await this.database.open();
     const transaction = database.transaction(
-      [databaseStores.project_filesystems, databaseStores.files],
+      [
+        databaseStores.project_filesystems,
+        databaseStores.files,
+        databaseStores.file_changes,
+      ],
       "readwrite",
     );
     const completion = transactionDone(transaction);
     const workspaceStore = transaction.objectStore(
       databaseStores.project_filesystems,
     );
-    const existing = await requestResult(workspaceStore.get(projectId));
-    if (existing !== undefined) {
-      transaction.abort();
-      await completion.catch(() => undefined);
-      throw new Error(`Project filesystem already exists: ${projectId}`);
-    }
-    workspaceStore.put({ project_id: projectId } satisfies ProjectFileSystemRecord);
-    const store = transaction.objectStore(databaseStores.files);
-    for (const [path, content] of Object.entries(this.seedFiles)) {
-      store.put({
+    try {
+      const existing = await requestResult(workspaceStore.get(projectId));
+      if (existing !== undefined) {
+        throw new Error(`Project filesystem already exists: ${projectId}`);
+      }
+      const fileStore = transaction.objectStore(databaseStores.files);
+      const changeStore = transaction.objectStore(databaseStores.file_changes);
+      const [fileKeys, changeKeys] = await Promise.all([
+        requestResult(fileStore.index("by_project").getAllKeys(projectId)),
+        requestResult(changeStore.index("by_project").getAllKeys(projectId)),
+      ]);
+      for (const key of fileKeys) fileStore.delete(key);
+      for (const key of changeKeys) changeStore.delete(key);
+      workspaceStore.put({
         project_id: projectId,
-        path: normalizeFilePath(path),
-        content,
-      } satisfies FileRecord);
+        incarnation_id: incarnationId,
+      } satisfies ProjectFileSystemRecord);
+      for (const { path, content } of this.seedFiles) {
+        fileStore.put({
+          project_id: projectId,
+          path,
+          content,
+        } satisfies FileRecord);
+      }
+      await completion;
+      return new IndexedDbVirtualFileSystem(
+        this.database,
+        projectId,
+        incarnationId,
+      );
+    } catch (error) {
+      return abortTransaction(transaction, completion, error);
     }
-    await completion;
-    return new IndexedDbVirtualFileSystem(this.database, projectId);
   }
 
   async open(projectId: string): Promise<VirtualFileSystem> {
     const database = await this.database.open();
     const transaction = database.transaction(
       databaseStores.project_filesystems,
-      "readonly",
+      "readwrite",
     );
     const completion = transactionDone(transaction);
-    const record = await requestResult(
-      transaction.objectStore(databaseStores.project_filesystems).get(projectId),
-    );
-    await completion;
-    if (record === undefined) {
-      throw new Error(`Project filesystem does not exist: ${projectId}`);
+    const store = transaction.objectStore(databaseStores.project_filesystems);
+    try {
+      const record = (await requestResult(store.get(projectId))) as
+        | Partial<ProjectFileSystemRecord>
+        | undefined;
+      if (record === undefined) {
+        throw new Error(`Project filesystem does not exist: ${projectId}`);
+      }
+      const existingIncarnationId = readIncarnationId(record);
+      const incarnationId = existingIncarnationId ?? crypto.randomUUID();
+      if (existingIncarnationId === null) {
+        store.put({
+          project_id: projectId,
+          incarnation_id: incarnationId,
+        } satisfies ProjectFileSystemRecord);
+      }
+      await completion;
+      return new IndexedDbVirtualFileSystem(
+        this.database,
+        projectId,
+        incarnationId,
+      );
+    } catch (error) {
+      return abortTransaction(transaction, completion, error);
     }
-    return new IndexedDbVirtualFileSystem(this.database, projectId);
   }
 
   async delete(projectId: string): Promise<void> {
     const database = await this.database.open();
     const transaction = database.transaction(
-      [databaseStores.project_filesystems, databaseStores.files],
+      [
+        databaseStores.project_filesystems,
+        databaseStores.files,
+        databaseStores.file_changes,
+      ],
       "readwrite",
     );
     const completion = transactionDone(transaction);
-    const store = transaction.objectStore(databaseStores.files);
-    const keys = await requestResult(
-      store.index("by_project").getAllKeys(projectId),
-    );
-    for (const key of keys) store.delete(key);
+    const fileStore = transaction.objectStore(databaseStores.files);
+    const changeStore = transaction.objectStore(databaseStores.file_changes);
+    const fileKeysRequest = fileStore.index("by_project").getAllKeys(projectId);
+    const changeKeysRequest = changeStore
+      .index("by_project")
+      .getAllKeys(projectId);
+    const [fileKeys, changeKeys] = await Promise.all([
+      requestResult(fileKeysRequest),
+      requestResult(changeKeysRequest),
+    ]);
+    for (const key of fileKeys) fileStore.delete(key);
+    for (const key of changeKeys) changeStore.delete(key);
     transaction
       .objectStore(databaseStores.project_filesystems)
       .delete(projectId);
@@ -105,10 +167,16 @@ export class IndexedDbProjectFileSystemProvider
 class IndexedDbVirtualFileSystem implements VirtualFileSystem {
   private readonly database: ResearchBoxDatabase;
   private readonly projectId: string;
+  private readonly incarnationId: string;
 
-  constructor(database: ResearchBoxDatabase, projectId: string) {
+  constructor(
+    database: ResearchBoxDatabase,
+    projectId: string,
+    incarnationId: string,
+  ) {
     this.database = database;
     this.projectId = projectId;
+    this.incarnationId = incarnationId;
   }
 
   async list(path: string): Promise<VfsEntry[]> {
@@ -159,44 +227,184 @@ class IndexedDbVirtualFileSystem implements VirtualFileSystem {
     throw new VfsError("not_found", `File not found: ${normalizedPath}`);
   }
 
-  async write(path: string, content: string): Promise<void> {
+  async write(
+    path: string,
+    content: string,
+    options?: VfsWriteOptions,
+  ): Promise<VfsWriteResult> {
     const normalizedPath = normalizeFilePath(path);
     const database = await this.database.open();
-    const transaction = database.transaction(databaseStores.files, "readwrite");
+    const transaction = database.transaction(
+      [
+        databaseStores.project_filesystems,
+        databaseStores.files,
+        databaseStores.file_changes,
+      ],
+      "readwrite",
+    );
     const completion = transactionDone(transaction);
     const store = transaction.objectStore(databaseStores.files);
-    const records = (await requestResult(
-      store.index("by_project").getAll(this.projectId),
-    )) as FileRecord[];
 
     try {
+      await assertActiveProjectFileSystem(
+        transaction,
+        this.projectId,
+        this.incarnationId,
+      );
+      const records = (await requestResult(
+        store.index("by_project").getAll(this.projectId),
+      )) as FileRecord[];
       assertWritablePath(records, normalizedPath);
+      const beforeContent =
+        records.find((record) => record.path === normalizedPath)?.content ?? null;
+      assertVfsWriteExpectation(normalizedPath, beforeContent, options);
+      const result = createVfsWriteResult(
+        normalizedPath,
+        beforeContent,
+        content,
+        options?.change,
+      );
+      if (result.change_kind !== "unchanged") {
+        store.put({
+          project_id: this.projectId,
+          path: normalizedPath,
+          content,
+        } satisfies FileRecord);
+        if (result.change) {
+          const changeStore = transaction.objectStore(
+            databaseStores.file_changes,
+          );
+          const existingChange = await requestResult(
+            changeStore.get([this.projectId, result.change.change_id]),
+          );
+          if (existingChange !== undefined) {
+            throw new VfsError(
+              "conflict",
+              `Workspace change already exists: ${result.change.change_id}`,
+            );
+          }
+          await requestResult(
+            changeStore.add({
+              ...result.change,
+              project_id: this.projectId,
+            } satisfies WorkspaceChangeStorageRecord),
+          );
+        }
+      }
+      await completion;
+      return result;
     } catch (error) {
-      transaction.abort();
-      await completion.catch(() => undefined);
-      throw error;
+      return abortTransaction(transaction, completion, error);
     }
+  }
 
-    store.put({
-      project_id: this.projectId,
-      path: normalizedPath,
-      content,
-    } satisfies FileRecord);
-    await completion;
+  async remove(path: string, options?: VfsRemoveOptions): Promise<void> {
+    const normalizedPath = normalizeFilePath(path);
+    const database = await this.database.open();
+    const transaction = database.transaction(
+      [databaseStores.project_filesystems, databaseStores.files],
+      "readwrite",
+    );
+    const completion = transactionDone(transaction);
+    const store = transaction.objectStore(databaseStores.files);
+
+    try {
+      await assertActiveProjectFileSystem(
+        transaction,
+        this.projectId,
+        this.incarnationId,
+      );
+      const records = (await requestResult(
+        store.index("by_project").getAll(this.projectId),
+      )) as FileRecord[];
+      const record = records.find(
+        (candidate) => candidate.path === normalizedPath,
+      );
+      if (!record) {
+        if (
+          records.some((candidate) =>
+            candidate.path.startsWith(`${normalizedPath}/`),
+          )
+        ) {
+          throw new VfsError(
+            "is_directory",
+            `Cannot remove a directory as a file: ${normalizedPath}`,
+          );
+        }
+        throw new VfsError("not_found", `File not found: ${normalizedPath}`);
+      }
+      if (
+        options?.expected_content !== undefined &&
+        options.expected_content !== record.content
+      ) {
+        throw new VfsError(
+          "conflict",
+          `File changed before it could be removed: ${normalizedPath}`,
+        );
+      }
+      store.delete([this.projectId, normalizedPath]);
+      await completion;
+    } catch (error) {
+      return abortTransaction(transaction, completion, error);
+    }
+  }
+
+  async listChanges(): Promise<WorkspaceChangeRecord[]> {
+    const database = await this.database.open();
+    const transaction = database.transaction(
+      [databaseStores.project_filesystems, databaseStores.file_changes],
+      "readonly",
+    );
+    const completion = transactionDone(transaction);
+    try {
+      await assertActiveProjectFileSystem(
+        transaction,
+        this.projectId,
+        this.incarnationId,
+      );
+      const records = (await requestResult(
+        transaction
+          .objectStore(databaseStores.file_changes)
+          .index("by_project")
+          .getAll(this.projectId),
+      )) as WorkspaceChangeStorageRecord[];
+      await completion;
+      return records
+        .sort((left, right) =>
+          left.created_at === right.created_at
+            ? left.change_id.localeCompare(right.change_id)
+            : left.created_at.localeCompare(right.created_at),
+        )
+        .map(toWorkspaceChangeRecord);
+    } catch (error) {
+      return abortTransaction(transaction, completion, error);
+    }
   }
 
   private async loadProjectFiles(): Promise<FileRecord[]> {
     const database = await this.database.open();
-    const transaction = database.transaction(databaseStores.files, "readonly");
+    const transaction = database.transaction(
+      [databaseStores.project_filesystems, databaseStores.files],
+      "readonly",
+    );
     const completion = transactionDone(transaction);
-    const records = (await requestResult(
-      transaction
-        .objectStore(databaseStores.files)
-        .index("by_project")
-        .getAll(this.projectId),
-    )) as FileRecord[];
-    await completion;
-    return records;
+    try {
+      await assertActiveProjectFileSystem(
+        transaction,
+        this.projectId,
+        this.incarnationId,
+      );
+      const records = (await requestResult(
+        transaction
+          .objectStore(databaseStores.files)
+          .index("by_project")
+          .getAll(this.projectId),
+      )) as FileRecord[];
+      await completion;
+      return records;
+    } catch (error) {
+      return abortTransaction(transaction, completion, error);
+    }
   }
 }
 
@@ -217,4 +425,70 @@ function assertWritablePath(records: FileRecord[], path: string): void {
       );
     }
   }
+}
+
+async function assertActiveProjectFileSystem(
+  transaction: IDBTransaction,
+  projectId: string,
+  incarnationId: string,
+): Promise<void> {
+  const record = (await requestResult(
+    transaction.objectStore(databaseStores.project_filesystems).get(projectId),
+  )) as Partial<ProjectFileSystemRecord> | undefined;
+  if (record === undefined) {
+    throw new VfsError(
+      "not_found",
+      `Project filesystem no longer exists: ${projectId}`,
+    );
+  }
+  if (readIncarnationId(record) !== incarnationId) {
+    throw new VfsError(
+      "conflict",
+      `Project filesystem handle is stale: ${projectId}`,
+    );
+  }
+}
+
+function readIncarnationId(
+  record: Partial<ProjectFileSystemRecord>,
+): string | null {
+  return typeof record.incarnation_id === "string" &&
+    record.incarnation_id.length > 0
+    ? record.incarnation_id
+    : null;
+}
+
+function toWorkspaceChangeRecord(
+  record: WorkspaceChangeStorageRecord,
+): WorkspaceChangeRecord {
+  return {
+    change_id: record.change_id,
+    session_id: record.session_id,
+    message_id: record.message_id,
+    assistant_message_index: record.assistant_message_index,
+    tool_call_id: record.tool_call_id,
+    tool_name: record.tool_name,
+    created_at: record.created_at,
+    path: record.path,
+    change_kind: record.change_kind,
+    before_content: record.before_content,
+    after_content: record.after_content,
+    additions: record.additions,
+    deletions: record.deletions,
+    byte_size: record.byte_size,
+  };
+}
+
+async function abortTransaction(
+  transaction: IDBTransaction,
+  completion: Promise<void>,
+  error: unknown,
+): Promise<never> {
+  try {
+    transaction.abort();
+  } catch {
+    // The transaction already completed or aborted.
+  }
+  await completion.catch(() => undefined);
+  throw error;
 }

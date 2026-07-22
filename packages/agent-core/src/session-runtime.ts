@@ -16,11 +16,16 @@ import {
   type ChatMessage,
   type CoreEvent,
   type ToolActivity,
+  type WorkspaceChangeSummary,
 } from "@researchbox/protocol";
-import type { VirtualFileSystem } from "@researchbox/vfs";
+import type {
+  WorkspaceChangeMetadata,
+  WorkspaceChangeRecord,
+} from "@researchbox/vfs";
 import { createModelStreamFn } from "./pi-stream.ts";
 import { decodeAgentMessages, encodeAgentMessages } from "./session-codec.ts";
 import { repairUnansweredToolCalls } from "./tool-transcript.ts";
+import { WorkspaceController } from "./workspace-controller.ts";
 
 export type CoreEventSink = (event: CoreEvent) => void;
 
@@ -28,16 +33,23 @@ export type SessionRuntimeOptions = {
   project_id: string;
   session_id: string;
   document: SessionDocument;
-  workspace: VirtualFileSystem;
+  workspace: WorkspaceController;
   model_transport: ModelTransport;
   model: Model<string>;
   system_prompt: string;
   event_sink: CoreEventSink;
   checkpoint: (
-    phase: "staged" | "finished",
+    phase: "staged" | "tool_started" | "tool_finished" | "finished",
     requestId: string,
   ) => Promise<void>;
 };
+
+type WorkspaceToolDetails = {
+  summary: string;
+  file_change?: WorkspaceChangeSummary;
+};
+
+type MutationToolName = "write_file" | "replace_text";
 
 type ActiveRun = {
   request_id: string;
@@ -55,12 +67,13 @@ export class SessionRuntime {
   readonly project_id: string;
   readonly session_id: string;
   private document: SessionDocument;
-  private readonly workspace: VirtualFileSystem;
+  private readonly workspace: WorkspaceController;
   private readonly eventSink: CoreEventSink;
   private readonly checkpoint: SessionRuntimeOptions["checkpoint"];
   private readonly agent: Agent;
   private readonly unsubscribe: () => void;
   private readonly toolLabels = new Map<string, string>();
+  private readonly toolActivityIds = new Map<string, string>();
   private activeRun: ActiveRun | null = null;
   private runPromise: Promise<void> | null = null;
 
@@ -83,9 +96,9 @@ export class SessionRuntime {
       streamFn: createModelStreamFn(options.model_transport),
       toolExecution: "sequential",
     });
-    this.unsubscribe = this.agent.subscribe((event) => {
-      this.handleAgentEvent(event);
-    });
+    this.unsubscribe = this.agent.subscribe((event) =>
+      this.handleAgentEvent(event),
+    );
   }
 
   get is_running(): boolean {
@@ -248,6 +261,15 @@ export class SessionRuntime {
         createTerminalAgentMessage(this.agent, status, errorMessage),
       ];
     }
+    this.finishRunningActivities(
+      assistantMessage.id,
+      status === "aborted"
+        ? "Tool execution was stopped"
+        : "Tool execution did not complete",
+      requestId,
+    );
+    this.toolLabels.clear();
+    this.toolActivityIds.clear();
     this.document.agent_messages = encodeAgentMessages(this.agent.state.messages);
     try {
       await this.checkpoint("finished", requestId);
@@ -288,9 +310,26 @@ export class SessionRuntime {
     return this.runPromise;
   }
 
-  private handleAgentEvent(event: AgentEvent): void {
+  private async handleAgentEvent(event: AgentEvent): Promise<void> {
     const run = this.activeRun;
     if (!run) return;
+
+    if (
+      event.type === "message_end" &&
+      event.message.role === "toolResult" &&
+      isMutationToolName(event.message.toolName)
+    ) {
+      this.document.agent_messages = encodeAgentMessages(
+        this.agent.state.messages,
+      );
+      try {
+        await this.checkpoint("tool_finished", run.request_id);
+      } catch (error) {
+        this.emitPersistenceError(error, run.request_id);
+        throw error;
+      }
+      return;
+    }
 
     if (
       event.type === "message_update" &&
@@ -311,8 +350,11 @@ export class SessionRuntime {
 
     if (event.type === "tool_execution_start") {
       const label = toolLabel(event.toolName, event.args);
+      const activityId = crypto.randomUUID();
       this.toolLabels.set(event.toolCallId, label);
+      this.toolActivityIds.set(event.toolCallId, activityId);
       const activity: ToolActivity = {
+        activity_id: activityId,
         tool_call_id: event.toolCallId,
         message_id: run.assistant_message.id,
         tool_name: event.toolName,
@@ -321,14 +363,33 @@ export class SessionRuntime {
       };
       this.upsertActivity(activity);
       this.emit("tool_activity", { activity }, run.request_id);
+      if (isMutationToolName(event.toolName)) {
+        this.document.agent_messages = encodeAgentMessages(
+          this.agent.state.messages,
+        );
+        try {
+          await this.checkpoint("tool_started", run.request_id);
+        } catch (error) {
+          this.emitPersistenceError(error, run.request_id);
+          throw error;
+        }
+      }
       return;
     }
 
     if (event.type === "tool_execution_end") {
+      const activityId = this.toolActivityIds.get(event.toolCallId);
+      if (!activityId) {
+        throw new Error(
+          `Tool call ${event.toolCallId} is missing its activity identity.`,
+        );
+      }
       const details = isRecord(event.result?.details)
         ? event.result.details
         : undefined;
+      const fileChange = parseWorkspaceChangeSummary(details?.file_change);
       const activity: ToolActivity = {
+        activity_id: activityId,
         tool_call_id: event.toolCallId,
         message_id: run.assistant_message.id,
         tool_name: event.toolName,
@@ -342,8 +403,10 @@ export class SessionRuntime {
             : event.isError
               ? "Tool failed"
               : "Complete",
+        ...(fileChange ? { file_change: fileChange } : {}),
       };
       this.toolLabels.delete(event.toolCallId);
+      this.toolActivityIds.delete(event.toolCallId);
       this.upsertActivity(activity);
       this.emit("tool_activity", { activity }, run.request_id);
     }
@@ -360,7 +423,7 @@ export class SessionRuntime {
       description: "List files and directories at a workspace path.",
       parameters: pathParameters,
       execute: async (_toolCallId, params) => {
-        const entries = await this.workspace.list(params.path);
+        const { entries } = await this.workspace.list(params.path);
         return {
           content: [{ type: "text", text: JSON.stringify(entries) }],
           details: { summary: `${entries.length} entries found` },
@@ -374,7 +437,7 @@ export class SessionRuntime {
       description: "Read a UTF-8 text file from the workspace.",
       parameters: pathParameters,
       execute: async (_toolCallId, params) => {
-        const content = await this.workspace.read(params.path);
+        const { content } = await this.workspace.read(params.path);
         return {
           content: [{ type: "text", text: content }],
           details: { summary: `${content.split("\n").length} lines read` },
@@ -382,15 +445,207 @@ export class SessionRuntime {
       },
     };
 
-    return [listFiles, readFile];
+    const writeParameters = Type.Object({
+      path: Type.String({ description: "Absolute path inside the workspace" }),
+      content: Type.String({ description: "Complete UTF-8 file content" }),
+    });
+    const writeFile: AgentTool<
+      typeof writeParameters,
+      WorkspaceToolDetails
+    > = {
+      name: "write_file",
+      label: "Write file",
+      description: "Create or replace a UTF-8 text file in the workspace.",
+      parameters: writeParameters,
+      execute: async (toolCallId, params) => {
+        const write = await this.workspace.write(
+          params.path,
+          params.content,
+          {
+            change: this.createChangeMetadata(toolCallId, "write_file"),
+          },
+        );
+        return this.fileMutationResult(write, this.activeRequestId());
+      },
+    };
+
+    const replaceParameters = Type.Object({
+      path: Type.String({ description: "Absolute path inside the workspace" }),
+      old_text: Type.String({
+        description: "Exact literal text that must occur once",
+      }),
+      new_text: Type.String({ description: "Replacement text" }),
+    });
+    const replaceText: AgentTool<
+      typeof replaceParameters,
+      WorkspaceToolDetails
+    > = {
+      name: "replace_text",
+      label: "Replace text",
+      description:
+        "Replace one unique literal text fragment in an existing workspace file.",
+      parameters: replaceParameters,
+      execute: async (toolCallId, params) => {
+        if (params.old_text.length === 0) {
+          throw new Error("old_text must not be empty.");
+        }
+        if (params.old_text === params.new_text) {
+          throw new Error("old_text and new_text must be different.");
+        }
+        const { content } = await this.workspace.read(params.path);
+        const matches = countOverlappingOccurrences(content, params.old_text);
+        if (matches === 0) {
+          throw new Error(
+            "old_text was not found. Read the file again and use exact text.",
+          );
+        }
+        if (matches !== 1) {
+          throw new Error(
+            "old_text occurs more than once. Include more surrounding text so the match is unique.",
+          );
+        }
+        const index = content.indexOf(params.old_text);
+        const nextContent =
+          content.slice(0, index) +
+          params.new_text +
+          content.slice(index + params.old_text.length);
+        const write = await this.workspace.write(
+          params.path,
+          nextContent,
+          {
+            expected_content: content,
+            change: this.createChangeMetadata(toolCallId, "replace_text"),
+          },
+        );
+        return this.fileMutationResult(write, this.activeRequestId());
+      },
+    };
+
+    return [listFiles, readFile, writeFile, replaceText];
   }
 
   private upsertActivity(activity: ToolActivity): void {
     const index = this.document.activities.findIndex(
-      (candidate) => candidate.tool_call_id === activity.tool_call_id,
+      (candidate) => candidate.activity_id === activity.activity_id,
     );
     if (index === -1) this.document.activities.push(activity);
     else this.document.activities[index] = activity;
+  }
+
+  private activeRequestId(): string {
+    const requestId = this.activeRun?.request_id;
+    if (!requestId) throw new Error("No active agent run is available.");
+    return requestId;
+  }
+
+  private createChangeMetadata(
+    toolCallId: string,
+    toolName: MutationToolName,
+  ): WorkspaceChangeMetadata {
+    const run = this.activeRun;
+    if (!run) throw new Error("No active agent run is available.");
+    return {
+      change_id: crypto.randomUUID(),
+      session_id: this.session_id,
+      message_id: run.assistant_message.id,
+      assistant_message_index: this.findAssistantMessageIndex(
+        toolCallId,
+        toolName,
+      ),
+      tool_call_id: toolCallId,
+      tool_name: toolName,
+      created_at: new Date().toISOString(),
+    };
+  }
+
+  private findAssistantMessageIndex(
+    toolCallId: string,
+    toolName: MutationToolName,
+  ): number {
+    for (
+      let index = this.agent.state.messages.length - 1;
+      index >= 0;
+      index -= 1
+    ) {
+      const message = this.agent.state.messages[index];
+      if (message?.role !== "assistant") continue;
+      if (
+        message.content.some(
+          (content) =>
+            content.type === "toolCall" &&
+            content.id === toolCallId &&
+            content.name === toolName,
+        )
+      ) {
+        return index;
+      }
+    }
+    throw new Error(
+      `Tool call ${toolCallId} is missing from the agent transcript.`,
+    );
+  }
+
+  private fileMutationResult(
+    write: Awaited<ReturnType<WorkspaceController["write"]>>,
+    requestId: string,
+  ): {
+    content: [{ type: "text"; text: string }];
+    details: WorkspaceToolDetails;
+  } {
+    const record = write.result.change;
+    if (write.result.change_kind === "unchanged") {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              path: write.result.path,
+              change_kind: "unchanged",
+            }),
+          },
+        ],
+        details: { summary: "No changes needed" },
+      };
+    }
+    if (!record) {
+      throw new Error("The workspace mutation did not produce a change record.");
+    }
+    const fileChange = workspaceChangeSummary(record);
+    this.emit(
+      "workspace_changed",
+      {
+        workspace_revision: write.workspace_revision,
+        change: fileChange,
+      },
+      requestId,
+    );
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(fileChange),
+        },
+      ],
+      details: {
+        summary: changeSummary(fileChange),
+        file_change: fileChange,
+      },
+    };
+  }
+
+  private finishRunningActivities(
+    messageId: string,
+    summary: string,
+    requestId: string,
+  ): void {
+    for (const activity of this.document.activities) {
+      if (activity.message_id !== messageId || activity.status !== "running") {
+        continue;
+      }
+      activity.status = "error";
+      activity.summary = summary;
+      this.emit("tool_activity", { activity: { ...activity } }, requestId);
+    }
   }
 
   private emit<T extends CoreEvent["type"]>(
@@ -518,7 +773,81 @@ export function stagePrompt(
 
 function toolLabel(toolName: string, args: unknown): string {
   const path = isRecord(args) && typeof args.path === "string" ? args.path : "workspace";
-  return toolName === "read_file" ? `Reading ${path}` : `Listing ${path}`;
+  switch (toolName) {
+    case "read_file":
+      return `Reading ${path}`;
+    case "write_file":
+      return `Writing ${path}`;
+    case "replace_text":
+      return `Editing ${path}`;
+    default:
+      return `Listing ${path}`;
+  }
+}
+
+function isMutationToolName(value: string): value is MutationToolName {
+  return value === "write_file" || value === "replace_text";
+}
+
+function countOverlappingOccurrences(value: string, search: string): number {
+  let count = 0;
+  let offset = 0;
+  while (offset <= value.length - search.length) {
+    const index = value.indexOf(search, offset);
+    if (index === -1) break;
+    count += 1;
+    offset = index + 1;
+  }
+  return count;
+}
+
+function workspaceChangeSummary(
+  record: WorkspaceChangeRecord,
+): WorkspaceChangeSummary {
+  return {
+    change_id: record.change_id,
+    tool_call_id: record.tool_call_id,
+    path: record.path,
+    change_kind: record.change_kind,
+    additions: record.additions,
+    deletions: record.deletions,
+    byte_size: record.byte_size,
+  };
+}
+
+function parseWorkspaceChangeSummary(
+  value: unknown,
+): WorkspaceChangeSummary | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.change_id !== "string" ||
+    typeof value.tool_call_id !== "string" ||
+    typeof value.path !== "string" ||
+    (value.change_kind !== "created" && value.change_kind !== "updated") ||
+    !isNonNegativeInteger(value.additions) ||
+    !isNonNegativeInteger(value.deletions) ||
+    !isNonNegativeInteger(value.byte_size)
+  ) {
+    return undefined;
+  }
+  return {
+    change_id: value.change_id,
+    tool_call_id: value.tool_call_id,
+    path: value.path,
+    change_kind: value.change_kind,
+    additions: value.additions,
+    deletions: value.deletions,
+    byte_size: value.byte_size,
+  };
+}
+
+function changeSummary(change: WorkspaceChangeSummary): string {
+  const verb = change.change_kind === "created" ? "Created" : "Updated";
+  return `${verb} · +${change.additions} −${change.deletions}`;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 0;
 }
 
 function isAbortError(error: unknown): boolean {

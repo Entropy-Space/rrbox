@@ -6,12 +6,13 @@ import {
   type Message,
   type Model,
 } from "@earendil-works/pi-ai";
-import type {
-  ModelConversationMessage,
-  ModelRequest,
-  ModelToolDefinition,
-  ModelToolName,
-  ModelTransport,
+import {
+  isModelToolName,
+  parseModelToolCall,
+  type ModelConversationMessage,
+  type ModelRequest,
+  type ModelToolDefinition,
+  type ModelTransport,
 } from "@researchbox/model-transport";
 import { assertCompleteToolCallResults } from "./tool-transcript.ts";
 
@@ -216,15 +217,11 @@ function toModelConversationMessage(
       if (block.type !== "toolCall" || !isModelToolName(block.name)) {
         throw new Error("Invalid model tool call.");
       }
-      const path = block.arguments.path;
-      if (typeof path !== "string") {
-        throw new Error(`Tool call ${block.id} is missing a path argument.`);
-      }
-      return {
+      return parseModelToolCall({
         tool_call_id: block.id,
         tool_name: block.name,
-        arguments: { path },
-      };
+        arguments: block.arguments,
+      });
     });
   const content = message.content
     .filter((block) => block.type === "text")
@@ -233,10 +230,6 @@ function toModelConversationMessage(
   return content || toolCalls.length > 0
     ? { role: "assistant", content, tool_calls: toolCalls }
     : null;
-}
-
-function isModelToolName(value: string): value is ModelToolName {
-  return value === "list_files" || value === "read_file";
 }
 
 function createPartialMessage(

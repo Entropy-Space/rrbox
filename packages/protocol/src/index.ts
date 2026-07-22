@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 5 as const;
+export const PROTOCOL_VERSION = 6 as const;
 
 export type MessageRole = "user" | "assistant";
 
@@ -17,13 +17,25 @@ export type FileEntry = {
   size: number;
 };
 
+export type WorkspaceChangeSummary = {
+  change_id: string;
+  tool_call_id: string;
+  path: string;
+  change_kind: "created" | "updated";
+  additions: number;
+  deletions: number;
+  byte_size: number;
+};
+
 export type ToolActivity = {
+  activity_id: string;
   tool_call_id: string;
   message_id: string;
   tool_name: string;
   label: string;
   status: "running" | "complete" | "error";
   summary?: string;
+  file_change?: WorkspaceChangeSummary;
 };
 
 export type ProjectSummary = {
@@ -72,6 +84,7 @@ export type CoreLifecyclePhase =
 export type CoreStateSnapshot = {
   state_revision: number;
   catalog_revision: number;
+  workspace_revision: number;
   projects: ProjectSummary[];
   sessions: SessionSummary[];
   providers: ProviderSummary[];
@@ -180,13 +193,30 @@ export type CoreEvent =
       }
     >
   | EventEnvelope<"tool_activity", SessionScope & { activity: ToolActivity }>
+  | EventEnvelope<
+      "workspace_changed",
+      SessionScope & {
+        workspace_revision: number;
+        change: WorkspaceChangeSummary;
+      }
+    >
   | CorrelatedEventEnvelope<
       "files_snapshot",
-      { project_id: string; path: string; files: FileEntry[] }
+      {
+        project_id: string;
+        path: string;
+        workspace_revision: number;
+        files: FileEntry[];
+      }
     >
   | CorrelatedEventEnvelope<
       "file_content",
-      { project_id: string; path: string; content: string }
+      {
+        project_id: string;
+        path: string;
+        workspace_revision: number;
+        content: string;
+      }
     >
   | CorrelatedEventEnvelope<
       "input_draft_saved",
@@ -425,6 +455,20 @@ export function parseCoreEvent(value: unknown): CoreEvent {
         },
         requestId,
       );
+    case "workspace_changed":
+      return eventEnvelope(
+        "workspace_changed",
+        eventId,
+        {
+          ...parseSessionScope(payload),
+          workspace_revision: requireNonNegativeInteger(
+            payload,
+            "workspace_revision",
+          ),
+          change: parseWorkspaceChangeSummary(payload.change),
+        },
+        requestId,
+      );
     case "files_snapshot":
       return eventEnvelope(
         "files_snapshot",
@@ -432,6 +476,10 @@ export function parseCoreEvent(value: unknown): CoreEvent {
         {
           project_id: requireString(payload, "project_id"),
           path: requireString(payload, "path"),
+          workspace_revision: requireNonNegativeInteger(
+            payload,
+            "workspace_revision",
+          ),
           files: requireArray(payload, "files").map(parseFileEntry),
         },
         requireEventRequestId(requestId, "files_snapshot"),
@@ -443,6 +491,10 @@ export function parseCoreEvent(value: unknown): CoreEvent {
         {
           project_id: requireString(payload, "project_id"),
           path: requireString(payload, "path"),
+          workspace_revision: requireNonNegativeInteger(
+            payload,
+            "workspace_revision",
+          ),
           content: requireString(payload, "content", true),
         },
         requireEventRequestId(requestId, "file_content"),
@@ -528,6 +580,10 @@ function parseCoreStateSnapshot(value: unknown): CoreStateSnapshot {
   const snapshot: CoreStateSnapshot = {
     state_revision: requireNonNegativeInteger(value, "state_revision"),
     catalog_revision: requireNonNegativeInteger(value, "catalog_revision"),
+    workspace_revision: requireNonNegativeInteger(
+      value,
+      "workspace_revision",
+    ),
     projects: requireArray(value, "projects").map(parseProjectSummary),
     sessions: requireArray(value, "sessions").map(parseSessionSummary),
     providers: requireArray(value, "providers").map(parseProviderSummary),
@@ -581,6 +637,13 @@ function assertCoreStateInvariants(snapshot: CoreStateSnapshot): void {
     )
   ) {
     throw new Error("active_model references an unknown model_id.");
+  }
+  const activityIds = new Set<string>();
+  for (const activity of snapshot.activities) {
+    if (activityIds.has(activity.activity_id)) {
+      throw new Error(`Duplicate activity_id: ${activity.activity_id}`);
+    }
+    activityIds.add(activity.activity_id);
   }
   if (snapshot.active_session_id === null) {
     if (snapshot.messages.length > 0 || snapshot.activities.length > 0) {
@@ -759,13 +822,44 @@ function parseToolActivity(value: unknown): ToolActivity {
     throw new Error("Invalid tool activity status.");
   }
   const summary = optionalString(value, "summary", true);
+  const toolCallId = requireString(value, "tool_call_id");
+  const fileChange =
+    value.file_change === undefined
+      ? undefined
+      : parseWorkspaceChangeSummary(value.file_change);
+  if (fileChange && fileChange.tool_call_id !== toolCallId) {
+    throw new Error("Tool activity file_change must match tool_call_id.");
+  }
   return {
-    tool_call_id: requireString(value, "tool_call_id"),
+    activity_id: requireString(value, "activity_id"),
+    tool_call_id: toolCallId,
     message_id: requireString(value, "message_id"),
     tool_name: requireString(value, "tool_name"),
     label: requireString(value, "label"),
     status,
     ...(summary === undefined ? {} : { summary }),
+    ...(fileChange === undefined ? {} : { file_change: fileChange }),
+  };
+}
+
+function parseWorkspaceChangeSummary(
+  value: unknown,
+): WorkspaceChangeSummary {
+  if (!isRecord(value)) {
+    throw new Error("Workspace change summary must be an object.");
+  }
+  const changeKind = value.change_kind;
+  if (changeKind !== "created" && changeKind !== "updated") {
+    throw new Error("Invalid workspace change kind.");
+  }
+  return {
+    change_id: requireString(value, "change_id"),
+    tool_call_id: requireString(value, "tool_call_id"),
+    path: requireString(value, "path"),
+    change_kind: changeKind,
+    additions: requireNonNegativeInteger(value, "additions"),
+    deletions: requireNonNegativeInteger(value, "deletions"),
+    byte_size: requireNonNegativeInteger(value, "byte_size"),
   };
 }
 

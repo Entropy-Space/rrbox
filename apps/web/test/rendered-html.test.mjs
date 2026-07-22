@@ -104,8 +104,8 @@ test("keeps package boundaries explicit", async () => {
   assert.match(core, /ProjectStore/);
   assert.match(core, /ProjectFileSystemProvider/);
   assert.match(runtime, /new Agent\(/);
-  assert.match(runtime, /VirtualFileSystem/);
-  assert.match(protocol, /PROTOCOL_VERSION = 5/);
+  assert.match(runtime, /WorkspaceController/);
+  assert.match(protocol, /PROTOCOL_VERSION = 6/);
 
   await assert.rejects(
     access(new URL("../.openai/hosting.json", import.meta.url)),

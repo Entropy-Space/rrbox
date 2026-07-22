@@ -1,4 +1,7 @@
-import type { Model } from "@earendil-works/pi-ai";
+import type {
+  Model,
+  ToolResultMessage,
+} from "@earendil-works/pi-ai";
 import type { ModelTransport } from "@researchbox/model-transport";
 import {
   PROJECT_STORE_SCHEMA_VERSION,
@@ -18,11 +21,12 @@ import {
   type FileEntry,
   type ModelSelection,
   type ViewerCommand,
+  type WorkspaceChangeSummary,
 } from "@researchbox/protocol";
 import type {
   ProjectFileSystemProvider,
   VfsEntry,
-  VirtualFileSystem,
+  WorkspaceChangeRecord,
 } from "@researchbox/vfs";
 import {
   SessionRuntime,
@@ -39,6 +43,7 @@ import {
   type ProviderModelCatalog,
 } from "./provider-catalog-service.ts";
 import { repairUnansweredToolCalls } from "./tool-transcript.ts";
+import { WorkspaceController } from "./workspace-controller.ts";
 
 export type ResearchBoxCoreOptions = {
   projectStore: ProjectStore;
@@ -63,8 +68,9 @@ export class ResearchBoxCore {
   private readonly defaultModelSelection: ModelSelection;
   private readonly systemPrompt: string;
   private readonly eventSink: CoreEventSink;
+  private readonly workspaces = new Map<string, WorkspaceController>();
   private state: ProjectStoreState | null = null;
-  private workspace: VirtualFileSystem | null = null;
+  private workspace: WorkspaceController | null = null;
   private runtime: SessionRuntime | null = null;
   private initialization: Promise<void> | null = null;
   private mutationTail: Promise<void> = Promise.resolve();
@@ -146,9 +152,15 @@ export class ResearchBoxCore {
     const loaded = await this.projectStore.load();
     if (loaded) {
       this.state = loaded;
+      const reconciledChanges = await reconcileWorkspaceChanges(
+        loaded,
+        this.workspaceProvider,
+      );
       const repairedTranscripts = repairInvalidTranscripts(loaded);
       const repairedRuns = repairInterruptedSessions(loaded);
-      if (repairedTranscripts || repairedRuns) await this.persistCurrentState();
+      if (reconciledChanges || repairedTranscripts || repairedRuns) {
+        await this.persistCurrentState();
+      }
     } else {
       const state = createInitialState(this.defaultModelSelection);
       const projectId = state.active_project_id;
@@ -455,6 +467,7 @@ export class ResearchBoxCore {
     await this.emitStateSnapshot(requestId);
     try {
       await this.workspaceProvider.delete(projectId);
+      this.workspaces.delete(projectId);
     } catch (error) {
       this.emitError(
         "workspace_cleanup_failed",
@@ -708,9 +721,19 @@ export class ResearchBoxCore {
   private startProviderRefreshes(): void {
     if (this.providerRefreshObserverStarted) return;
     this.providerRefreshObserverStarted = true;
+    const initialCatalogRevision =
+      this.providerCatalog.snapshot().catalog_revision;
     void this.providerCatalog
       .startRefreshes()
-      .then(() => this.emitStateSnapshot())
+      .then(() => {
+        if (
+          this.providerCatalog.snapshot().catalog_revision ===
+          initialCatalogRevision
+        ) {
+          return undefined;
+        }
+        return this.emitStateSnapshot();
+      })
       .catch((error: unknown) => {
         this.emitError(
           "provider_refresh_failed",
@@ -782,8 +805,14 @@ export class ResearchBoxCore {
 
   private async activateSelection(): Promise<void> {
     const state = this.requireState();
-    const workspace = await this.workspaceProvider.open(state.active_project_id);
     const projectId = state.active_project_id;
+    let workspace = this.workspaces.get(projectId);
+    if (!workspace) {
+      workspace = new WorkspaceController(
+        await this.workspaceProvider.open(projectId),
+      );
+      this.workspaces.set(projectId, workspace);
+    }
     const sessionId = state.active_session_id;
     const nextRuntime =
       sessionId === null
@@ -817,7 +846,7 @@ export class ResearchBoxCore {
   private async checkpointActiveSession(
     projectId: string,
     sessionId: string,
-    phase: "staged" | "finished",
+    phase: "staged" | "tool_started" | "tool_finished" | "finished",
   ): Promise<void> {
     const state = this.requireState();
     if (
@@ -896,10 +925,13 @@ export class ResearchBoxCore {
 
   private async createCoreState(): Promise<CoreStateSnapshot> {
     let files: FileEntry[];
+    let workspaceRevision: number;
     while (true) {
       const projectId = this.requireState().active_project_id;
       const workspace = this.requireWorkspace();
-      files = mapEntries(await workspace.list("/"));
+      const listing = await workspace.list("/");
+      files = mapEntries(listing.entries);
+      workspaceRevision = listing.workspace_revision;
       if (
         this.requireWorkspace() === workspace &&
         this.requireState().active_project_id === projectId
@@ -919,6 +951,7 @@ export class ResearchBoxCore {
     return {
       state_revision: state.state_revision,
       catalog_revision: catalog.catalog_revision,
+      workspace_revision: workspaceRevision,
       projects: [...state.projects]
         .sort(compareUpdatedDescending)
         .map(({ project_id, name, created_at, updated_at }) => ({
@@ -959,12 +992,14 @@ export class ResearchBoxCore {
       return;
     }
     try {
+      const listing = await this.requireWorkspace().list(command.payload.path);
       this.emit(
         "files_snapshot",
         {
           project_id: command.payload.project_id,
           path: command.payload.path,
-          files: mapEntries(await this.requireWorkspace().list(command.payload.path)),
+          workspace_revision: listing.workspace_revision,
+          files: mapEntries(listing.entries),
         },
         command.request_id,
       );
@@ -980,12 +1015,14 @@ export class ResearchBoxCore {
       return;
     }
     try {
+      const file = await this.requireWorkspace().read(command.payload.path);
       this.emit(
         "file_content",
         {
           project_id: command.payload.project_id,
           path: command.payload.path,
-          content: await this.requireWorkspace().read(command.payload.path),
+          workspace_revision: file.workspace_revision,
+          content: file.content,
         },
         command.request_id,
       );
@@ -1192,7 +1229,7 @@ export class ResearchBoxCore {
     return this.runtime;
   }
 
-  private requireWorkspace(): VirtualFileSystem {
+  private requireWorkspace(): WorkspaceController {
     if (!this.workspace) throw new Error("No active project workspace is available.");
     return this.workspace;
   }
@@ -1309,6 +1346,120 @@ function createSessionRecord(
       agent_messages: [],
     },
   };
+}
+
+async function reconcileWorkspaceChanges(
+  state: ProjectStoreState,
+  workspaceProvider: ProjectFileSystemProvider,
+): Promise<boolean> {
+  const changesByProject = new Map<string, WorkspaceChangeRecord[]>();
+  for (const project of state.projects) {
+    const workspace = await workspaceProvider.open(project.project_id);
+    changesByProject.set(project.project_id, await workspace.listChanges());
+  }
+
+  let reconciled = false;
+  for (const document of state.documents) {
+    const projectChanges = changesByProject.get(document.project_id) ?? [];
+    if (projectChanges.length === 0) continue;
+
+    let decoded;
+    try {
+      decoded = decodeAgentMessages(document.agent_messages);
+    } catch {
+      continue;
+    }
+
+    const recoveries: Array<{
+      activity: SessionDocument["activities"][number];
+      change: WorkspaceChangeSummary;
+    }> = [];
+    const consumedChangeIds = new Set<string>();
+    const repair = repairUnansweredToolCalls(
+      decoded,
+      "Tool execution was interrupted before it produced a result.",
+      (toolCall, context) => {
+        if (!isMutationToolName(toolCall.name)) {
+          return undefined;
+        }
+        const activity = [...document.activities].reverse().find(
+          (candidate) =>
+            candidate.status === "running" &&
+            candidate.tool_call_id === toolCall.id &&
+            candidate.tool_name === toolCall.name,
+        );
+        if (!activity) return undefined;
+        const record = [...projectChanges].reverse().find(
+          (candidate) =>
+            !consumedChangeIds.has(candidate.change_id) &&
+            candidate.session_id === document.session_id &&
+            candidate.message_id === activity.message_id &&
+            candidate.assistant_message_index ===
+              context.assistant_message_index &&
+            candidate.tool_call_id === toolCall.id &&
+            candidate.tool_name === toolCall.name,
+        );
+        if (!record) return undefined;
+
+        consumedChangeIds.add(record.change_id);
+        const change = workspaceChangeSummary(record);
+        recoveries.push({ activity, change });
+        return workspaceChangeToolResult(record, change);
+      },
+    );
+    if (recoveries.length === 0) continue;
+
+    document.agent_messages = encodeAgentMessages(repair.messages);
+    for (const { activity, change } of recoveries) {
+      activity.status = "complete";
+      activity.summary = workspaceChangeActivitySummary(change);
+      activity.file_change = change;
+    }
+    reconciled = true;
+  }
+  return reconciled;
+}
+
+function workspaceChangeSummary(
+  record: WorkspaceChangeRecord,
+): WorkspaceChangeSummary {
+  return {
+    change_id: record.change_id,
+    tool_call_id: record.tool_call_id,
+    path: record.path,
+    change_kind: record.change_kind,
+    additions: record.additions,
+    deletions: record.deletions,
+    byte_size: record.byte_size,
+  };
+}
+
+function workspaceChangeActivitySummary(
+  change: WorkspaceChangeSummary,
+): string {
+  const verb = change.change_kind === "created" ? "Created" : "Updated";
+  return `${verb} · +${change.additions} −${change.deletions}`;
+}
+
+function workspaceChangeToolResult(
+  record: WorkspaceChangeRecord,
+  change: WorkspaceChangeSummary,
+): ToolResultMessage {
+  const timestamp = Date.parse(record.created_at);
+  return {
+    role: "toolResult",
+    toolCallId: record.tool_call_id,
+    toolName: record.tool_name,
+    content: [{ type: "text", text: JSON.stringify(change) }],
+    isError: false,
+    timestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
+  };
+}
+
+function isMutationToolName(
+  toolName: string,
+): toolName is WorkspaceChangeRecord["tool_name"] {
+  return toolName === "write_file" || toolName === "replace_text";
 }
 
 function repairInterruptedSessions(state: ProjectStoreState): boolean {

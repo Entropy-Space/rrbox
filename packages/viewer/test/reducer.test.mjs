@@ -121,6 +121,9 @@ test("transport failure disables a previously ready core", () => {
   state = coreReducer(state, {
     type: "fs_list_requested",
     request_id: "files-1",
+    path: "/",
+    expected_workspace_revision: 0,
+    request_kind: "navigation",
   });
   state = coreReducer(
     state,
@@ -140,17 +143,18 @@ test("transport failure disables a previously ready core", () => {
   assert.equal(state.is_ready, false);
   assert.equal(state.is_running, false);
   assert.equal(state.pending_prompt, null);
-  assert.equal(state.pending_fs_list_request_id, null);
+  assert.equal(state.pending_fs_list, null);
   assert.equal(state.input_draft, "keep this draft");
   assert.equal(state.error_message, "The browser core stopped.");
 });
 
-test("tool activity is attached by tool call identity", () => {
+test("tool activity is keyed by stable activity identity", () => {
   let state = coreReducer(
     initialAgentSessionState,
     event("ready", { state: snapshot("p1", "s1", 1) }),
   );
   const activity = {
+    activity_id: "activity-1",
     tool_call_id: "tool-1",
     message_id: "assistant-1",
     tool_name: "read_file",
@@ -173,8 +177,21 @@ test("tool activity is attached by tool call identity", () => {
       activity: { ...activity, status: "complete", summary: "Complete" },
     }),
   );
-  assert.equal(state.activities.length, 1);
+  state = coreReducer(
+    state,
+    event("tool_activity", {
+      project_id: "p1",
+      session_id: "s1",
+      activity: {
+        ...activity,
+        activity_id: "activity-2",
+        status: "complete",
+      },
+    }),
+  );
+  assert.equal(state.activities.length, 2);
   assert.equal(state.activities[0].status, "complete");
+  assert.equal(state.activities[1].message_id, "assistant-1");
 });
 
 test("filesystem responses are correlated to the latest request", () => {
@@ -186,10 +203,16 @@ test("filesystem responses are correlated to the latest request", () => {
   state = coreReducer(state, {
     type: "fs_list_requested",
     request_id: "list-old",
+    path: "/old",
+    expected_workspace_revision: 0,
+    request_kind: "navigation",
   });
   state = coreReducer(state, {
     type: "fs_list_requested",
     request_id: "list-current",
+    path: "/current",
+    expected_workspace_revision: 0,
+    request_kind: "navigation",
   });
   state = coreReducer(
     state,
@@ -198,6 +221,7 @@ test("filesystem responses are correlated to the latest request", () => {
       {
         project_id: "p1",
         path: "/current",
+        workspace_revision: 0,
         files: [fileEntry("current.txt")],
       },
       "list-current",
@@ -210,6 +234,7 @@ test("filesystem responses are correlated to the latest request", () => {
       {
         project_id: "p1",
         path: "/old",
+        workspace_revision: 0,
         files: [fileEntry("old.txt")],
       },
       "list-old",
@@ -221,16 +246,27 @@ test("filesystem responses are correlated to the latest request", () => {
   state = coreReducer(state, {
     type: "fs_read_requested",
     request_id: "read-old",
+    path: "/old.txt",
+    expected_workspace_revision: 0,
+    request_kind: "navigation",
   });
   state = coreReducer(state, {
     type: "fs_read_requested",
     request_id: "read-current",
+    path: "/current.txt",
+    expected_workspace_revision: 0,
+    request_kind: "navigation",
   });
   state = coreReducer(
     state,
     event(
       "file_content",
-      { project_id: "p1", path: "/current.txt", content: "current" },
+      {
+        project_id: "p1",
+        path: "/current.txt",
+        workspace_revision: 0,
+        content: "current",
+      },
       "read-current",
     ),
   );
@@ -238,7 +274,12 @@ test("filesystem responses are correlated to the latest request", () => {
     state,
     event(
       "file_content",
-      { project_id: "p1", path: "/old.txt", content: "old" },
+      {
+        project_id: "p1",
+        path: "/old.txt",
+        workspace_revision: 0,
+        content: "old",
+      },
       "read-old",
     ),
   );
@@ -248,38 +289,312 @@ test("filesystem responses are correlated to the latest request", () => {
   });
 });
 
-test("a newer file read invalidates an outstanding directory response", () => {
+test("directory and file reads remain independently correlated", () => {
   let state = coreReducer(
     initialAgentSessionState,
     event("ready", { state: snapshot("p1", "s1", 1) }),
   );
   state = coreReducer(state, {
     type: "fs_list_requested",
-    request_id: "list-old",
+    request_id: "list-current",
+    path: "/updated",
+    expected_workspace_revision: 0,
+    request_kind: "workspace_refresh",
   });
   state = coreReducer(state, {
     type: "fs_read_requested",
     request_id: "read-current",
+    path: "/current.txt",
+    expected_workspace_revision: 0,
+    request_kind: "navigation",
   });
   state = coreReducer(
     state,
     event(
       "files_snapshot",
-      { project_id: "p1", path: "/old", files: [] },
-      "list-old",
+      {
+        project_id: "p1",
+        path: "/updated",
+        workspace_revision: 0,
+        files: [],
+      },
+      "list-current",
     ),
   );
   state = coreReducer(
     state,
     event(
       "file_content",
-      { project_id: "p1", path: "/current.txt", content: "current" },
+      {
+        project_id: "p1",
+        path: "/current.txt",
+        workspace_revision: 0,
+        content: "current",
+      },
       "read-current",
     ),
   );
 
-  assert.equal(state.current_path, "/");
+  assert.equal(state.current_path, "/updated");
   assert.equal(state.selected_file?.path, "/current.txt");
+});
+
+test("a foreground file read supersedes an older foreground directory request", () => {
+  let state = coreReducer(
+    initialAgentSessionState,
+    event("ready", { state: snapshot("p1", "s1", 1) }),
+  );
+  state = coreReducer(state, {
+    type: "fs_list_requested",
+    request_id: "directory-first",
+    path: "/old-directory",
+    expected_workspace_revision: 0,
+    request_kind: "navigation",
+  });
+  state = coreReducer(state, {
+    type: "fs_read_requested",
+    request_id: "file-latest",
+    path: "/latest.txt",
+    expected_workspace_revision: 0,
+    request_kind: "navigation",
+  });
+
+  assert.equal(state.pending_fs_list, null);
+  state = coreReducer(
+    state,
+    event(
+      "file_content",
+      {
+        project_id: "p1",
+        path: "/latest.txt",
+        workspace_revision: 0,
+        content: "latest",
+      },
+      "file-latest",
+    ),
+  );
+  state = coreReducer(
+    state,
+    event(
+      "files_snapshot",
+      {
+        project_id: "p1",
+        path: "/old-directory",
+        workspace_revision: 0,
+        files: [],
+      },
+      "directory-first",
+    ),
+  );
+
+  assert.equal(state.current_path, "/");
+  assert.deepEqual(state.selected_file, {
+    path: "/latest.txt",
+    content: "latest",
+  });
+});
+
+test("workspace changes invalidate stale reads and preserve visible content while refreshing", () => {
+  let state = coreReducer(
+    initialAgentSessionState,
+    event("ready", { state: snapshot("p1", "s1", 1) }),
+  );
+  state = {
+    ...state,
+    current_path: "/src",
+    files: [fileEntry("agent.ts", "/src/agent.ts")],
+    selected_file: { path: "/src/agent.ts", content: "before" },
+  };
+  state = coreReducer(state, {
+    type: "fs_list_requested",
+    request_id: "list-before-change",
+    path: "/src",
+    expected_workspace_revision: 0,
+    request_kind: "workspace_refresh",
+  });
+  state = coreReducer(state, {
+    type: "fs_read_requested",
+    request_id: "read-before-change",
+    path: "/src/agent.ts",
+    expected_workspace_revision: 0,
+    request_kind: "workspace_refresh",
+  });
+
+  state = coreReducer(
+    state,
+    event("workspace_changed", {
+      project_id: "p1",
+      session_id: "s1",
+      workspace_revision: 1,
+      change: fileChange("/src/agent.ts"),
+    }),
+  );
+
+  assert.equal(state.workspace_revision, 1);
+  assert.equal(state.pending_fs_list, null);
+  assert.equal(state.pending_fs_read, null);
+  assert.deepEqual(state.selected_file, {
+    path: "/src/agent.ts",
+    content: "before",
+  });
+  assert.deepEqual(state.pending_workspace_refresh, {
+    workspace_revision: 1,
+    changed_paths: ["/src/agent.ts"],
+  });
+
+  state = coreReducer(
+    state,
+    event(
+      "files_snapshot",
+      {
+        project_id: "p1",
+        path: "/src",
+        workspace_revision: 0,
+        files: [],
+      },
+      "list-before-change",
+    ),
+  );
+  assert.equal(state.files[0].name, "agent.ts");
+
+  state = coreReducer(state, {
+    type: "workspace_refresh_started",
+    workspace_revision: 1,
+  });
+  state = coreReducer(state, {
+    type: "fs_list_requested",
+    request_id: "list-after-change",
+    path: "/src",
+    expected_workspace_revision: 1,
+    request_kind: "workspace_refresh",
+  });
+  state = coreReducer(state, {
+    type: "fs_read_requested",
+    request_id: "read-after-change",
+    path: "/src/agent.ts",
+    expected_workspace_revision: 1,
+    request_kind: "workspace_refresh",
+  });
+  assert.equal(state.selected_file?.content, "before");
+
+  state = coreReducer(
+    state,
+    event(
+      "files_snapshot",
+      {
+        project_id: "p1",
+        path: "/src",
+        workspace_revision: 1,
+        files: [fileEntry("agent.ts", "/src/agent.ts", 24)],
+      },
+      "list-after-change",
+    ),
+  );
+  state = coreReducer(
+    state,
+    event(
+      "file_content",
+      {
+        project_id: "p1",
+        path: "/src/agent.ts",
+        workspace_revision: 1,
+        content: "after",
+      },
+      "read-after-change",
+    ),
+  );
+
+  assert.equal(state.files[0].size, 24);
+  assert.equal(state.selected_file?.content, "after");
+  assert.equal(state.pending_workspace_refresh, null);
+});
+
+test("a newer workspace change carries forward an invalidated selected-file refresh", () => {
+  let state = coreReducer(
+    initialAgentSessionState,
+    event("ready", { state: snapshot("p1", "s1", 1) }),
+  );
+  state = {
+    ...state,
+    selected_file: { path: "/src/selected.ts", content: "before" },
+  };
+  state = coreReducer(
+    state,
+    event("workspace_changed", {
+      project_id: "p1",
+      session_id: "s1",
+      workspace_revision: 1,
+      change: fileChange("/src/selected.ts"),
+    }),
+  );
+  state = coreReducer(state, {
+    type: "workspace_refresh_started",
+    workspace_revision: 1,
+  });
+  state = coreReducer(state, {
+    type: "fs_read_requested",
+    request_id: "selected-revision-1",
+    path: "/src/selected.ts",
+    expected_workspace_revision: 1,
+    request_kind: "workspace_refresh",
+  });
+
+  state = coreReducer(
+    state,
+    event("workspace_changed", {
+      project_id: "p1",
+      session_id: "s1",
+      workspace_revision: 2,
+      change: fileChange("/src/other.ts"),
+    }),
+  );
+
+  assert.equal(state.pending_fs_read, null);
+  assert.deepEqual(state.pending_workspace_refresh, {
+    workspace_revision: 2,
+    changed_paths: ["/src/selected.ts", "/src/other.ts"],
+  });
+  state = coreReducer(
+    state,
+    event(
+      "file_content",
+      {
+        project_id: "p1",
+        path: "/src/selected.ts",
+        workspace_revision: 1,
+        content: "stale",
+      },
+      "selected-revision-1",
+    ),
+  );
+  assert.equal(state.selected_file?.content, "before");
+
+  state = coreReducer(state, {
+    type: "workspace_refresh_started",
+    workspace_revision: 2,
+  });
+  state = coreReducer(state, {
+    type: "fs_read_requested",
+    request_id: "selected-revision-2",
+    path: "/src/selected.ts",
+    expected_workspace_revision: 2,
+    request_kind: "workspace_refresh",
+  });
+  state = coreReducer(
+    state,
+    event(
+      "file_content",
+      {
+        project_id: "p1",
+        path: "/src/selected.ts",
+        workspace_revision: 2,
+        content: "after",
+      },
+      "selected-revision-2",
+    ),
+  );
+
+  assert.equal(state.selected_file?.content, "after");
 });
 
 test("same-project snapshots preserve workspace navigation", () => {
@@ -292,7 +607,12 @@ test("same-project snapshots preserve workspace navigation", () => {
     current_path: "/src",
     files: [fileEntry("agent.ts")],
     selected_file: { path: "/src/agent.ts", content: "source" },
-    pending_fs_read_request_id: "read-pending",
+    pending_fs_read: {
+      request_id: "read-pending",
+      path: "/src/agent.ts",
+      expected_workspace_revision: 0,
+      request_kind: "workspace_refresh",
+    },
   };
 
   const renamed = snapshot("p1", "s1", 2);
@@ -303,7 +623,7 @@ test("same-project snapshots preserve workspace navigation", () => {
   assert.equal(state.current_path, "/src");
   assert.equal(state.files[0].name, "agent.ts");
   assert.equal(state.selected_file?.path, "/src/agent.ts");
-  assert.equal(state.pending_fs_read_request_id, "read-pending");
+  assert.equal(state.pending_fs_read?.request_id, "read-pending");
 
   state = coreReducer(
     state,
@@ -311,7 +631,7 @@ test("same-project snapshots preserve workspace navigation", () => {
   );
   assert.equal(state.current_path, "/");
   assert.equal(state.selected_file, null);
-  assert.equal(state.pending_fs_read_request_id, null);
+  assert.equal(state.pending_fs_read, null);
 });
 
 test("draft acknowledgements are scoped and only confirm the latest exact value", () => {
@@ -581,6 +901,7 @@ function snapshot(projectId, sessionId, revision, inputDraft = "") {
   return {
     state_revision: revision,
     catalog_revision: revision,
+    workspace_revision: 0,
     projects: [
       {
         project_id: projectId,
@@ -661,11 +982,23 @@ function chatMessage(id, role = "assistant") {
   };
 }
 
-function fileEntry(name) {
+function fileEntry(name, path = `/${name}`, size = 1) {
   return {
     name,
-    path: `/${name}`,
+    path,
     kind: "file",
-    size: 1,
+    size,
+  };
+}
+
+function fileChange(path) {
+  return {
+    change_id: "change-1",
+    tool_call_id: "tool-1",
+    path,
+    change_kind: "updated",
+    additions: 2,
+    deletions: 1,
+    byte_size: 24,
   };
 }

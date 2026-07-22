@@ -16,8 +16,10 @@ remote hosts.
   OpenAI-compatible discovery at `localhost:4141`
 - Versioned, runtime-validated JSON commands and events
 - Streaming mock-model service with a real tool-result continuation loop
-- Project-isolated IndexedDB virtual filesystems with `list_files` and
-  `read_file` tools
+- Project-isolated IndexedDB virtual filesystems with `list_files`, `read_file`,
+  `write_file`, and exact-match `replace_text` tools
+- Atomic file-change receipts with line statistics, live workspace refresh, and
+  reload recovery when a write commits before its transcript checkpoint
 - Versioned Pi transcript checkpoints that restore the Pi session after reload
 - Interactive workspace browser and text-file preview
 
@@ -83,11 +85,12 @@ deployment target. Never publish ResearchBox to `chatgpt.site`.
 ## Storage
 
 The browser composition stores project metadata, drafts, session documents,
-canonical Pi transcripts, and project files in one versioned IndexedDB
-database. A new chat remains project-scoped draft state until its first prompt;
-its selected model, that prompt, its session, and its staged messages commit
-atomically before model transport starts. Existing chats retain their own model
-selection.
+canonical Pi transcripts, project files, and undo-ready file-change receipts in
+one versioned IndexedDB database. A new chat remains project-scoped draft state
+until its first prompt; its selected model, that prompt, its session, and its
+staged messages commit atomically before model transport starts. Existing chats
+retain their own model selection. File mutations use compare-and-swap writes;
+the file and its receipt share one IndexedDB transaction.
 
 Provider discovery starts independently from workspace ownership. A browser
 runtime coordinator exposes provider catalog snapshots immediately, routes

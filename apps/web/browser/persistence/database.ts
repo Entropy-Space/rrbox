@@ -1,4 +1,4 @@
-export const RESEARCHBOX_DATABASE_VERSION = 2;
+export const RESEARCHBOX_DATABASE_VERSION = 3;
 
 export const databaseStores = {
   meta: "meta",
@@ -7,6 +7,7 @@ export const databaseStores = {
   session_documents: "session_documents",
   project_filesystems: "project_filesystems",
   files: "files",
+  file_changes: "file_changes",
 } as const;
 
 export class ResearchBoxDatabase {
@@ -135,10 +136,17 @@ function createSchema(
       cursorRequest.onsuccess = () => {
         const cursor = cursorRequest.result;
         if (!cursor) return;
-        workspaces.put({ project_id: String(cursor.primaryKey) });
+        workspaces.put({
+          project_id: String(cursor.primaryKey),
+          incarnation_id: crypto.randomUUID(),
+        });
         cursor.continue();
       };
     }
+  } else if (transaction) {
+    migrateProjectFileSystemIncarnations(
+      transaction.objectStore(databaseStores.project_filesystems),
+    );
   }
   if (!database.objectStoreNames.contains(databaseStores.files)) {
     const files = database.createObjectStore(databaseStores.files, {
@@ -146,4 +154,33 @@ function createSchema(
     });
     files.createIndex("by_project", "project_id", { unique: false });
   }
+  if (!database.objectStoreNames.contains(databaseStores.file_changes)) {
+    const fileChanges = database.createObjectStore(
+      databaseStores.file_changes,
+      { keyPath: ["project_id", "change_id"] },
+    );
+    fileChanges.createIndex("by_project", "project_id", { unique: false });
+  }
+}
+
+function migrateProjectFileSystemIncarnations(store: IDBObjectStore): void {
+  const cursorRequest = store.openCursor();
+  cursorRequest.onsuccess = () => {
+    const cursor = cursorRequest.result;
+    if (!cursor) return;
+    const record = cursor.value as {
+      project_id: string;
+      incarnation_id?: unknown;
+    };
+    if (
+      typeof record.incarnation_id !== "string" ||
+      record.incarnation_id.length === 0
+    ) {
+      cursor.update({
+        ...record,
+        incarnation_id: crypto.randomUUID(),
+      });
+    }
+    cursor.continue();
+  };
 }

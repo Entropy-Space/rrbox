@@ -7,7 +7,7 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v5 command", () => {
+test("round-trips every protocol-v6 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("project_create", { name: "Docs" }),
@@ -96,6 +96,7 @@ test("validates authoritative state snapshots with persisted sessions", () => {
   assert.equal(event.payload.state.active_project_id, "project-1");
   assert.equal(event.payload.state.active_session_id, "session-1");
   assert.equal(event.payload.state.input_draft, "draft reply");
+  assert.equal(event.payload.state.workspace_revision, 0);
   assert.equal(event.payload.state.providers[0]?.provider_id, "researchbox");
   assert.deepEqual(event.payload.state.active_model, {
     provider_id: "researchbox",
@@ -159,17 +160,29 @@ test("round-trips every core event variant", () => {
     coreEvent("tool_activity", {
       ...scope,
       activity: {
+        activity_id: "activity-1",
         tool_call_id: "tool-1",
         message_id: "message-1",
-        tool_name: "read_file",
-        label: "Read README",
+        tool_name: "write_file",
+        label: "Write README",
         status: "complete",
         summary: "Complete",
+        file_change: createFileChange(),
       },
+    }),
+    coreEvent("workspace_changed", {
+      ...scope,
+      workspace_revision: 2,
+      change: createFileChange(),
     }),
     coreEvent(
       "files_snapshot",
-      { project_id: "project-1", path: "/", files: [] },
+      {
+        project_id: "project-1",
+        path: "/",
+        workspace_revision: 2,
+        files: [],
+      },
       "request-list",
     ),
     coreEvent(
@@ -177,6 +190,7 @@ test("round-trips every core event variant", () => {
       {
         project_id: "project-1",
         path: "/README.md",
+        workspace_revision: 2,
         content: "# ResearchBox",
       },
       "request-read",
@@ -236,11 +250,13 @@ test("requires request correlation for filesystem and draft results", () => {
     coreEvent("files_snapshot", {
       project_id: "project-1",
       path: "/",
+      workspace_revision: 0,
       files: [],
     }),
     coreEvent("file_content", {
       project_id: "project-1",
       path: "/README.md",
+      workspace_revision: 0,
       content: "",
     }),
     coreEvent("input_draft_saved", {
@@ -304,6 +320,75 @@ test("requires explicit nullable session scope for drafts and prompts", () => {
   );
 });
 
+test("validates workspace revisions and file change summaries", () => {
+  assert.throws(
+    () =>
+      parseCoreEvent(
+        coreEvent("tool_activity", {
+          project_id: "project-1",
+          session_id: "session-1",
+          activity: {
+            tool_call_id: "tool-1",
+            message_id: "message-1",
+            tool_name: "write_file",
+            label: "Write README",
+            status: "running",
+          },
+        }),
+      ),
+    /activity_id must be a non-empty string/,
+  );
+
+  assert.throws(
+    () =>
+      parseCoreEvent(
+        coreEvent(
+          "files_snapshot",
+          {
+            project_id: "project-1",
+            path: "/",
+            files: [],
+          },
+          "request-list",
+        ),
+      ),
+    /workspace_revision must be a non-negative number/,
+  );
+
+  assert.throws(
+    () =>
+      parseCoreEvent(
+        coreEvent("workspace_changed", {
+          project_id: "project-1",
+          session_id: "session-1",
+          workspace_revision: 1,
+          change: { ...createFileChange(), additions: -1 },
+        }),
+      ),
+    /additions must be a non-negative number/,
+  );
+
+  assert.throws(
+    () =>
+      parseCoreEvent(
+        coreEvent("tool_activity", {
+          project_id: "project-1",
+          session_id: "session-1",
+          activity: {
+            activity_id: "activity-1",
+            tool_call_id: "tool-other",
+            message_id: "message-1",
+            tool_name: "write_file",
+            label: "Write README",
+            status: "complete",
+            file_change: createFileChange(),
+          },
+        }),
+      ),
+    /file_change must match tool_call_id/,
+  );
+});
+
 test("rejects malformed nested state and mismatched active scope", () => {
   assert.throws(
     () =>
@@ -316,6 +401,7 @@ test("rejects malformed nested state and mismatched active scope", () => {
             ...createPersistedState(),
             activities: [
               {
+                activity_id: "activity-1",
                 tool_call_id: "tool-1",
                 tool_name: "read_file",
                 label: "Read",
@@ -437,6 +523,7 @@ function createPersistedState() {
   return {
     state_revision: 1,
     catalog_revision: 1,
+    workspace_revision: 0,
     projects: [createProject()],
     sessions: [
       {
@@ -474,6 +561,7 @@ function createVirtualState() {
   return {
     state_revision: 1,
     catalog_revision: 1,
+    workspace_revision: 0,
     projects: [createProject()],
     sessions: [],
     providers: [createMockProvider()],
@@ -514,6 +602,18 @@ function createProject() {
     name: "Local workspace",
     created_at: "2026-07-22T00:00:00.000Z",
     updated_at: "2026-07-22T00:00:00.000Z",
+  };
+}
+
+function createFileChange() {
+  return {
+    change_id: "change-1",
+    tool_call_id: "tool-1",
+    path: "/README.md",
+    change_kind: "updated",
+    additions: 2,
+    deletions: 1,
+    byte_size: 42,
   };
 }
 

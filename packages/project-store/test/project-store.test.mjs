@@ -28,6 +28,78 @@ test("project store accepts a virtual new chat with no persisted sessions", () =
   assert.deepEqual(parseProjectStoreState(state), state);
 });
 
+test("project store preserves workspace change metadata on tool activities", () => {
+  const state = createState(1);
+  state.documents[0].activities.push({
+    activity_id: "activity-write-note",
+    tool_call_id: "write-note",
+    message_id: "assistant-message",
+    tool_name: "write_file",
+    label: "Writing /notes/agent-note.md",
+    status: "complete",
+    summary: "Created · +2 −0",
+    file_change: {
+      change_id: "change-1",
+      tool_call_id: "write-note",
+      path: "/notes/agent-note.md",
+      change_kind: "created",
+      additions: 2,
+      deletions: 0,
+      byte_size: 18,
+    },
+  });
+
+  assert.deepEqual(parseProjectStoreState(state), state);
+});
+
+test("project store rejects mismatched workspace change activity identity", () => {
+  const state = createState(1);
+  state.documents[0].activities.push({
+    activity_id: "activity-write-note",
+    tool_call_id: "write-note",
+    message_id: "assistant-message",
+    tool_name: "write_file",
+    label: "Writing /notes/agent-note.md",
+    status: "complete",
+    file_change: {
+      change_id: "change-1",
+      tool_call_id: "different-tool-call",
+      path: "/notes/agent-note.md",
+      change_kind: "created",
+      additions: 2,
+      deletions: 0,
+      byte_size: 18,
+    },
+  });
+
+  assert.throws(
+    () => parseProjectStoreState(state),
+    /file_change must match tool_call_id/,
+  );
+});
+
+test("project store gives pre-identity activities a stable fallback id", () => {
+  const state = createState(1);
+  state.documents[0].activities.push({
+    tool_call_id: "legacy-read",
+    message_id: "assistant-message",
+    tool_name: "read_file",
+    label: "Reading /README.md",
+    status: "complete",
+  });
+
+  const first = parseProjectStoreState(state);
+  const second = parseProjectStoreState(state);
+  assert.equal(
+    first.documents[0].activities[0].activity_id,
+    `legacy:${state.documents[0].session_id}:0`,
+  );
+  assert.equal(
+    second.documents[0].activities[0].activity_id,
+    first.documents[0].activities[0].activity_id,
+  );
+});
+
 test("project store validation rejects broken ownership and selection invariants", () => {
   const invalid = createState(1);
   invalid.sessions[0].project_id = "missing-project";

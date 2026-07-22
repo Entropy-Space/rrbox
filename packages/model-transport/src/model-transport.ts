@@ -1,10 +1,28 @@
-export type ModelToolName = "list_files" | "read_file";
+export type ModelToolName =
+  | "list_files"
+  | "read_file"
+  | "write_file"
+  | "replace_text";
 
-export type ModelToolCall = {
+type ModelToolCallEnvelope<TName extends ModelToolName, TArguments> = {
   tool_call_id: string;
-  tool_name: ModelToolName;
-  arguments: { path: string };
+  tool_name: TName;
+  arguments: TArguments;
 };
+
+export type ModelToolCall =
+  | ModelToolCallEnvelope<
+      "list_files" | "read_file",
+      { path: string }
+    >
+  | ModelToolCallEnvelope<
+      "write_file",
+      { path: string; content: string }
+    >
+  | ModelToolCallEnvelope<
+      "replace_text",
+      { path: string; old_text: string; new_text: string }
+    >;
 
 export type ModelToolResult = {
   tool_call_id: string;
@@ -127,7 +145,7 @@ export function parseModelStreamEvent(value: unknown): ModelStreamEvent {
         text_delta: requireString(value, "text_delta", true),
       };
     case "tool_call":
-      return { type: "tool_call", ...parseToolCall(value) };
+      return { type: "tool_call", ...parseModelToolCall(value) };
     case "done": {
       const stopReason = value.stop_reason;
       if (
@@ -164,7 +182,7 @@ function parseConversationMessage(value: unknown): ModelConversationMessage {
         throw new Error("Assistant message tool_calls must be an array.");
       }
       const content = requireString(value, "content", true);
-      const toolCalls = value.tool_calls.map(parseToolCall);
+      const toolCalls = value.tool_calls.map(parseModelToolCall);
       if (!content && toolCalls.length === 0) {
         throw new Error(
           "Assistant message must contain text or at least one tool call.",
@@ -186,23 +204,50 @@ function parseConversationMessage(value: unknown): ModelConversationMessage {
   }
 }
 
-function parseToolCall(value: unknown): ModelToolCall {
+export function parseModelToolCall(value: unknown): ModelToolCall {
   if (!isRecord(value)) throw new Error("Tool call must be an object.");
   if (!isRecord(value.arguments)) {
     throw new Error("Tool call arguments must be an object.");
   }
-  return {
-    tool_call_id: requireIdentifier(value, "tool_call_id"),
-    tool_name: parseToolName(value.tool_name),
-    arguments: { path: requireString(value.arguments, "path") },
-  };
+  const toolCallId = requireIdentifier(value, "tool_call_id");
+  const toolName = requireModelToolName(value.tool_name);
+  const path = requireString(value.arguments, "path");
+
+  switch (toolName) {
+    case "list_files":
+    case "read_file":
+      return {
+        tool_call_id: toolCallId,
+        tool_name: toolName,
+        arguments: { path },
+      };
+    case "write_file":
+      return {
+        tool_call_id: toolCallId,
+        tool_name: toolName,
+        arguments: {
+          path,
+          content: requireString(value.arguments, "content", true),
+        },
+      };
+    case "replace_text":
+      return {
+        tool_call_id: toolCallId,
+        tool_name: toolName,
+        arguments: {
+          path,
+          old_text: requireString(value.arguments, "old_text", true),
+          new_text: requireString(value.arguments, "new_text", true),
+        },
+      };
+  }
 }
 
 function parseToolResult(value: unknown): ModelToolResult {
   if (!isRecord(value)) throw new Error("Tool result must be an object.");
   return {
     tool_call_id: requireIdentifier(value, "tool_call_id"),
-    tool_name: parseToolName(value.tool_name),
+    tool_name: requireModelToolName(value.tool_name),
     content: requireString(value, "content", true),
     is_error: requireBoolean(value, "is_error"),
   };
@@ -214,14 +259,23 @@ function parseToolDefinition(value: unknown): ModelToolDefinition {
     throw new Error("Tool definition parameters are required.");
   }
   return {
-    name: parseToolName(value.name),
+    name: requireModelToolName(value.name),
     description: requireString(value, "description", true),
     parameters: value.parameters,
   };
 }
 
-function parseToolName(value: unknown): ModelToolName {
-  if (value !== "list_files" && value !== "read_file") {
+export function isModelToolName(value: unknown): value is ModelToolName {
+  return (
+    value === "list_files" ||
+    value === "read_file" ||
+    value === "write_file" ||
+    value === "replace_text"
+  );
+}
+
+function requireModelToolName(value: unknown): ModelToolName {
+  if (!isModelToolName(value)) {
     throw new Error(`Unsupported tool: ${String(value)}`);
   }
   return value;

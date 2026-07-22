@@ -157,6 +157,82 @@ test("serializes the complete conversation and tool schemas", async () => {
   });
 });
 
+test("serializes prior mutation calls without truncating multiline arguments", async () => {
+  let sentBody;
+  const transport = createTransport(async (_input, init) => {
+    sentBody = JSON.parse(init.body);
+    return sseResponse(["data: [DONE]\n\n"]);
+  });
+  const writeArguments = {
+    path: "/notes.md",
+    content: "first line\n\n  indented line\n",
+  };
+  const replaceArguments = {
+    path: "/notes.md",
+    old_text: "first line\n",
+    new_text: "replacement\n\n",
+  };
+  const mutationRequest = {
+    ...modelRequest,
+    messages: [
+      { role: "user", content: "Update notes." },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            tool_call_id: "write-1",
+            tool_name: "write_file",
+            arguments: writeArguments,
+          },
+          {
+            tool_call_id: "replace-1",
+            tool_name: "replace_text",
+            arguments: replaceArguments,
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: "write-1",
+        tool_name: "write_file",
+        content: "File written",
+        is_error: false,
+      },
+      {
+        role: "tool",
+        tool_call_id: "replace-1",
+        tool_name: "replace_text",
+        content: "Text replaced",
+        is_error: false,
+      },
+    ],
+  };
+
+  await collect(
+    transport,
+    new AbortController().signal,
+    mutationRequest,
+  );
+
+  assert.deepEqual(
+    sentBody.messages[2].tool_calls.map((toolCall) => ({
+      name: toolCall.function.name,
+      arguments: toolCall.function.arguments,
+    })),
+    [
+      {
+        name: "write_file",
+        arguments: JSON.stringify(writeArguments),
+      },
+      {
+        name: "replace_text",
+        arguments: JSON.stringify(replaceArguments),
+      },
+    ],
+  );
+});
+
 test("assembles fragmented and multiple streamed tool calls", async () => {
   const transport = createTransport(async () =>
     sseResponse([
@@ -182,6 +258,92 @@ test("assembles fragmented and multiple streamed tool calls", async () => {
       tool_call_id: "call_2",
       tool_name: "list_files",
       arguments: { path: "/" },
+    },
+    { type: "done", stop_reason: "tool_use" },
+  ]);
+});
+
+test("preserves fragmented multiline mutation arguments exactly", async () => {
+  const writeArguments = JSON.stringify({
+    path: "/notes.md",
+    content: "first line\n\n  indented line\nlast line\n",
+  });
+  const replaceArguments = JSON.stringify({
+    path: "/src/index.ts",
+    old_text: "const before = true;\n  keep();\n",
+    new_text: "const after = true;\n\n  keep();\n",
+  });
+  const writeSplit = Math.floor(writeArguments.length / 2);
+  const replaceSplit = Math.floor(replaceArguments.length / 2);
+  const transport = createTransport(async () =>
+    sseResponse([
+      `data: ${JSON.stringify({
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "write-1",
+                  function: {
+                    name: "write_file",
+                    arguments: writeArguments.slice(0, writeSplit),
+                  },
+                },
+                {
+                  index: 1,
+                  id: "replace-1",
+                  function: {
+                    name: "replace_text",
+                    arguments: replaceArguments.slice(0, replaceSplit),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      })}\n\n`,
+      `data: ${JSON.stringify({
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  function: {
+                    arguments: writeArguments.slice(writeSplit),
+                  },
+                },
+                {
+                  index: 1,
+                  function: {
+                    arguments: replaceArguments.slice(replaceSplit),
+                  },
+                },
+              ],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+      })}\n\n`,
+      "data: [DONE]\n\n",
+    ]),
+  );
+
+  assert.deepEqual(await collect(transport), [
+    {
+      type: "tool_call",
+      tool_call_id: "write-1",
+      tool_name: "write_file",
+      arguments: JSON.parse(writeArguments),
+    },
+    {
+      type: "tool_call",
+      tool_call_id: "replace-1",
+      tool_name: "replace_text",
+      arguments: JSON.parse(replaceArguments),
     },
     { type: "done", stop_reason: "tool_use" },
   ]);
@@ -343,9 +505,13 @@ function sseResponse(chunks) {
   );
 }
 
-async function collect(transport, signal = new AbortController().signal) {
+async function collect(
+  transport,
+  signal = new AbortController().signal,
+  request = modelRequest,
+) {
   const events = [];
-  for await (const event of transport.stream(modelRequest, signal)) {
+  for await (const event of transport.stream(request, signal)) {
     events.push(event);
   }
   return events;

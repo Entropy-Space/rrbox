@@ -11,40 +11,64 @@ export type ToolTranscriptRepair = {
   repaired: boolean;
 };
 
+export type MissingToolCallContext = {
+  assistant_message_index: number;
+};
+
 export function repairUnansweredToolCalls(
   messages: readonly AgentMessage[],
   errorMessage: string,
+  resolveMissing?: (
+    toolCall: ToolCall,
+    context: MissingToolCallContext,
+  ) => ToolResultMessage | undefined,
 ): ToolTranscriptRepair {
   const repairedMessages: AgentMessage[] = [];
   let pendingToolCalls: Map<string, ToolCall> | null = null;
+  let pendingAssistantMessageIndex: number | null = null;
   let repaired = false;
 
-  for (const candidate of messages) {
+  for (const [messageIndex, candidate] of messages.entries()) {
     const message = requireStandardMessage(candidate);
     if (pendingToolCalls && message.role !== "toolResult") {
       repairedMessages.push(
-        ...createMissingToolResults(pendingToolCalls, errorMessage),
+        ...createMissingToolResults(
+          pendingToolCalls,
+          errorMessage,
+          requirePendingAssistantMessageIndex(pendingAssistantMessageIndex),
+          resolveMissing,
+        ),
       );
       pendingToolCalls = null;
+      pendingAssistantMessageIndex = null;
       repaired = true;
     }
 
     if (message.role === "toolResult") {
       acceptToolResult(message, pendingToolCalls);
       repairedMessages.push(message);
-      if (pendingToolCalls?.size === 0) pendingToolCalls = null;
+      if (pendingToolCalls?.size === 0) {
+        pendingToolCalls = null;
+        pendingAssistantMessageIndex = null;
+      }
       continue;
     }
 
     repairedMessages.push(message);
     if (message.role === "assistant") {
       pendingToolCalls = collectToolCalls(message.content);
+      pendingAssistantMessageIndex = pendingToolCalls ? messageIndex : null;
     }
   }
 
   if (pendingToolCalls) {
     repairedMessages.push(
-      ...createMissingToolResults(pendingToolCalls, errorMessage),
+      ...createMissingToolResults(
+        pendingToolCalls,
+        errorMessage,
+        requirePendingAssistantMessageIndex(pendingAssistantMessageIndex),
+        resolveMissing,
+      ),
     );
     repaired = true;
   }
@@ -114,15 +138,41 @@ function acceptToolResult(
 function createMissingToolResults(
   pendingToolCalls: ReadonlyMap<string, ToolCall>,
   errorMessage: string,
+  assistantMessageIndex: number,
+  resolveMissing?: (
+    toolCall: ToolCall,
+    context: MissingToolCallContext,
+  ) => ToolResultMessage | undefined,
 ): ToolResultMessage[] {
-  return [...pendingToolCalls.values()].map((toolCall) => ({
-    role: "toolResult",
-    toolCallId: toolCall.id,
-    toolName: toolCall.name,
-    content: [{ type: "text", text: errorMessage }],
-    isError: true,
-    timestamp: Date.now(),
-  }));
+  return [...pendingToolCalls.values()].map((toolCall) => {
+    const resolved = resolveMissing?.(toolCall, {
+      assistant_message_index: assistantMessageIndex,
+    });
+    if (resolved) {
+      if (
+        resolved.toolCallId !== toolCall.id ||
+        resolved.toolName !== toolCall.name
+      ) {
+        throw new Error("Resolved tool result does not match its tool call.");
+      }
+      return resolved;
+    }
+    return {
+      role: "toolResult",
+      toolCallId: toolCall.id,
+      toolName: toolCall.name,
+      content: [{ type: "text", text: errorMessage }],
+      isError: true,
+      timestamp: Date.now(),
+    };
+  });
+}
+
+function requirePendingAssistantMessageIndex(value: number | null): number {
+  if (value === null) {
+    throw new Error("Pending tool calls are missing their assistant message index.");
+  }
+  return value;
 }
 
 function requireStandardMessage(message: AgentMessage): Message {

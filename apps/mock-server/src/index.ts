@@ -6,6 +6,56 @@ import {
   type ModelToolCall,
 } from "@researchbox/model-transport";
 
+const createNoteIntroduction = [
+  "I’ll create a **short workspace note** now.",
+  "",
+  "- It will live in the project workspace.",
+  "- You can inspect it from the file browser.",
+].join("\n");
+
+const createNoteIntroductionDeltas = [
+  "I’ll create a *",
+  "*short workspace note",
+  "*",
+  "* now.\n\n",
+  "- It will live in the project workspace.\n",
+  "- You can inspect it from the file browser.",
+];
+
+const createNoteResult = [
+  "**Created:** `/notes/agent-note.md`",
+  "",
+  "```md",
+  "# Agent note",
+  "- Worker-hosted agent core",
+  "- Portable virtual filesystem",
+  "- Versioned JSON boundary",
+  "```",
+  "",
+  "The note is ready in the file browser, and the change card records its path and line statistics.",
+].join("\n");
+
+const createNoteResultDeltas = [
+  "*",
+  "*Created:",
+  "*",
+  "* `/notes/agent-note.md`\n\n",
+  "`",
+  "``md\n",
+  "# Agent note\n",
+  "- Worker-hosted agent core\n",
+  "- Portable virtual filesystem\n",
+  "- Versioned JSON boundary\n",
+  "`",
+  "``\n\n",
+  "The note is ready in the file browser, and the change card records its path and line statistics.",
+];
+
+type MockTextResponse = {
+  text: string;
+  deltas?: string[];
+};
+
 export async function handleMockModelRequest(
   request: Request,
 ): Promise<Response> {
@@ -104,7 +154,11 @@ function createMockResponse(request: ModelRequest): ModelStreamEvent[] {
         "A concise workspace note will make the prototype state easy to inspect.",
         0,
       ),
-      ...textEvents("I’ll create a short workspace note now.", 1),
+      ...textEvents(
+        createNoteIntroduction,
+        1,
+        createNoteIntroductionDeltas,
+      ),
       ...toolCallEvents(toolCall, 2),
       { type: "done", stop_reason: "tool_use" },
     ];
@@ -133,9 +187,11 @@ function createMockResponse(request: ModelRequest): ModelStreamEvent[] {
     ];
   }
 
-  const response = shouldCreateNote || shouldInspectFiles
+  const response: MockTextResponse = shouldCreateNote || shouldInspectFiles
     ? responseFromToolResult(toolResults[0])
-    : "This prototype is running through a versioned JSON boundary. The viewer only renders events; the agent core owns the conversation and tools inside a Web Worker. That gives us a clean path from today’s mock model to Pi without coupling the interface to either one.";
+    : {
+        text: "This prototype is running through a versioned JSON boundary. The viewer only renders events; the agent core owns the conversation and tools inside a Web Worker. That gives us a clean path from today’s mock model to Pi without coupling the interface to either one.",
+      };
 
   return [
     ...reasoningEvents(
@@ -144,15 +200,23 @@ function createMockResponse(request: ModelRequest): ModelStreamEvent[] {
         : "I can answer this directly from the current prototype context.",
       0,
     ),
-    ...textEvents(response, 1),
+    ...textEvents(response.text, 1, response.deltas),
     { type: "done" },
   ];
 }
 
-function textEvents(text: string, contentIndex: number): ModelStreamEvent[] {
+function textEvents(
+  text: string,
+  contentIndex: number,
+  deltas = splitForStreaming(text),
+): ModelStreamEvent[] {
+  if (deltas.join("") !== text) {
+    throw new Error("Mock text deltas must reconstruct their source text.");
+  }
+
   return [
     { type: "text_start", content_index: contentIndex },
-    ...splitForStreaming(text).map(
+    ...deltas.map(
       (textDelta): ModelStreamEvent => ({
         type: "text_delta",
         content_index: contentIndex,
@@ -205,23 +269,36 @@ function responseFromToolResult(
   result:
     | Extract<ModelConversationMessage, { role: "tool" }>
     | undefined,
-): string {
+): MockTextResponse {
   if (!result) {
-    return "The workspace tool returned no result, so I could not inspect it.";
+    return {
+      text: "The workspace tool returned no result, so I could not inspect it.",
+    };
   }
   if (result.is_error) {
-    return `I tried to use the workspace, but the tool reported: ${result.content}`;
+    return {
+      text: `I tried to use the workspace, but the tool reported: ${result.content}`,
+    };
   }
   if (result.tool_name === "write_file") {
-    return "I created `/notes/agent-note.md` in the project workspace. It is already visible in the file browser, and the change card records the path and line statistics.";
+    return {
+      text: createNoteResult,
+      deltas: createNoteResultDeltas,
+    };
   }
   if (result.tool_name === "replace_text") {
-    return "I updated the requested text in the workspace. The exact-match edit and its durable change record both completed successfully.";
+    return {
+      text: "I updated the requested text in the workspace. The exact-match edit and its durable change record both completed successfully.",
+    };
   }
   if (result.tool_name === "read_file") {
-    return "I read the project README. It confirms the intended architecture: a versioned viewer protocol, a worker-hosted agent core, and storage behind a virtual filesystem interface. The next useful step is an OPFS adapter so this workspace persists across browser sessions without changing the agent tools.";
+    return {
+      text: "I read the project README. It confirms the intended architecture: a versioned viewer protocol, a worker-hosted agent core, and storage behind a virtual filesystem interface. The next useful step is an OPFS adapter so this workspace persists across browser sessions without changing the agent tools.",
+    };
   }
-  return "I inspected the browser workspace and found the README, notes, and source directories. The separation between the viewer, worker-hosted core, and virtual filesystem is already visible. The next useful step is an OPFS adapter so the same files survive refreshes without changing any agent tools.";
+  return {
+    text: "I inspected the browser workspace and found the README, notes, and source directories. The separation between the viewer, worker-hosted core, and virtual filesystem is already visible. The next useful step is an OPFS adapter so the same files survive refreshes without changing any agent tools.",
+  };
 }
 
 function errorResponse(error: string): Response {

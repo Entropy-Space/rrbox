@@ -41,7 +41,21 @@ test("creates a workspace note and continues from the write result", async () =>
     blockText(firstEvents, "reasoning"),
     /workspace note .* easy to inspect/i,
   );
-  assert.match(blockText(firstEvents, "text"), /create a short workspace note/i);
+  const expectedIntroduction = [
+    "I’ll create a **short workspace note** now.",
+    "",
+    "- It will live in the project workspace.",
+    "- You can inspect it from the file browser.",
+  ].join("\n");
+  assert.equal(blockText(firstEvents, "text"), expectedIntroduction);
+  assert.deepEqual(blockDeltas(firstEvents, "text"), [
+    "I’ll create a *",
+    "*short workspace note",
+    "*",
+    "* now.\n\n",
+    "- It will live in the project workspace.\n",
+    "- You can inspect it from the file browser.",
+  ]);
   const firstToolCall = firstEvents.find(
     (event) => event.type === "tool_call_end",
   )?.tool_call;
@@ -106,10 +120,34 @@ test("creates a workspace note and continues from the write result", async () =>
     blockText(continuationEvents, "reasoning"),
     /result is available.*summarize the outcome/i,
   );
-  assert.match(
-    blockText(continuationEvents, "text"),
-    /created `\/notes\/agent-note\.md`/,
-  );
+  const expectedResult = [
+    "**Created:** `/notes/agent-note.md`",
+    "",
+    "```md",
+    "# Agent note",
+    "- Worker-hosted agent core",
+    "- Portable virtual filesystem",
+    "- Versioned JSON boundary",
+    "```",
+    "",
+    "The note is ready in the file browser, and the change card records its path and line statistics.",
+  ].join("\n");
+  assert.equal(blockText(continuationEvents, "text"), expectedResult);
+  assert.deepEqual(blockDeltas(continuationEvents, "text"), [
+    "*",
+    "*Created:",
+    "*",
+    "* `/notes/agent-note.md`\n\n",
+    "`",
+    "``md\n",
+    "# Agent note\n",
+    "- Worker-hosted agent core\n",
+    "- Portable virtual filesystem\n",
+    "- Versioned JSON boundary\n",
+    "`",
+    "``\n\n",
+    "The note is ready in the file browser, and the change card records its path and line statistics.",
+  ]);
 });
 
 test("rejects malformed model requests", async () => {
@@ -211,6 +249,10 @@ function assertToolTurnLifecycle(events) {
     { type: "done", stop_reason: "tool_use" },
   ]);
 
+  assertBlockLifecycle(events, "reasoning", 0);
+  assertBlockLifecycle(events, "text", 1);
+  assertBlockLifecycle(events, "tool_call", 2);
+
   for (const event of events) {
     if (!event.type.endsWith("_delta")) continue;
     const expectedIndex =
@@ -237,11 +279,33 @@ function nonDeltaLifecycle(events) {
 }
 
 function blockText(events, blockType) {
+  return blockDeltas(events, blockType).join("");
+}
+
+function blockDeltas(events, blockType) {
   const deltaType =
     blockType === "reasoning" ? "reasoning_delta" : "text_delta";
   const field = blockType === "reasoning" ? "reasoning_delta" : "text_delta";
   return events
     .filter((event) => event.type === deltaType)
-    .map((event) => event[field])
-    .join("");
+    .map((event) => event[field]);
+}
+
+function assertBlockLifecycle(events, blockType, contentIndex) {
+  const lifecycle = events.filter(
+    (event) =>
+      event.type === `${blockType}_start` ||
+      event.type === `${blockType}_delta` ||
+      event.type === `${blockType}_end`,
+  );
+
+  assert.equal(lifecycle[0]?.type, `${blockType}_start`);
+  assert.equal(lifecycle.at(-1)?.type, `${blockType}_end`);
+  assert.ok(
+    lifecycle.slice(1, -1).every(
+      (event) =>
+        event.type === `${blockType}_delta` &&
+        event.content_index === contentIndex,
+    ),
+  );
 }

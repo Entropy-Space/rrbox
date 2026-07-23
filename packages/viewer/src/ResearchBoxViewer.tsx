@@ -37,6 +37,8 @@ import {
   isModalNavigationOpen,
   MOBILE_NAVIGATION_QUERY,
 } from "./navigation-state.ts";
+import { MarkdownContent } from "./MarkdownContent.tsx";
+import { isStreamingAssistantText } from "./markdown.ts";
 import { ModelSelector } from "./ModelSelector.tsx";
 import {
   buildAssistantRunPresentation,
@@ -515,7 +517,14 @@ function AssistantBlockView({
   switch (block.type) {
     case "assistant_text":
       return block.text ? (
-        <div className="assistant-text">{block.text}</div>
+        <MarkdownContent
+          source={block.text}
+          isStreaming={isStreamingAssistantText(
+            entryStatus,
+            isRunActive,
+            isLatestBlock,
+          )}
+        />
       ) : null;
     case "reasoning":
       if (block.redacted) {

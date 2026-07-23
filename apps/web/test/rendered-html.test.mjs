@@ -118,3 +118,40 @@ test("keeps package boundaries explicit", async () => {
     access(new URL("../.openai/hosting.json", import.meta.url)),
   );
 });
+
+test("keeps assistant Markdown rendering inert and source preserving", async () => {
+  const [component, helpers, viewer] = await Promise.all([
+    readFile(
+      new URL(
+        "../../../packages/viewer/src/MarkdownContent.tsx",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+    readFile(
+      new URL("../../../packages/viewer/src/markdown.ts", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL(
+        "../../../packages/viewer/src/ResearchBoxViewer.tsx",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ]);
+  const markdownSources = `${component}\n${helpers}`;
+
+  assert.match(viewer, /<MarkdownContent/);
+  assert.match(component, /skipHtml=\{true\}/);
+  assert.match(component, /remarkPlugins=\{MARKDOWN_PLUGINS\}/);
+  assert.match(component, /className="markdown-image-placeholder"/);
+  assert.match(component, /rel=\{isExternal \? "noopener noreferrer"/);
+  assert.match(helpers, /linkMode: "text-only"/);
+  assert.match(helpers, /inlineKatex: false/);
+  assert.match(helpers, /katex: false/);
+  assert.doesNotMatch(
+    markdownSources,
+    /dangerouslySetInnerHTML|rehypeRaw|rehype-raw/,
+  );
+});

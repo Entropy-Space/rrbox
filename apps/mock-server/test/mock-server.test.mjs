@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { handleMockModelRequest } from "../src/index.ts";
 
-test("streams a tool call for workspace inspection", async () => {
+test("streams reasoning, text, then a tool call for workspace inspection", async () => {
   const response = await handleMockModelRequest(
     new Request("http://localhost/api/mock", {
       method: "POST",
@@ -12,12 +12,23 @@ test("streams a tool call for workspace inspection", async () => {
   );
 
   assert.equal(response.status, 200);
-  const events = (await response.text())
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
-  assert.equal(events[0]?.type, "tool_call");
-  assert.equal(events.at(-1)?.type, "done");
+  const events = await readEvents(response);
+  assertToolTurnLifecycle(events);
+  assert.match(blockText(events, "reasoning"), /inspect .* workspace context/i);
+  assert.match(blockText(events, "text"), /inspect the workspace first/i);
+
+  const toolCall = events.find((event) => event.type === "tool_call_end")
+    ?.tool_call;
+  assert.deepEqual(
+    {
+      tool_name: toolCall?.tool_name,
+      arguments: toolCall?.arguments,
+    },
+    {
+      tool_name: "list_files",
+      arguments: { path: "/" },
+    },
+  );
 });
 
 test("creates a workspace note and continues from the write result", async () => {
@@ -25,28 +36,43 @@ test("creates a workspace note and continues from the write result", async () =>
     createRequest(createModelRequest("Create a workspace note")),
   );
   const firstEvents = await readEvents(firstResponse);
+  assertToolTurnLifecycle(firstEvents);
+  assert.match(
+    blockText(firstEvents, "reasoning"),
+    /workspace note .* easy to inspect/i,
+  );
+  assert.match(blockText(firstEvents, "text"), /create a short workspace note/i);
+  const firstToolCall = firstEvents.find(
+    (event) => event.type === "tool_call_end",
+  )?.tool_call;
   assert.deepEqual(
     {
-      type: firstEvents[0]?.type,
-      tool_name: firstEvents[0]?.tool_name,
-      path: firstEvents[0]?.arguments.path,
+      tool_name: firstToolCall?.tool_name,
+      path: firstToolCall?.arguments.path,
     },
     {
-      type: "tool_call",
       tool_name: "write_file",
       path: "/notes/agent-note.md",
     },
   );
-  assert.match(firstEvents[0]?.arguments.content, /ResearchBox mock agent/);
+  assert.match(firstToolCall?.arguments.content, /ResearchBox mock agent/);
   assert.equal(firstEvents.at(-1)?.stop_reason, "tool_use");
 
   const request = createModelRequest("Create a workspace note");
   request.messages.push(
     {
       role: "assistant",
-      content: "",
-      tool_calls: [
+      content_blocks: [
         {
+          type: "reasoning",
+          reasoning: "A workspace note will be useful.",
+        },
+        {
+          type: "text",
+          text: "I’ll create a short workspace note now.",
+        },
+        {
+          type: "tool_call",
           tool_call_id: "write-note",
           tool_name: "write_file",
           arguments: {
@@ -69,11 +95,19 @@ test("creates a workspace note and continues from the write result", async () =>
   );
   const continuation = await handleMockModelRequest(createRequest(request));
   const continuationEvents = await readEvents(continuation);
+  assert.deepEqual(nonDeltaLifecycle(continuationEvents), [
+    { type: "reasoning_start", content_index: 0 },
+    { type: "reasoning_end", content_index: 0 },
+    { type: "text_start", content_index: 1 },
+    { type: "text_end", content_index: 1 },
+    { type: "done" },
+  ]);
   assert.match(
-    continuationEvents
-      .filter((event) => event.type === "text_delta")
-      .map((event) => event.text_delta)
-      .join(""),
+    blockText(continuationEvents, "reasoning"),
+    /result is available.*summarize the outcome/i,
+  );
+  assert.match(
+    blockText(continuationEvents, "text"),
     /created `\/notes\/agent-note\.md`/,
   );
 });
@@ -159,4 +193,55 @@ async function readEvents(response) {
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line));
+}
+
+function assertToolTurnLifecycle(events) {
+  assert.deepEqual(nonDeltaLifecycle(events), [
+    { type: "reasoning_start", content_index: 0 },
+    { type: "reasoning_end", content_index: 0 },
+    { type: "text_start", content_index: 1 },
+    { type: "text_end", content_index: 1 },
+    { type: "tool_call_start", content_index: 2 },
+    {
+      type: "tool_call_end",
+      content_index: 2,
+      tool_call: events.find((event) => event.type === "tool_call_end")
+        ?.tool_call,
+    },
+    { type: "done", stop_reason: "tool_use" },
+  ]);
+
+  for (const event of events) {
+    if (!event.type.endsWith("_delta")) continue;
+    const expectedIndex =
+      event.type === "reasoning_delta"
+        ? 0
+        : event.type === "text_delta"
+          ? 1
+          : 2;
+    assert.equal(event.content_index, expectedIndex);
+  }
+
+  const toolDelta = events.find((event) => event.type === "tool_call_delta");
+  const toolEnd = events.find((event) => event.type === "tool_call_end");
+  assert.equal(toolDelta?.tool_call_id_delta, toolEnd?.tool_call.tool_call_id);
+  assert.equal(toolDelta?.tool_name_delta, toolEnd?.tool_call.tool_name);
+  assert.deepEqual(
+    JSON.parse(toolDelta?.arguments_delta),
+    toolEnd?.tool_call.arguments,
+  );
+}
+
+function nonDeltaLifecycle(events) {
+  return events.filter((event) => !event.type.endsWith("_delta"));
+}
+
+function blockText(events, blockType) {
+  const deltaType =
+    blockType === "reasoning" ? "reasoning_delta" : "text_delta";
+  const field = blockType === "reasoning" ? "reasoning_delta" : "text_delta";
+  return events
+    .filter((event) => event.type === deltaType)
+    .map((event) => event[field])
+    .join("");
 }

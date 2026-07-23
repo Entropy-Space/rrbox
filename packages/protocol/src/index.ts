@@ -1,14 +1,4 @@
-export const PROTOCOL_VERSION = 6 as const;
-
-export type MessageRole = "user" | "assistant";
-
-export type ChatMessage = {
-  id: string;
-  role: MessageRole;
-  content: string;
-  created_at: string;
-  status: "streaming" | "complete" | "aborted" | "error";
-};
+export const PROTOCOL_VERSION = 7 as const;
 
 export type FileEntry = {
   name: string;
@@ -27,16 +17,103 @@ export type WorkspaceChangeSummary = {
   byte_size: number;
 };
 
-export type ToolActivity = {
-  activity_id: string;
+export type AssistantUsage = {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+  total_tokens: number;
+  cost: {
+    input: number;
+    output: number;
+    cache_read: number;
+    cache_write: number;
+    total: number;
+  };
+};
+
+export type AssistantTextBlock = {
+  type: "assistant_text";
+  block_id: string;
+  text: string;
+  text_signature?: string;
+};
+
+export type ReasoningBlock = {
+  type: "reasoning";
+  block_id: string;
+  text: string;
+  thinking_signature?: string;
+  redacted?: boolean;
+};
+
+export type ToolCallBlock = {
+  type: "tool_call";
+  block_id: string;
   tool_call_id: string;
-  message_id: string;
   tool_name: string;
-  label: string;
-  status: "running" | "complete" | "error";
+  arguments: Record<string, unknown>;
+  thought_signature?: string;
+  label?: string;
+};
+
+export type AssistantBlock =
+  | AssistantTextBlock
+  | ReasoningBlock
+  | ToolCallBlock;
+
+type TimelineEntryBase<TType extends string> = {
+  type: TType;
+  entry_id: string;
+  run_id: string;
+  created_at: string;
+};
+
+export type UserMessageEntry = TimelineEntryBase<"user_message"> & {
+  content: string;
+};
+
+export type AssistantMessageStatus =
+  | "streaming"
+  | "complete"
+  | "aborted"
+  | "error";
+
+export type AssistantStopReason =
+  | "stop"
+  | "length"
+  | "tool_use"
+  | "error"
+  | "aborted";
+
+export type AssistantMessageEntry =
+  TimelineEntryBase<"assistant_message"> & {
+    status: AssistantMessageStatus;
+    api: string;
+    provider: string;
+    model: string;
+    response_model?: string;
+    response_id?: string;
+    usage: AssistantUsage;
+    stop_reason?: AssistantStopReason;
+    error_message?: string;
+    blocks: AssistantBlock[];
+  };
+
+export type ToolResultEntry = TimelineEntryBase<"tool_result"> & {
+  tool_call_block_id: string;
+  tool_call_id: string;
+  tool_name: string;
+  content: string;
+  is_error: boolean;
   summary?: string;
   file_change?: WorkspaceChangeSummary;
 };
+
+export type TimelineEntry =
+  | UserMessageEntry
+  | AssistantMessageEntry
+  | ToolResultEntry;
 
 export type ProjectSummary = {
   project_id: string;
@@ -92,8 +169,7 @@ export type CoreStateSnapshot = {
   active_project_id: string;
   active_session_id: string | null;
   input_draft: string;
-  messages: ChatMessage[];
-  activities: ToolActivity[];
+  timeline: TimelineEntry[];
   files: FileEntry[];
   is_running: boolean;
 };
@@ -179,20 +255,31 @@ export type CoreEvent =
   | EventEnvelope<"ready", { state: CoreStateSnapshot }>
   | EventEnvelope<"state_snapshot", { state: CoreStateSnapshot }>
   | EventEnvelope<"run_state", SessionScope & { is_running: boolean }>
-  | EventEnvelope<"message_added", SessionScope & { message: ChatMessage }>
   | EventEnvelope<
-      "message_delta",
-      SessionScope & { message_id: string; text_delta: string }
+      "timeline_entry_appended",
+      SessionScope & { entry: TimelineEntry }
     >
   | EventEnvelope<
-      "message_finished",
+      "assistant_block_appended",
+      SessionScope & { entry_id: string; block: AssistantBlock }
+    >
+  | EventEnvelope<
+      "assistant_block_delta",
       SessionScope & {
-        message_id: string;
-        status: "complete" | "aborted" | "error";
-        error_message?: string;
+        entry_id: string;
+        block_id: string;
+        block_type: "assistant_text" | "reasoning";
+        text_delta: string;
       }
     >
-  | EventEnvelope<"tool_activity", SessionScope & { activity: ToolActivity }>
+  | EventEnvelope<
+      "timeline_entry_updated",
+      SessionScope & { entry: TimelineEntry }
+    >
+  | EventEnvelope<
+      "assistant_block_updated",
+      SessionScope & { entry_id: string; block: AssistantBlock }
+    >
   | EventEnvelope<
       "workspace_changed",
       SessionScope & {
@@ -407,51 +494,63 @@ export function parseCoreEvent(value: unknown): CoreEvent {
         },
         requestId,
       );
-    case "message_added":
+    case "timeline_entry_appended":
       return eventEnvelope(
-        "message_added",
+        "timeline_entry_appended",
         eventId,
         {
           ...parseSessionScope(payload),
-          message: parseChatMessage(payload.message),
+          entry: parseTimelineEntry(payload.entry),
         },
         requestId,
       );
-    case "message_delta":
+    case "assistant_block_appended":
       return eventEnvelope(
-        "message_delta",
+        "assistant_block_appended",
         eventId,
         {
           ...parseSessionScope(payload),
-          message_id: requireString(payload, "message_id"),
+          entry_id: requireString(payload, "entry_id"),
+          block: parseAssistantBlock(payload.block),
+        },
+        requestId,
+      );
+    case "assistant_block_delta": {
+      const blockType = payload.block_type;
+      if (blockType !== "assistant_text" && blockType !== "reasoning") {
+        throw new Error("Invalid assistant block delta type.");
+      }
+      return eventEnvelope(
+        "assistant_block_delta",
+        eventId,
+        {
+          ...parseSessionScope(payload),
+          entry_id: requireString(payload, "entry_id"),
+          block_id: requireString(payload, "block_id"),
+          block_type: blockType,
           text_delta: requireString(payload, "text_delta", true),
         },
         requestId,
       );
-    case "message_finished": {
-      const status = parseFinishedStatus(payload.status);
-      const errorMessage = optionalString(payload, "error_message", true);
+    }
+    case "timeline_entry_updated":
       return eventEnvelope(
-        "message_finished",
+        "timeline_entry_updated",
         eventId,
         {
           ...parseSessionScope(payload),
-          message_id: requireString(payload, "message_id"),
-          status,
-          ...(errorMessage === undefined
-            ? {}
-            : { error_message: errorMessage }),
+          entry: parseTimelineEntry(payload.entry),
         },
         requestId,
       );
-    }
-    case "tool_activity":
+    case "assistant_block_updated":
       return eventEnvelope(
-        "tool_activity",
+        "assistant_block_updated",
         eventId,
         {
           ...parseSessionScope(payload),
-          activity: parseToolActivity(payload.activity),
+          entry_id: requireString(payload, "entry_id"),
+          block: parseAssistantBlock(payload.block),
         },
         requestId,
       );
@@ -591,8 +690,7 @@ function parseCoreStateSnapshot(value: unknown): CoreStateSnapshot {
     active_project_id: requireString(value, "active_project_id"),
     active_session_id: requireNullableString(value, "active_session_id"),
     input_draft: requireString(value, "input_draft", true),
-    messages: requireArray(value, "messages").map(parseChatMessage),
-    activities: requireArray(value, "activities").map(parseToolActivity),
+    timeline: parseTimeline(value.timeline),
     files: requireArray(value, "files").map(parseFileEntry),
     is_running: requireBoolean(value, "is_running"),
   };
@@ -638,18 +736,9 @@ function assertCoreStateInvariants(snapshot: CoreStateSnapshot): void {
   ) {
     throw new Error("active_model references an unknown model_id.");
   }
-  const activityIds = new Set<string>();
-  for (const activity of snapshot.activities) {
-    if (activityIds.has(activity.activity_id)) {
-      throw new Error(`Duplicate activity_id: ${activity.activity_id}`);
-    }
-    activityIds.add(activity.activity_id);
-  }
   if (snapshot.active_session_id === null) {
-    if (snapshot.messages.length > 0 || snapshot.activities.length > 0) {
-      throw new Error(
-        "Virtual new chat cannot contain messages or tool activities.",
-      );
+    if (snapshot.timeline.length > 0) {
+      throw new Error("Virtual new chat cannot contain timeline entries.");
     }
     if (snapshot.is_running) {
       throw new Error("Virtual new chat cannot have an active run.");
@@ -661,6 +750,14 @@ function assertCoreStateInvariants(snapshot: CoreStateSnapshot): void {
   if (!activeSession) throw new Error("active_session_id does not exist.");
   if (activeSession.project_id !== snapshot.active_project_id) {
     throw new Error("Active session does not belong to active project.");
+  }
+  const userPromptCount = snapshot.timeline.filter(
+    (entry) => entry.type === "user_message",
+  ).length;
+  if (activeSession.message_count !== userPromptCount) {
+    throw new Error(
+      "Active session message_count must equal its user prompt count.",
+    );
   }
 }
 
@@ -778,28 +875,319 @@ function parseSessionScope(value: Record<string, unknown>): SessionScope {
   };
 }
 
-function parseChatMessage(value: unknown): ChatMessage {
-  if (!isRecord(value)) throw new Error("Chat message must be an object.");
-  const role = value.role;
-  const status = value.status;
-  if (role !== "user" && role !== "assistant") {
-    throw new Error("Invalid chat message role.");
+export function parseTimeline(value: unknown): TimelineEntry[] {
+  if (!Array.isArray(value)) throw new Error("Timeline must be an array.");
+  const timeline = value.map(parseTimelineEntry);
+  assertTimelineInvariants(timeline);
+  return timeline;
+}
+
+export function parseTimelineEntry(value: unknown): TimelineEntry {
+  if (!isRecord(value)) throw new Error("Timeline entry must be an object.");
+  const base = {
+    entry_id: requireString(value, "entry_id"),
+    run_id: requireString(value, "run_id"),
+    created_at: requireIsoTimestamp(value, "created_at"),
+  };
+  switch (value.type) {
+    case "user_message":
+      return {
+        type: "user_message",
+        ...base,
+        content: requireString(value, "content", true),
+      };
+    case "assistant_message": {
+      const status = parseAssistantMessageStatus(value.status);
+      const stopReason = parseAssistantStopReason(value.stop_reason);
+      assertAssistantCompletion(status, stopReason);
+      const responseModel = optionalString(value, "response_model");
+      const responseId = optionalString(value, "response_id");
+      const errorMessage = optionalString(value, "error_message", true);
+      const blocks = requireArray(value, "blocks").map(parseAssistantBlock);
+      assertUniqueBlockIds(blocks);
+      return {
+        type: "assistant_message",
+        ...base,
+        status,
+        api: requireString(value, "api"),
+        provider: requireString(value, "provider"),
+        model: requireString(value, "model"),
+        ...(responseModel === undefined
+          ? {}
+          : { response_model: responseModel }),
+        ...(responseId === undefined ? {} : { response_id: responseId }),
+        usage: parseAssistantUsage(value.usage),
+        ...(stopReason === undefined ? {} : { stop_reason: stopReason }),
+        ...(errorMessage === undefined ? {} : { error_message: errorMessage }),
+        blocks,
+      };
+    }
+    case "tool_result": {
+      const toolCallId = requireString(value, "tool_call_id");
+      const summary = optionalString(value, "summary", true);
+      const fileChange =
+        value.file_change === undefined
+          ? undefined
+          : parseWorkspaceChangeSummary(value.file_change);
+      if (fileChange && fileChange.tool_call_id !== toolCallId) {
+        throw new Error("Tool result file_change must match tool_call_id.");
+      }
+      return {
+        type: "tool_result",
+        ...base,
+        tool_call_block_id: requireString(value, "tool_call_block_id"),
+        tool_call_id: toolCallId,
+        tool_name: requireString(value, "tool_name"),
+        content: requireString(value, "content", true),
+        is_error: requireBoolean(value, "is_error"),
+        ...(summary === undefined ? {} : { summary }),
+        ...(fileChange === undefined ? {} : { file_change: fileChange }),
+      };
+    }
+    default:
+      throw new Error("Invalid timeline entry type.");
+  }
+}
+
+export function parseAssistantBlock(value: unknown): AssistantBlock {
+  if (!isRecord(value)) throw new Error("Assistant block must be an object.");
+  const blockId = requireString(value, "block_id");
+  switch (value.type) {
+    case "assistant_text": {
+      const textSignature = optionalString(value, "text_signature", true);
+      return {
+        type: "assistant_text",
+        block_id: blockId,
+        text: requireString(value, "text", true),
+        ...(textSignature === undefined
+          ? {}
+          : { text_signature: textSignature }),
+      };
+    }
+    case "reasoning": {
+      const thinkingSignature = optionalString(
+        value,
+        "thinking_signature",
+        true,
+      );
+      const redacted = optionalBoolean(value, "redacted");
+      return {
+        type: "reasoning",
+        block_id: blockId,
+        text: requireString(value, "text", true),
+        ...(thinkingSignature === undefined
+          ? {}
+          : { thinking_signature: thinkingSignature }),
+        ...(redacted === undefined ? {} : { redacted }),
+      };
+    }
+    case "tool_call": {
+      const thoughtSignature = optionalString(
+        value,
+        "thought_signature",
+        true,
+      );
+      const label = optionalString(value, "label", true);
+      return {
+        type: "tool_call",
+        block_id: blockId,
+        tool_call_id: requireString(value, "tool_call_id"),
+        tool_name: requireString(value, "tool_name"),
+        arguments: cloneJsonObject(value.arguments, "Tool arguments"),
+        ...(thoughtSignature === undefined
+          ? {}
+          : { thought_signature: thoughtSignature }),
+        ...(label === undefined ? {} : { label }),
+      };
+    }
+    default:
+      throw new Error("Invalid assistant block type.");
+  }
+}
+
+export function assertTimelineInvariants(timeline: TimelineEntry[]): void {
+  const entryIds = new Set<string>();
+  const blockIds = new Set<string>();
+  const seenRuns = new Set<string>();
+  const resolvedToolCalls = new Set<string>();
+  let pendingToolCalls: Map<
+    string,
+    {
+      entry_index: number;
+      run_id: string;
+      tool_call_id: string;
+      tool_name: string;
+    }
+  > | null = null;
+  let currentRunId: string | undefined;
+
+  for (const [entryIndex, entry] of timeline.entries()) {
+    assertIsoTimestamp(entry.created_at, "Timeline entry created_at");
+    if (entryIds.has(entry.entry_id)) {
+      throw new Error(`Duplicate timeline entry_id: ${entry.entry_id}`);
+    }
+    entryIds.add(entry.entry_id);
+
+    if (pendingToolCalls && entry.type !== "tool_result") {
+      throw new Error(
+        "Assistant tool calls must be followed immediately by their tool results.",
+      );
+    }
+
+    if (entry.run_id !== currentRunId) {
+      if (seenRuns.has(entry.run_id)) {
+        throw new Error(`Timeline run is not contiguous: ${entry.run_id}`);
+      }
+      if (entry.type !== "user_message") {
+        throw new Error("Every timeline run must start with a user_message.");
+      }
+      seenRuns.add(entry.run_id);
+      currentRunId = entry.run_id;
+    } else if (entry.type === "user_message") {
+      throw new Error("A timeline run must contain exactly one user_message.");
+    }
+
+    if (entry.type === "assistant_message") {
+      const rawToolCallIds = new Set<string>();
+      const entryToolCalls = new Map<
+        string,
+        {
+          entry_index: number;
+          run_id: string;
+          tool_call_id: string;
+          tool_name: string;
+        }
+      >();
+      for (const block of entry.blocks) {
+        if (blockIds.has(block.block_id)) {
+          throw new Error(`Duplicate assistant block_id: ${block.block_id}`);
+        }
+        blockIds.add(block.block_id);
+        if (block.type === "tool_call") {
+          if (rawToolCallIds.has(block.tool_call_id)) {
+            throw new Error(
+              `Duplicate tool_call_id in assistant message: ${block.tool_call_id}`,
+            );
+          }
+          rawToolCallIds.add(block.tool_call_id);
+          entryToolCalls.set(block.block_id, {
+            entry_index: entryIndex,
+            run_id: entry.run_id,
+            tool_call_id: block.tool_call_id,
+            tool_name: block.tool_name,
+          });
+        }
+      }
+      pendingToolCalls = entryToolCalls.size === 0 ? null : entryToolCalls;
+      continue;
+    }
+    if (entry.type !== "tool_result") continue;
+
+    if (resolvedToolCalls.has(entry.tool_call_block_id)) {
+      throw new Error("A tool_call block can have at most one tool result.");
+    }
+    const toolCall = pendingToolCalls?.get(entry.tool_call_block_id);
+    if (!toolCall || toolCall.entry_index >= entryIndex) {
+      throw new Error(
+        "Tool result must reference the active assistant tool-call group.",
+      );
+    }
+    if (toolCall.run_id !== entry.run_id) {
+      throw new Error("Tool result must belong to the tool call's run.");
+    }
+    if (
+      toolCall.tool_call_id !== entry.tool_call_id ||
+      toolCall.tool_name !== entry.tool_name
+    ) {
+      throw new Error("Tool result identity must match its tool_call block.");
+    }
+    resolvedToolCalls.add(entry.tool_call_block_id);
+    pendingToolCalls?.delete(entry.tool_call_block_id);
+    if (pendingToolCalls?.size === 0) pendingToolCalls = null;
+  }
+}
+
+function assertUniqueBlockIds(blocks: AssistantBlock[]): void {
+  const blockIds = new Set<string>();
+  for (const block of blocks) {
+    if (blockIds.has(block.block_id)) {
+      throw new Error(`Duplicate assistant block_id: ${block.block_id}`);
+    }
+    blockIds.add(block.block_id);
+  }
+}
+
+function parseAssistantUsage(value: unknown): AssistantUsage {
+  if (!isRecord(value)) throw new Error("Assistant usage must be an object.");
+  const cost = value.cost;
+  if (!isRecord(cost)) throw new Error("Assistant usage cost must be an object.");
+  return {
+    input: requireNonNegativeNumber(value, "input"),
+    output: requireNonNegativeNumber(value, "output"),
+    cache_read: requireNonNegativeNumber(value, "cache_read"),
+    cache_write: requireNonNegativeNumber(value, "cache_write"),
+    total_tokens: requireNonNegativeNumber(value, "total_tokens"),
+    cost: {
+      input: requireNonNegativeNumber(cost, "input"),
+      output: requireNonNegativeNumber(cost, "output"),
+      cache_read: requireNonNegativeNumber(cost, "cache_read"),
+      cache_write: requireNonNegativeNumber(cost, "cache_write"),
+      total: requireNonNegativeNumber(cost, "total"),
+    },
+  };
+}
+
+function parseAssistantMessageStatus(value: unknown): AssistantMessageStatus {
+  if (
+    value !== "streaming" &&
+    value !== "complete" &&
+    value !== "aborted" &&
+    value !== "error"
+  ) {
+    throw new Error("Invalid assistant message status.");
+  }
+  return value;
+}
+
+function parseAssistantStopReason(
+  value: unknown,
+): AssistantStopReason | undefined {
+  if (value === undefined) return undefined;
+  if (
+    value !== "stop" &&
+    value !== "length" &&
+    value !== "tool_use" &&
+    value !== "error" &&
+    value !== "aborted"
+  ) {
+    throw new Error("Invalid assistant stop_reason.");
+  }
+  return value;
+}
+
+function assertAssistantCompletion(
+  status: AssistantMessageStatus,
+  stopReason: AssistantStopReason | undefined,
+): void {
+  if (status === "streaming" && stopReason !== undefined) {
+    throw new Error("Streaming assistant messages cannot have stop_reason.");
   }
   if (
-    status !== "streaming" &&
-    status !== "complete" &&
-    status !== "aborted" &&
-    status !== "error"
+    status === "complete" &&
+    stopReason !== "stop" &&
+    stopReason !== "length" &&
+    stopReason !== "tool_use"
   ) {
-    throw new Error("Invalid chat message status.");
+    throw new Error(
+      "Complete assistant messages require a completion stop_reason.",
+    );
   }
-  return {
-    id: requireString(value, "id"),
-    role,
-    content: requireString(value, "content", true),
-    created_at: requireString(value, "created_at"),
-    status,
-  };
+  if (status === "aborted" && stopReason !== "aborted") {
+    throw new Error("Aborted assistant messages require aborted stop_reason.");
+  }
+  if (status === "error" && stopReason !== "error") {
+    throw new Error("Errored assistant messages require error stop_reason.");
+  }
 }
 
 function parseFileEntry(value: unknown): FileEntry {
@@ -815,34 +1203,7 @@ function parseFileEntry(value: unknown): FileEntry {
   };
 }
 
-function parseToolActivity(value: unknown): ToolActivity {
-  if (!isRecord(value)) throw new Error("Tool activity must be an object.");
-  const status = value.status;
-  if (status !== "running" && status !== "complete" && status !== "error") {
-    throw new Error("Invalid tool activity status.");
-  }
-  const summary = optionalString(value, "summary", true);
-  const toolCallId = requireString(value, "tool_call_id");
-  const fileChange =
-    value.file_change === undefined
-      ? undefined
-      : parseWorkspaceChangeSummary(value.file_change);
-  if (fileChange && fileChange.tool_call_id !== toolCallId) {
-    throw new Error("Tool activity file_change must match tool_call_id.");
-  }
-  return {
-    activity_id: requireString(value, "activity_id"),
-    tool_call_id: toolCallId,
-    message_id: requireString(value, "message_id"),
-    tool_name: requireString(value, "tool_name"),
-    label: requireString(value, "label"),
-    status,
-    ...(summary === undefined ? {} : { summary }),
-    ...(fileChange === undefined ? {} : { file_change: fileChange }),
-  };
-}
-
-function parseWorkspaceChangeSummary(
+export function parseWorkspaceChangeSummary(
   value: unknown,
 ): WorkspaceChangeSummary {
   if (!isRecord(value)) {
@@ -863,15 +1224,6 @@ function parseWorkspaceChangeSummary(
   };
 }
 
-function parseFinishedStatus(
-  value: unknown,
-): "complete" | "aborted" | "error" {
-  if (value !== "complete" && value !== "aborted" && value !== "error") {
-    throw new Error("Invalid finished message status.");
-  }
-  return value;
-}
-
 function requireArray(
   value: Record<string, unknown>,
   field: string,
@@ -890,6 +1242,14 @@ function requireBoolean(
     throw new Error(`${field} must be a boolean.`);
   }
   return candidate;
+}
+
+function optionalBoolean(
+  value: Record<string, unknown>,
+  field: string,
+): boolean | undefined {
+  if (value[field] === undefined) return undefined;
+  return requireBoolean(value, field);
 }
 
 function requireNonNegativeInteger(
@@ -946,6 +1306,77 @@ function requireString(
     throw new Error(`${field} must be a non-empty string.`);
   }
   return candidate;
+}
+
+function requireIsoTimestamp(
+  value: Record<string, unknown>,
+  field: string,
+): string {
+  const candidate = requireString(value, field);
+  assertIsoTimestamp(candidate, field);
+  return candidate;
+}
+
+function assertIsoTimestamp(value: string, label: string): void {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${label} must be a valid canonical ISO timestamp.`);
+  }
+  try {
+    if (new Date(parsed).toISOString() !== value) {
+      throw new Error(`${label} must be a valid canonical ISO timestamp.`);
+    }
+  } catch {
+    throw new Error(`${label} must be a valid canonical ISO timestamp.`);
+  }
+}
+
+function cloneJsonObject(
+  value: unknown,
+  label: string,
+): Record<string, unknown> {
+  if (!isRecord(value)) throw new Error(`${label} must be an object.`);
+  assertJsonValue(value, label, new Set<object>());
+  return structuredClone(value);
+}
+
+function assertJsonValue(
+  value: unknown,
+  label: string,
+  ancestors: Set<object>,
+): void {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new Error(`${label} must contain only JSON values.`);
+    }
+    return;
+  }
+  if (typeof value !== "object") {
+    throw new Error(`${label} must contain only JSON values.`);
+  }
+  if (ancestors.has(value)) {
+    throw new Error(`${label} cannot contain cycles.`);
+  }
+  ancestors.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) assertJsonValue(item, label, ancestors);
+  } else {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new Error(`${label} must contain only JSON values.`);
+    }
+    for (const item of Object.values(value)) {
+      assertJsonValue(item, label, ancestors);
+    }
+  }
+  ancestors.delete(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

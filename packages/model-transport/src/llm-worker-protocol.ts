@@ -7,7 +7,7 @@ import {
   type ModelStreamEvent,
 } from "./model-transport.ts";
 
-export const LLM_WORKER_PROTOCOL_VERSION = 3 as const;
+export const LLM_WORKER_PROTOCOL_VERSION = 4 as const;
 
 type CommandEnvelope<TType extends string, TPayload extends object> = {
   protocol_version: typeof LLM_WORKER_PROTOCOL_VERSION;

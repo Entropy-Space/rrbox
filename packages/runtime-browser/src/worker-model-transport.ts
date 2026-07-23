@@ -3,6 +3,7 @@ import {
   createLlmModelsRequest,
   createLlmStreamAbort,
   createLlmStreamStart,
+  ModelStreamEventSequenceValidator,
   parseLlmWorkerEvent,
   readLlmRequestId,
   readLlmStreamId,
@@ -19,6 +20,7 @@ type ModelWorker = Pick<
 >;
 
 type PendingStream = {
+  validator: ModelStreamEventSequenceValidator;
   events: ModelStreamEvent[];
   failure: Error | null;
   is_finished: boolean;
@@ -110,6 +112,7 @@ export class WorkerModelTransport implements ModelTransport {
 
     const streamId = crypto.randomUUID();
     const pending: PendingStream = {
+      validator: new ModelStreamEventSequenceValidator(),
       events: [],
       failure: null,
       is_finished: false,
@@ -183,13 +186,17 @@ export class WorkerModelTransport implements ModelTransport {
           : "Invalid LLM worker event.",
       );
       const pending = streamId ? this.streams.get(streamId) : undefined;
-      if (pending) {
-        failPending(pending, failure, false);
-      } else if (requestId && this.modelRequests.has(requestId)) {
-        this.rejectModelRequest(requestId, failure);
-      } else {
-        this.failAll(failure);
+      if (streamId) {
+        if (pending) failPending(pending, failure, false);
+        return;
       }
+      if (requestId) {
+        if (this.modelRequests.has(requestId)) {
+          this.rejectModelRequest(requestId, failure);
+        }
+        return;
+      }
+      this.failAll(failure);
       return;
     }
 
@@ -230,8 +237,23 @@ export class WorkerModelTransport implements ModelTransport {
         );
         return;
       }
-      pending.events.push(event.payload.model_event);
-      pending.saw_done = event.payload.model_event.type === "done";
+      let modelEvent: ModelStreamEvent;
+      try {
+        modelEvent = pending.validator.accept(event.payload.model_event);
+      } catch (error) {
+        failPending(
+          pending,
+          new Error(
+            error instanceof Error
+              ? `Invalid model stream sequence: ${error.message}`
+              : "Invalid model stream sequence.",
+          ),
+          false,
+        );
+        return;
+      }
+      pending.events.push(modelEvent);
+      pending.saw_done = modelEvent.type === "done";
       notifyPending(pending);
       return;
     }
@@ -242,6 +264,18 @@ export class WorkerModelTransport implements ModelTransport {
         failPending(
           pending,
           new Error("The LLM worker finished without a done event."),
+          true,
+        );
+        return;
+      }
+      try {
+        pending.validator.assertComplete();
+      } catch (error) {
+        failPending(
+          pending,
+          error instanceof Error
+            ? error
+            : new Error("The LLM worker returned an incomplete model stream."),
           true,
         );
         return;

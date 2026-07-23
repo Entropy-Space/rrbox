@@ -91,6 +91,13 @@ test("keeps package boundaries explicit", async () => {
   assert.doesNotMatch(viewer, /new Worker\(/);
   assert.match(session, /createCommand\("bootstrap"/);
   assert.match(session, /parseCoreEvent/);
+  assert.match(viewer, /<details className="reasoning-block">/);
+  assert.doesNotMatch(
+    viewer,
+    /<details className="reasoning-block"[^>]*\sopen(?:=|\s|>)/,
+  );
+  assert.match(viewer, /role="status"/);
+  assert.match(viewer, /aria-busy=\{status === "running"\}/);
   assert.doesNotMatch(viewer, /from "@earendil-works\/pi-agent-core"/);
   assert.match(coreWorker, /new Worker\(new URL\("\.\/llm\.worker\.ts"/);
   assert.match(coreWorker, /WorkerModelTransport/);
@@ -105,7 +112,7 @@ test("keeps package boundaries explicit", async () => {
   assert.match(core, /ProjectFileSystemProvider/);
   assert.match(runtime, /new Agent\(/);
   assert.match(runtime, /WorkspaceController/);
-  assert.match(protocol, /PROTOCOL_VERSION = 6/);
+  assert.match(protocol, /PROTOCOL_VERSION = 7/);
 
   await assert.rejects(
     access(new URL("../.openai/hosting.json", import.meta.url)),

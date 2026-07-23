@@ -37,6 +37,17 @@ export type ModelToolDefinition = {
   parameters: unknown;
 };
 
+export type ModelAssistantContentBlock =
+  | {
+      type: "text";
+      text: string;
+    }
+  | {
+      type: "reasoning";
+      reasoning: string;
+    }
+  | ({ type: "tool_call" } & ModelToolCall);
+
 export type ModelConversationMessage =
   | {
       role: "user";
@@ -44,8 +55,7 @@ export type ModelConversationMessage =
     }
   | {
       role: "assistant";
-      content: string;
-      tool_calls: ModelToolCall[];
+      content_blocks: ModelAssistantContentBlock[];
     }
   | ({ role: "tool" } & ModelToolResult);
 
@@ -58,11 +68,33 @@ export type ModelDescriptor = {
   max_output_tokens: number | null;
   supports_tools: boolean;
   supports_reasoning: boolean;
+  supports_reasoning_effort: boolean;
 };
 
 export type ModelStreamEvent =
-  | { type: "text_delta"; text_delta: string }
-  | ({ type: "tool_call" } & ModelToolCall)
+  | { type: "text_start"; content_index: number }
+  | { type: "text_delta"; content_index: number; text_delta: string }
+  | { type: "text_end"; content_index: number }
+  | { type: "reasoning_start"; content_index: number }
+  | {
+      type: "reasoning_delta";
+      content_index: number;
+      reasoning_delta: string;
+    }
+  | { type: "reasoning_end"; content_index: number }
+  | { type: "tool_call_start"; content_index: number }
+  | {
+      type: "tool_call_delta";
+      content_index: number;
+      tool_call_id_delta?: string;
+      tool_name_delta?: string;
+      arguments_delta?: string;
+    }
+  | {
+      type: "tool_call_end";
+      content_index: number;
+      tool_call: ModelToolCall;
+    }
   | {
       type: "done";
       stop_reason?: "stop" | "length" | "tool_use";
@@ -73,6 +105,7 @@ export type ModelRequest = {
   provider_id: string;
   model_id: string;
   system_prompt: string;
+  reasoning_effort?: "minimal" | "low" | "medium" | "high" | "xhigh";
   messages: ModelConversationMessage[];
   tools: ModelToolDefinition[];
 };
@@ -98,11 +131,15 @@ export function parseModelRequest(value: unknown): ModelRequest {
     throw new Error("tools must be an array.");
   }
 
+  const reasoningEffort = parseReasoningEffort(value.reasoning_effort);
   return {
     session_id: requireIdentifier(value, "session_id"),
     provider_id: requireIdentifier(value, "provider_id"),
     model_id: requireIdentifier(value, "model_id"),
     system_prompt: requireString(value, "system_prompt", true),
+    ...(reasoningEffort === undefined
+      ? {}
+      : { reasoning_effort: reasoningEffort }),
     messages: value.messages.map(parseConversationMessage),
     tools: value.tools.map(parseToolDefinition),
   };
@@ -123,6 +160,10 @@ export function parseModelDescriptor(value: unknown): ModelDescriptor {
     ),
     supports_tools: requireBoolean(value, "supports_tools"),
     supports_reasoning: requireBoolean(value, "supports_reasoning"),
+    supports_reasoning_effort:
+      value.supports_reasoning_effort === undefined
+        ? false
+        : requireBoolean(value, "supports_reasoning_effort"),
   };
 }
 
@@ -139,13 +180,76 @@ export function parseModelStreamEvent(value: unknown): ModelStreamEvent {
   }
 
   switch (value.type) {
+    case "text_start":
+      return {
+        type: "text_start",
+        content_index: requireContentIndex(value),
+      };
     case "text_delta":
       return {
         type: "text_delta",
+        content_index: requireContentIndex(value),
         text_delta: requireString(value, "text_delta", true),
       };
-    case "tool_call":
-      return { type: "tool_call", ...parseModelToolCall(value) };
+    case "text_end":
+      return {
+        type: "text_end",
+        content_index: requireContentIndex(value),
+      };
+    case "reasoning_start":
+      return {
+        type: "reasoning_start",
+        content_index: requireContentIndex(value),
+      };
+    case "reasoning_delta":
+      return {
+        type: "reasoning_delta",
+        content_index: requireContentIndex(value),
+        reasoning_delta: requireString(value, "reasoning_delta", true),
+      };
+    case "reasoning_end":
+      return {
+        type: "reasoning_end",
+        content_index: requireContentIndex(value),
+      };
+    case "tool_call_start":
+      return {
+        type: "tool_call_start",
+        content_index: requireContentIndex(value),
+      };
+    case "tool_call_delta": {
+      const toolCallIdDelta = optionalString(value, "tool_call_id_delta");
+      const toolNameDelta = optionalString(value, "tool_name_delta");
+      const argumentsDelta = optionalString(value, "arguments_delta");
+      if (
+        toolCallIdDelta === undefined &&
+        toolNameDelta === undefined &&
+        argumentsDelta === undefined
+      ) {
+        throw new Error(
+          "Tool call delta must contain at least one delta field.",
+        );
+      }
+      return {
+        type: "tool_call_delta",
+        content_index: requireContentIndex(value),
+        ...(toolCallIdDelta === undefined
+          ? {}
+          : { tool_call_id_delta: toolCallIdDelta }),
+        ...(toolNameDelta === undefined
+          ? {}
+          : { tool_name_delta: toolNameDelta }),
+        ...(argumentsDelta === undefined
+          ? {}
+          : { arguments_delta: argumentsDelta }),
+      };
+    }
+    case "tool_call_end":
+      return {
+        type: "tool_call_end",
+        content_index: requireContentIndex(value),
+        tool_call: parseModelToolCall(value.tool_call),
+      };
     case "done": {
       const stopReason = value.stop_reason;
       if (
@@ -166,6 +270,159 @@ export function parseModelStreamEvent(value: unknown): ModelStreamEvent {
   }
 }
 
+type OpenContentBlock =
+  | {
+      type: "text";
+    }
+  | {
+      type: "reasoning";
+    }
+  | {
+      type: "tool_call";
+      tool_call_id: string;
+      tool_name: string;
+      arguments_json: string;
+    };
+
+export class ModelStreamEventSequenceValidator {
+  private readonly openBlocks = new Map<number, OpenContentBlock>();
+  private readonly completedToolCallIds = new Set<string>();
+  private nextContentIndex = 0;
+  private done = false;
+
+  accept(value: unknown): ModelStreamEvent {
+    const event = parseModelStreamEvent(value);
+    if (this.done) {
+      throw new Error("Model stream contains an event after done.");
+    }
+
+    switch (event.type) {
+      case "text_start":
+        this.startBlock(event.content_index, "text");
+        break;
+      case "reasoning_start":
+        this.startBlock(event.content_index, "reasoning");
+        break;
+      case "tool_call_start":
+        this.startBlock(event.content_index, "tool_call");
+        break;
+      case "text_delta":
+        this.requireOpenBlock(event.content_index, "text");
+        break;
+      case "reasoning_delta":
+        this.requireOpenBlock(event.content_index, "reasoning");
+        break;
+      case "tool_call_delta": {
+        const block = this.requireOpenBlock(
+          event.content_index,
+          "tool_call",
+        );
+        block.tool_call_id += event.tool_call_id_delta ?? "";
+        block.tool_name += event.tool_name_delta ?? "";
+        block.arguments_json += event.arguments_delta ?? "";
+        break;
+      }
+      case "text_end":
+        this.endBlock(event.content_index, "text");
+        break;
+      case "reasoning_end":
+        this.endBlock(event.content_index, "reasoning");
+        break;
+      case "tool_call_end": {
+        const block = this.requireOpenBlock(
+          event.content_index,
+          "tool_call",
+        );
+        let fragmentCall: ModelToolCall;
+        try {
+          fragmentCall = parseModelToolCall({
+            tool_call_id: block.tool_call_id,
+            tool_name: block.tool_name,
+            arguments: JSON.parse(block.arguments_json) as unknown,
+          });
+        } catch (error) {
+          throw new Error(
+            `Invalid accumulated tool call at content_index ${event.content_index}: ${errorMessage(error)}`,
+          );
+        }
+        if (
+          JSON.stringify(fragmentCall) !== JSON.stringify(event.tool_call)
+        ) {
+          throw new Error(
+            `Tool call end does not match deltas at content_index ${event.content_index}.`,
+          );
+        }
+        if (this.completedToolCallIds.has(event.tool_call.tool_call_id)) {
+          throw new Error(
+            `Duplicate completed tool_call_id: ${event.tool_call.tool_call_id}.`,
+          );
+        }
+        this.completedToolCallIds.add(event.tool_call.tool_call_id);
+        this.openBlocks.delete(event.content_index);
+        break;
+      }
+      case "done":
+        if (this.openBlocks.size > 0) {
+          throw new Error("Model stream reached done with open content blocks.");
+        }
+        this.done = true;
+        break;
+    }
+
+    return event;
+  }
+
+  assertComplete(): void {
+    if (!this.done) {
+      throw new Error("Model stream ended before a done event.");
+    }
+  }
+
+  private startBlock(
+    contentIndex: number,
+    type: OpenContentBlock["type"],
+  ): void {
+    if (contentIndex !== this.nextContentIndex) {
+      throw new Error(
+        `Expected content_index ${this.nextContentIndex}, received ${contentIndex}.`,
+      );
+    }
+    this.nextContentIndex += 1;
+    this.openBlocks.set(
+      contentIndex,
+      type === "tool_call"
+        ? {
+            type,
+            tool_call_id: "",
+            tool_name: "",
+            arguments_json: "",
+          }
+        : { type },
+    );
+  }
+
+  private endBlock(
+    contentIndex: number,
+    type: "text" | "reasoning",
+  ): void {
+    this.requireOpenBlock(contentIndex, type);
+    this.openBlocks.delete(contentIndex);
+  }
+
+  private requireOpenBlock<TType extends OpenContentBlock["type"]>(
+    contentIndex: number,
+    type: TType,
+  ): Extract<OpenContentBlock, { type: TType }> {
+    const block = this.openBlocks.get(contentIndex);
+    if (!block || block.type !== type) {
+      throw new Error(
+        `No open ${type} block at content_index ${contentIndex}.`,
+      );
+    }
+    return block as Extract<OpenContentBlock, { type: TType }>;
+  }
+}
+
 function parseConversationMessage(value: unknown): ModelConversationMessage {
   if (!isRecord(value)) {
     throw new Error("Conversation message must be an object.");
@@ -178,20 +435,22 @@ function parseConversationMessage(value: unknown): ModelConversationMessage {
         content: requireString(value, "content", true),
       };
     case "assistant": {
-      if (!Array.isArray(value.tool_calls)) {
-        throw new Error("Assistant message tool_calls must be an array.");
-      }
-      const content = requireString(value, "content", true);
-      const toolCalls = value.tool_calls.map(parseModelToolCall);
-      if (!content && toolCalls.length === 0) {
+      if (!Array.isArray(value.content_blocks)) {
         throw new Error(
-          "Assistant message must contain text or at least one tool call.",
+          "Assistant message content_blocks must be an array.",
+        );
+      }
+      const contentBlocks = value.content_blocks.map(
+        parseAssistantContentBlock,
+      );
+      if (contentBlocks.length === 0) {
+        throw new Error(
+          "Assistant message must contain at least one content block.",
         );
       }
       return {
         role: "assistant",
-        content,
-        tool_calls: toolCalls,
+        content_blocks: contentBlocks,
       };
     }
     case "tool":
@@ -201,6 +460,35 @@ function parseConversationMessage(value: unknown): ModelConversationMessage {
       };
     default:
       throw new Error(`Unsupported conversation role: ${String(value.role)}`);
+  }
+}
+
+function parseAssistantContentBlock(
+  value: unknown,
+): ModelAssistantContentBlock {
+  if (!isRecord(value)) {
+    throw new Error("Assistant content block must be an object.");
+  }
+  switch (value.type) {
+    case "text":
+      return {
+        type: "text",
+        text: requireString(value, "text"),
+      };
+    case "reasoning":
+      return {
+        type: "reasoning",
+        reasoning: requireString(value, "reasoning"),
+      };
+    case "tool_call":
+      return {
+        type: "tool_call",
+        ...parseModelToolCall(value),
+      };
+    default:
+      throw new Error(
+        `Unsupported assistant content block: ${String(value.type)}`,
+      );
   }
 }
 
@@ -307,6 +595,30 @@ function requireString(
   return candidate;
 }
 
+function optionalString(
+  value: Record<string, unknown>,
+  field: string,
+): string | undefined {
+  const candidate = value[field];
+  if (candidate === undefined) return undefined;
+  if (typeof candidate !== "string") {
+    throw new Error(`${field} must be a string.`);
+  }
+  return candidate;
+}
+
+function requireContentIndex(value: Record<string, unknown>): number {
+  const contentIndex = value.content_index;
+  if (
+    typeof contentIndex !== "number" ||
+    !Number.isSafeInteger(contentIndex) ||
+    contentIndex < 0
+  ) {
+    throw new Error("content_index must be a non-negative integer.");
+  }
+  return contentIndex;
+}
+
 function requireBoolean(
   value: Record<string, unknown>,
   field: string,
@@ -334,6 +646,26 @@ function requireNullablePositiveInteger(
   return candidate;
 }
 
+function parseReasoningEffort(
+  value: unknown,
+): ModelRequest["reasoning_effort"] {
+  if (value === undefined) return undefined;
+  if (
+    value !== "minimal" &&
+    value !== "low" &&
+    value !== "medium" &&
+    value !== "high" &&
+    value !== "xhigh"
+  ) {
+    throw new Error("Invalid reasoning_effort.");
+  }
+  return value;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

@@ -1038,7 +1038,16 @@ textarea:focus-visible {
   flex: 1;
 }
 
+.assistant-turn + .assistant-turn {
+  margin-top: 14px;
+}
+
+.assistant-turn > * + * {
+  margin-top: 12px;
+}
+
 .assistant-text {
+  width: 100%;
   min-height: 28px;
   font-size: 15px;
   line-height: 1.72;
@@ -1046,15 +1055,23 @@ textarea:focus-visible {
 }
 
 .response-stopped {
+  margin-bottom: 0;
   color: var(--muted);
   font-size: 13px;
   font-style: italic;
 }
 
-.tool-stack {
-  display: grid;
-  gap: 6px;
-  margin-bottom: 14px;
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  margin: -1px;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .tool-card {
@@ -1107,9 +1124,20 @@ textarea:focus-visible {
 }
 
 .tool-card small {
+  display: -webkit-box;
+  overflow: hidden;
+  max-width: 520px;
   margin-top: 2px;
   color: var(--muted);
   font-size: 10px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.tool-card .tool-error-detail {
+  color: var(--danger);
 }
 
 .tool-file-change {
@@ -1144,6 +1172,62 @@ textarea:focus-visible {
 
 .tool-deletions {
   color: #aa4b4b;
+}
+
+.reasoning-block {
+  width: min(100%, 620px);
+  color: var(--muted-strong);
+  font-size: 12px;
+}
+
+.reasoning-block summary {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  cursor: pointer;
+  border-radius: 8px;
+  color: var(--muted);
+  font-weight: 550;
+  list-style: none;
+  user-select: none;
+}
+
+.reasoning-block summary::-webkit-details-marker {
+  display: none;
+}
+
+.reasoning-block summary:hover {
+  background: var(--soft);
+  color: var(--ink);
+}
+
+.reasoning-chevron {
+  transition: transform 140ms ease;
+}
+
+.reasoning-block[open] .reasoning-chevron {
+  transform: rotate(90deg);
+}
+
+.reasoning-text {
+  margin: 5px 8px 0 29px;
+  padding-left: 11px;
+  border-left: 2px solid var(--line);
+  color: var(--muted-strong);
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.reasoning-redacted {
+  width: fit-content;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 11px;
+  font-style: italic;
 }
 
 .spin {

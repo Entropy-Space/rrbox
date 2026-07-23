@@ -201,7 +201,7 @@ function changeMetadata(changeId, toolName) {
   return {
     change_id: changeId,
     session_id: "session-1",
-    message_id: "message-1",
+    tool_call_block_id: "tool-call-block-1",
     assistant_message_index: 1,
     tool_call_id: `tool-${changeId}`,
     tool_name: toolName,

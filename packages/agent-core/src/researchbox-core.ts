@@ -1,7 +1,4 @@
-import type {
-  Model,
-  ToolResultMessage,
-} from "@earendil-works/pi-ai";
+import type { Model } from "@earendil-works/pi-ai";
 import type { ModelTransport } from "@researchbox/model-transport";
 import {
   PROJECT_STORE_SCHEMA_VERSION,
@@ -20,6 +17,8 @@ import {
   type CoreStateSnapshot,
   type FileEntry,
   type ModelSelection,
+  type ToolCallBlock,
+  type ToolResultEntry,
   type ViewerCommand,
   type WorkspaceChangeSummary,
 } from "@researchbox/protocol";
@@ -33,16 +32,12 @@ import {
   stagePrompt,
   type CoreEventSink,
 } from "./session-runtime.ts";
-import {
-  decodeAgentMessages,
-  encodeAgentMessages,
-} from "./session-codec.ts";
+import { emptyAssistantUsage } from "./session-codec.ts";
 import {
   ProviderCatalogService,
   type ModelProviderDefinition,
   type ProviderModelCatalog,
 } from "./provider-catalog-service.ts";
-import { repairUnansweredToolCalls } from "./tool-transcript.ts";
 import { WorkspaceController } from "./workspace-controller.ts";
 
 export type ResearchBoxCoreOptions = {
@@ -329,7 +324,7 @@ export class ResearchBoxCore {
         await this.activateSelection();
         await this.emitStateSnapshot(command.request_id);
         runPromise = this.requireRuntime().continueStagedPrompt(
-          staged.assistant_message.id,
+          staged.run_id,
           command.request_id,
         );
         return;
@@ -864,10 +859,13 @@ export class ResearchBoxCore {
     if (
       phase === "staged" &&
       !session.title_is_custom &&
-      document.messages.length === 2
+      document.timeline.filter((entry) => entry.type === "user_message")
+        .length === 1
     ) {
-      const firstUserMessage = document.messages[0];
-      if (firstUserMessage?.role === "user") {
+      const firstUserMessage = document.timeline.find(
+        (entry) => entry.type === "user_message",
+      );
+      if (firstUserMessage) {
         session.title = deriveSessionTitle(firstUserMessage.content);
       }
     }
@@ -968,7 +966,9 @@ export class ResearchBoxCore {
           title,
           created_at,
           updated_at,
-          message_count: this.requireDocument(session_id).messages.length,
+          message_count: this.requireDocument(session_id).timeline.filter(
+            (entry) => entry.type === "user_message",
+          ).length,
         })),
       providers: catalog.providers,
       active_model: { ...activeModel },
@@ -978,8 +978,7 @@ export class ResearchBoxCore {
         document === null
           ? activeProject.new_chat_draft
           : document.input_draft,
-      messages: structuredClone(document?.messages ?? []),
-      activities: structuredClone(document?.activities ?? []),
+      timeline: structuredClone(document?.timeline ?? []),
       files,
       is_running: this.runtime?.is_running ?? false,
     };
@@ -1341,9 +1340,7 @@ function createSessionRecord(
       session_id: sessionId,
       project_id: projectId,
       input_draft: "",
-      messages: [],
-      activities: [],
-      agent_messages: [],
+      timeline: [],
     },
   };
 }
@@ -1362,60 +1359,31 @@ async function reconcileWorkspaceChanges(
   for (const document of state.documents) {
     const projectChanges = changesByProject.get(document.project_id) ?? [];
     if (projectChanges.length === 0) continue;
-
-    let decoded;
-    try {
-      decoded = decodeAgentMessages(document.agent_messages);
-    } catch {
-      continue;
-    }
-
-    const recoveries: Array<{
-      activity: SessionDocument["activities"][number];
-      change: WorkspaceChangeSummary;
-    }> = [];
     const consumedChangeIds = new Set<string>();
-    const repair = repairUnansweredToolCalls(
-      decoded,
-      "Tool execution was interrupted before it produced a result.",
-      (toolCall, context) => {
-        if (!isMutationToolName(toolCall.name)) {
-          return undefined;
-        }
-        const activity = [...document.activities].reverse().find(
-          (candidate) =>
-            candidate.status === "running" &&
-            candidate.tool_call_id === toolCall.id &&
-            candidate.tool_name === toolCall.name,
-        );
-        if (!activity) return undefined;
-        const record = [...projectChanges].reverse().find(
-          (candidate) =>
-            !consumedChangeIds.has(candidate.change_id) &&
-            candidate.session_id === document.session_id &&
-            candidate.message_id === activity.message_id &&
-            candidate.assistant_message_index ===
-              context.assistant_message_index &&
-            candidate.tool_call_id === toolCall.id &&
-            candidate.tool_name === toolCall.name,
-        );
-        if (!record) return undefined;
+    for (const pending of collectPendingToolCalls(document)) {
+      if (!isMutationToolName(pending.block.tool_name)) continue;
+      const record = [...projectChanges].reverse().find(
+        (candidate) =>
+          !consumedChangeIds.has(candidate.change_id) &&
+          candidate.session_id === document.session_id &&
+          candidate.tool_call_id === pending.block.tool_call_id &&
+          candidate.tool_name === pending.block.tool_name &&
+          matchesWorkspaceChangeIdentity(candidate, pending),
+      );
+      if (!record) continue;
 
-        consumedChangeIds.add(record.change_id);
-        const change = workspaceChangeSummary(record);
-        recoveries.push({ activity, change });
-        return workspaceChangeToolResult(record, change);
-      },
-    );
-    if (recoveries.length === 0) continue;
-
-    document.agent_messages = encodeAgentMessages(repair.messages);
-    for (const { activity, change } of recoveries) {
-      activity.status = "complete";
-      activity.summary = workspaceChangeActivitySummary(change);
-      activity.file_change = change;
+      consumedChangeIds.add(record.change_id);
+      const change = workspaceChangeSummary(record);
+      document.timeline.push(
+        workspaceChangeToolResult(
+          record,
+          change,
+          pending.block,
+          pending.run_id,
+        ),
+      );
+      reconciled = true;
     }
-    reconciled = true;
   }
   return reconciled;
 }
@@ -1434,9 +1402,7 @@ function workspaceChangeSummary(
   };
 }
 
-function workspaceChangeActivitySummary(
-  change: WorkspaceChangeSummary,
-): string {
+function workspaceChangeActivitySummary(change: WorkspaceChangeSummary): string {
   const verb = change.change_kind === "created" ? "Created" : "Updated";
   return `${verb} · +${change.additions} −${change.deletions}`;
 }
@@ -1444,15 +1410,21 @@ function workspaceChangeActivitySummary(
 function workspaceChangeToolResult(
   record: WorkspaceChangeRecord,
   change: WorkspaceChangeSummary,
-): ToolResultMessage {
-  const timestamp = Date.parse(record.created_at);
+  block: ToolCallBlock,
+  runId: string,
+): ToolResultEntry {
   return {
-    role: "toolResult",
-    toolCallId: record.tool_call_id,
-    toolName: record.tool_name,
-    content: [{ type: "text", text: JSON.stringify(change) }],
-    isError: false,
-    timestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
+    type: "tool_result",
+    entry_id: crypto.randomUUID(),
+    run_id: runId,
+    created_at: record.created_at,
+    tool_call_block_id: block.block_id,
+    tool_call_id: record.tool_call_id,
+    tool_name: record.tool_name,
+    content: JSON.stringify(change),
+    is_error: false,
+    summary: workspaceChangeActivitySummary(change),
+    file_change: change,
   };
 }
 
@@ -1464,26 +1436,44 @@ function isMutationToolName(
 
 function repairInterruptedSessions(state: ProjectStoreState): boolean {
   let repaired = false;
+  const sessions = new Map(
+    state.sessions.map((session) => [session.session_id, session]),
+  );
   for (const document of state.documents) {
-    const hadStreamingMessage = document.messages.some((message) => {
-      if (message.status !== "streaming") return false;
-      message.status = "aborted";
+    for (const entry of document.timeline) {
+      if (
+        entry.type !== "assistant_message" ||
+        entry.status !== "streaming"
+      ) {
+        continue;
+      }
+      entry.status = "aborted";
+      entry.stop_reason = "aborted";
       repaired = true;
-      return true;
+    }
+
+    const lastEntry = document.timeline.at(-1);
+    if (lastEntry?.type !== "user_message") continue;
+    const session = sessions.get(document.session_id);
+    if (!session) continue;
+    const previousAssistant = [...document.timeline]
+      .reverse()
+      .find((entry) => entry.type === "assistant_message");
+    document.timeline.push({
+      type: "assistant_message",
+      entry_id: crypto.randomUUID(),
+      run_id: lastEntry.run_id,
+      created_at: new Date().toISOString(),
+      status: "aborted",
+      api: previousAssistant?.api ?? "researchbox-recovery",
+      provider:
+        previousAssistant?.provider ?? session.selected_model.provider_id,
+      model: previousAssistant?.model ?? session.selected_model.model_id,
+      usage: emptyAssistantUsage(),
+      stop_reason: "aborted",
+      blocks: [],
     });
-    for (const activity of document.activities) {
-      if (activity.status !== "running") continue;
-      activity.status = "error";
-      activity.summary = "Interrupted by reload";
-      repaired = true;
-    }
-    if (
-      hadStreamingMessage &&
-      isStoredUserMessage(document.agent_messages.at(-1))
-    ) {
-      document.agent_messages.pop();
-      repaired = true;
-    }
+    repaired = true;
   }
   return repaired;
 }
@@ -1497,20 +1487,86 @@ function repairInvalidTranscripts(state: ProjectStoreState): boolean {
 }
 
 function repairInvalidTranscript(document: SessionDocument): boolean {
-  try {
-    const decoded = decodeAgentMessages(document.agent_messages);
-    const repaired = repairUnansweredToolCalls(
-      decoded,
-      "Tool execution was interrupted before it produced a result.",
-    );
-    if (repaired.repaired) {
-      document.agent_messages = encodeAgentMessages(repaired.messages);
-    }
-    return repaired.repaired;
-  } catch {
-    document.agent_messages = [];
-    return true;
+  const pending = collectPendingToolCalls(document);
+  if (pending.length === 0) return false;
+
+  const createdAt = new Date().toISOString();
+  for (const call of pending) {
+    document.timeline.push({
+      type: "tool_result",
+      entry_id: crypto.randomUUID(),
+      run_id: call.run_id,
+      created_at: createdAt,
+      tool_call_block_id: call.block.block_id,
+      tool_call_id: call.block.tool_call_id,
+      tool_name: call.block.tool_name,
+      content: "Tool execution was interrupted before it produced a result.",
+      is_error: true,
+      summary: "Interrupted by reload",
+    });
   }
+  return true;
+}
+
+function collectPendingToolCalls(document: SessionDocument): Array<{
+  run_id: string;
+  assistant_entry_id: string;
+  legacy_message_id: string;
+  assistant_message_index: number;
+  block: ToolCallBlock;
+}> {
+  const resultBlockIds = new Set(
+    document.timeline.flatMap((entry) =>
+      entry.type === "tool_result" ? [entry.tool_call_block_id] : [],
+    ),
+  );
+  const pending: Array<{
+    run_id: string;
+    assistant_entry_id: string;
+    legacy_message_id: string;
+    assistant_message_index: number;
+    block: ToolCallBlock;
+  }> = [];
+  const firstAssistantEntryByRun = new Map<string, string>();
+  for (const [entryIndex, entry] of document.timeline.entries()) {
+    if (entry.type !== "assistant_message") continue;
+    const legacyMessageId =
+      firstAssistantEntryByRun.get(entry.run_id) ?? entry.entry_id;
+    firstAssistantEntryByRun.set(entry.run_id, legacyMessageId);
+    for (const block of entry.blocks) {
+      if (
+        block.type === "tool_call" &&
+        !resultBlockIds.has(block.block_id)
+      ) {
+        pending.push({
+          run_id: entry.run_id,
+          assistant_entry_id: entry.entry_id,
+          legacy_message_id: legacyMessageId,
+          assistant_message_index: entryIndex,
+          block,
+        });
+      }
+    }
+  }
+  return pending;
+}
+
+function matchesWorkspaceChangeIdentity(
+  record: WorkspaceChangeRecord,
+  pending: ReturnType<typeof collectPendingToolCalls>[number],
+): boolean {
+  if (record.tool_call_block_id !== null) {
+    return record.tool_call_block_id === pending.block.block_id;
+  }
+  if (record.legacy_message_id !== undefined) {
+    return (
+      record.legacy_message_id === pending.legacy_message_id ||
+      record.legacy_message_id === pending.assistant_entry_id
+    );
+  }
+  return (
+    record.assistant_message_index === pending.assistant_message_index
+  );
 }
 
 function findDocument(
@@ -1522,15 +1578,6 @@ function findDocument(
   );
   if (!document) throw new Error(`Session document not found: ${sessionId}`);
   return document;
-}
-
-function isStoredUserMessage(value: unknown): boolean {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    (value as Record<string, unknown>).role === "user"
-  );
 }
 
 function findProject(state: ProjectStoreState, projectId: string): ProjectRecord {

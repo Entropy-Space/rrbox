@@ -24,6 +24,7 @@ test("round-trips versioned LLM worker messages", () => {
   const command = createLlmStreamStart("stream-1", modelRequest);
   const event = createLlmStreamEvent("stream-1", {
     type: "text_delta",
+    content_index: 0,
     text_delta: "hello",
   });
   const finished = createLlmStreamFinished("stream-1", "complete");
@@ -61,8 +62,10 @@ test("round-trips exact mutation arguments through the LLM worker protocol", () 
       { role: "user", content: "Update notes" },
       {
         role: "assistant",
-        content: "",
-        tool_calls: [writeCall, replaceCall],
+        content_blocks: [
+          { type: "tool_call", ...writeCall },
+          { type: "tool_call", ...replaceCall },
+        ],
       },
       {
         role: "tool",
@@ -81,12 +84,19 @@ test("round-trips exact mutation arguments through the LLM worker protocol", () 
     ],
   });
   const writeEvent = createLlmStreamEvent("stream-mutation", {
-    type: "tool_call",
-    ...writeCall,
+    type: "tool_call_end",
+    content_index: 0,
+    tool_call: writeCall,
+  });
+  const argumentsEvent = createLlmStreamEvent("stream-mutation", {
+    type: "tool_call_delta",
+    content_index: 0,
+    arguments_delta: JSON.stringify(writeCall.arguments),
   });
 
   assert.deepEqual(parseLlmWorkerCommand(command), command);
   assert.deepEqual(parseLlmWorkerEvent(writeEvent), writeEvent);
+  assert.deepEqual(parseLlmWorkerEvent(argumentsEvent), argumentsEvent);
 });
 
 test("rejects malformed nested model events", () => {
@@ -98,7 +108,11 @@ test("rejects malformed nested model events", () => {
         stream_id: "stream-1",
         type: "stream_event",
         payload: {
-          model_event: { type: "tool_call", arguments: { path: "/" } },
+          model_event: {
+            type: "tool_call_end",
+            content_index: 0,
+            tool_call: { arguments: { path: "/" } },
+          },
         },
       }),
     /tool_call_id must be a string/,
@@ -106,7 +120,7 @@ test("rejects malformed nested model events", () => {
 });
 
 test("keeps the LLM protocol version independent and validated", () => {
-  assert.equal(LLM_WORKER_PROTOCOL_VERSION, 3);
+  assert.equal(LLM_WORKER_PROTOCOL_VERSION, 4);
   assert.throws(
     () =>
       parseLlmWorkerCommand({

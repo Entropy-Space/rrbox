@@ -1,5 +1,5 @@
 import {
-  parseModelStreamEvent,
+  ModelStreamEventSequenceValidator,
   type ModelRequest,
   type ModelStreamEvent,
   type ModelTransport,
@@ -30,6 +30,7 @@ export class HttpNdjsonModelTransport implements ModelTransport {
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
+    const sequence = new ModelStreamEventSequenceValidator();
     let buffer = "";
     let sourceEnded = false;
 
@@ -44,7 +45,7 @@ export class HttpNdjsonModelTransport implements ModelTransport {
           const line = buffer.slice(0, newlineIndex).trim();
           buffer = buffer.slice(newlineIndex + 1);
           if (line) {
-            const event = parseLine(line);
+            const event = parseLine(line, sequence);
             yield event;
             if (event.type === "done") return;
           }
@@ -53,7 +54,7 @@ export class HttpNdjsonModelTransport implements ModelTransport {
 
         if (done) {
           if (buffer.trim()) {
-            const event = parseLine(buffer.trim());
+            const event = parseLine(buffer.trim(), sequence);
             yield event;
             if (event.type === "done") return;
           }
@@ -69,9 +70,12 @@ export class HttpNdjsonModelTransport implements ModelTransport {
   }
 }
 
-function parseLine(line: string): ModelStreamEvent {
+function parseLine(
+  line: string,
+  sequence: ModelStreamEventSequenceValidator,
+): ModelStreamEvent {
   try {
-    return parseModelStreamEvent(JSON.parse(line) as unknown);
+    return sequence.accept(JSON.parse(line) as unknown);
   } catch (error) {
     const reason = error instanceof Error ? error.message : "Invalid model event.";
     throw new Error(`Malformed model stream: ${reason}`);

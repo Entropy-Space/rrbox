@@ -49,6 +49,7 @@ attachLlmWorkerHost(host, transport, {
           max_output_tokens: researchBoxMockModel.maxTokens,
           supports_tools: true,
           supports_reasoning: false,
+          supports_reasoning_effort: false,
         },
       ];
     }

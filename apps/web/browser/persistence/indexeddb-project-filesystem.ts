@@ -32,8 +32,13 @@ type ProjectFileSystemRecord = {
   incarnation_id: string;
 };
 
-type WorkspaceChangeStorageRecord = WorkspaceChangeRecord & {
+type WorkspaceChangeStorageRecord = Omit<
+  WorkspaceChangeRecord,
+  "tool_call_block_id" | "legacy_message_id"
+> & {
   project_id: string;
+  tool_call_block_id?: string | null;
+  message_id?: string;
 };
 
 export class IndexedDbProjectFileSystemProvider
@@ -461,10 +466,24 @@ function readIncarnationId(
 function toWorkspaceChangeRecord(
   record: WorkspaceChangeStorageRecord,
 ): WorkspaceChangeRecord {
+  const toolCallBlockId =
+    typeof record.tool_call_block_id === "string" &&
+    record.tool_call_block_id.length > 0
+      ? record.tool_call_block_id
+      : null;
+  const legacyMessageId =
+    toolCallBlockId === null &&
+    typeof record.message_id === "string" &&
+    record.message_id.length > 0
+      ? record.message_id
+      : undefined;
   return {
     change_id: record.change_id,
     session_id: record.session_id,
-    message_id: record.message_id,
+    tool_call_block_id: toolCallBlockId,
+    ...(legacyMessageId === undefined
+      ? {}
+      : { legacy_message_id: legacyMessageId }),
     assistant_message_index: record.assistant_message_index,
     tool_call_id: record.tool_call_id,
     tool_name: record.tool_name,

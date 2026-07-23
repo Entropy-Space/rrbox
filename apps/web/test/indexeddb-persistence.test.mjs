@@ -382,7 +382,7 @@ test("IndexedDB v1 project-store migration is persisted exactly once", async () 
   await verificationComplete;
 });
 
-test("IndexedDB v2 migration adds model selections exactly once", async () => {
+test("IndexedDB v2 migration persists model selections and a v3 timeline exactly once", async () => {
   const factory = new IDBFactory();
   const databaseName = `researchbox-model-migration-${crypto.randomUUID()}`;
   const legacyDatabase = await openLegacyDatabase(factory, databaseName);
@@ -415,15 +415,9 @@ test("IndexedDB v2 migration adds model selections exactly once", async () => {
     created_at: timestamp,
     updated_at: timestamp,
   });
-  transaction.objectStore("session_documents").put({
-    format_version: 2,
-    session_id: "legacy-session",
-    project_id: "legacy-project",
-    input_draft: "session draft",
-    messages: [],
-    activities: [],
-    agent_messages: [],
-  });
+  transaction
+    .objectStore("session_documents")
+    .put(createLegacyVersionTwoDocument(timestamp));
   await completion;
   legacyDatabase.close();
 
@@ -456,13 +450,11 @@ test("IndexedDB v2 migration adds model selections exactly once", async () => {
     ],
     documents: [
       {
-        format_version: 2,
+        format_version: 3,
         session_id: "legacy-session",
         project_id: "legacy-project",
         input_draft: "session draft",
-        messages: [],
-        activities: [],
-        agent_messages: [],
+        timeline: createMigratedTimeline(timestamp),
       },
     ],
   };
@@ -476,7 +468,7 @@ test("IndexedDB v2 migration adds model selections exactly once", async () => {
 
   const connection = await reopenedDatabase.open();
   const verification = connection.transaction(
-    ["meta", "projects", "sessions"],
+    ["meta", "projects", "sessions", "session_documents"],
     "readonly",
   );
   const verificationComplete = transactionComplete(verification);
@@ -497,6 +489,12 @@ test("IndexedDB v2 migration adds model selections exactly once", async () => {
   assert.deepEqual(
     await requestValue(verification.objectStore("sessions").getAll()),
     expectedState.sessions,
+  );
+  assert.deepEqual(
+    await requestValue(
+      verification.objectStore("session_documents").getAll(),
+    ),
+    expectedState.documents,
   );
   await verificationComplete;
 });
@@ -748,16 +746,74 @@ function createState() {
     ],
     documents: [
       {
-        format_version: 2,
+        format_version: 3,
         session_id: "session-1",
         project_id: "project-1",
         input_draft: "",
-        messages: [],
-        activities: [],
-        agent_messages: [],
+        timeline: [],
       },
     ],
   };
+}
+
+function createLegacyVersionTwoDocument(timestamp) {
+  return {
+    format_version: 2,
+    session_id: "legacy-session",
+    project_id: "legacy-project",
+    input_draft: "session draft",
+    messages: [
+      {
+        id: "legacy-user",
+        role: "user",
+        content: "Remember this session",
+        created_at: timestamp,
+        status: "complete",
+      },
+      {
+        id: "legacy-assistant",
+        role: "assistant",
+        content: "Remembered.",
+        created_at: timestamp,
+        status: "complete",
+      },
+    ],
+    activities: [],
+    agent_messages: [],
+  };
+}
+
+function createMigratedTimeline(timestamp) {
+  const runId = "legacy:legacy-session:run:0";
+  return [
+    {
+      type: "user_message",
+      entry_id: "legacy-user",
+      run_id: runId,
+      created_at: timestamp,
+      content: "Remember this session",
+    },
+    {
+      type: "assistant_message",
+      entry_id: "legacy-assistant",
+      run_id: runId,
+      created_at: timestamp,
+      status: "complete",
+      api: "legacy",
+      provider: "legacy",
+      model: "legacy",
+      usage: emptyUsage(),
+      stop_reason: "stop",
+      blocks: [
+        {
+          type: "assistant_text",
+          block_id:
+            "legacy:legacy-session:fallback:entry:1:block:text",
+          text: "Remembered.",
+        },
+      ],
+    },
+  ];
 }
 
 function createDefaultModelSelection() {
@@ -771,13 +827,30 @@ function workspaceChangeMetadata(changeId, toolName) {
   return {
     change_id: changeId,
     session_id: "session-1",
-    message_id: "message-1",
+    tool_call_block_id: `block-${changeId}`,
     assistant_message_index: 1,
     tool_call_id: `tool-${changeId}`,
     tool_name: toolName,
     created_at: `2026-07-23T00:00:00.${changeId.length
       .toString()
       .padStart(3, "0")}Z`,
+  };
+}
+
+function emptyUsage() {
+  return {
+    input: 0,
+    output: 0,
+    cache_read: 0,
+    cache_write: 0,
+    total_tokens: 0,
+    cost: {
+      input: 0,
+      output: 0,
+      cache_read: 0,
+      cache_write: 0,
+      total: 0,
+    },
   };
 }
 

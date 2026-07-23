@@ -1,7 +1,7 @@
 import {
   createCommand,
   parseCoreEvent,
-  type ChatMessage,
+  type AssistantBlock,
   type CoreEvent,
   type CoreLifecyclePhase,
   type CoreStateSnapshot,
@@ -10,7 +10,7 @@ import {
   type ProjectSummary,
   type ProviderSummary,
   type SessionSummary,
-  type ToolActivity,
+  type TimelineEntry,
   type ViewerCommand,
   type WorkspaceChangeSummary,
 } from "@researchbox/protocol";
@@ -33,11 +33,10 @@ export type AgentSessionState = {
   input_draft_retry_count: number;
   input_draft_cleanup_scope: DraftScope | null;
   pending_prompt: PendingPrompt | null;
-  messages: ChatMessage[];
+  timeline: TimelineEntry[];
   files: FileEntry[];
   current_path: string;
   selected_file: { path: string; content: string } | null;
-  activities: ToolActivity[];
   core_lifecycle: CoreLifecyclePhase;
   core_status_message: string | null;
   is_ready: boolean;
@@ -68,11 +67,10 @@ export const initialAgentSessionState: AgentSessionState = {
   input_draft_retry_count: 0,
   input_draft_cleanup_scope: null,
   pending_prompt: null,
-  messages: [],
+  timeline: [],
   files: [],
   current_path: "/",
   selected_file: null,
-  activities: [],
   core_lifecycle: "electing",
   core_status_message: null,
   is_ready: false,
@@ -767,49 +765,65 @@ export function coreReducer(
       return isActiveSessionEvent(state, event.payload)
         ? { ...state, is_running: event.payload.is_running }
         : state;
-    case "message_added":
+    case "timeline_entry_appended":
       if (!isActiveSessionEvent(state, event.payload)) return state;
       return acceptSubmittedPrompt(
         {
           ...state,
           error_message: null,
-          messages: [...state.messages, event.payload.message],
+          timeline: appendTimelineEntry(
+            state.timeline,
+            event.payload.entry,
+          ),
         },
         event.request_id,
-        event.payload.message.role === "user",
+        event.payload.entry.type === "user_message",
       );
-    case "message_delta":
+    case "assistant_block_appended":
       return isActiveSessionEvent(state, event.payload)
         ? {
             ...state,
-            messages: state.messages.map((message) =>
-              message.id === event.payload.message_id
-                ? {
-                    ...message,
-                    content: message.content + event.payload.text_delta,
-                  }
-                : message,
+            timeline: appendAssistantBlock(
+              state.timeline,
+              event.payload.entry_id,
+              event.payload.block,
             ),
           }
         : state;
-    case "message_finished":
+    case "assistant_block_delta":
       return isActiveSessionEvent(state, event.payload)
         ? {
             ...state,
-            error_message: event.payload.error_message ?? state.error_message,
-            messages: state.messages.map((message) =>
-              message.id === event.payload.message_id
-                ? { ...message, status: event.payload.status }
-                : message,
+            timeline: appendAssistantBlockDelta(
+              state.timeline,
+              event.payload.entry_id,
+              event.payload.block_id,
+              event.payload.block_type,
+              event.payload.text_delta,
             ),
           }
         : state;
-    case "tool_activity":
-      if (!isActiveSessionEvent(state, event.payload)) return state;
-      return {
-        ...state,
-        activities: upsertActivity(state.activities, event.payload.activity),
-      };
+    case "timeline_entry_updated":
+      return isActiveSessionEvent(state, event.payload)
+        ? {
+            ...state,
+            timeline: updateTimelineEntry(
+              state.timeline,
+              event.payload.entry,
+            ),
+          }
+        : state;
+    case "assistant_block_updated":
+      return isActiveSessionEvent(state, event.payload)
+        ? {
+            ...state,
+            timeline: updateAssistantBlock(
+              state.timeline,
+              event.payload.entry_id,
+              event.payload.block,
+            ),
+          }
+        : state;
     case "workspace_changed": {
       if (
         !isActiveSessionEvent(state, event.payload) ||
@@ -1037,8 +1051,7 @@ function applySnapshot(
           : state.input_draft_cleanup_scope,
     pending_prompt:
       acceptedVirtualPrompt || scopeChanged ? null : state.pending_prompt,
-    messages: snapshot.messages,
-    activities: snapshot.activities,
+    timeline: snapshot.timeline,
     files: preserveWorkspace ? state.files : snapshot.files,
     current_path: preserveWorkspace ? state.current_path : "/",
     selected_file: preserveWorkspace ? state.selected_file : null,
@@ -1147,18 +1160,115 @@ function appendPath(paths: string[], path: string | null): string[] {
   return path === null || paths.includes(path) ? paths : [...paths, path];
 }
 
-function upsertActivity(
-  activities: ToolActivity[],
-  activity: ToolActivity,
-): ToolActivity[] {
-  const exists = activities.some(
-    (candidate) => candidate.activity_id === activity.activity_id,
+function appendTimelineEntry(
+  timeline: TimelineEntry[],
+  entry: TimelineEntry,
+): TimelineEntry[] {
+  const exists = timeline.some(
+    (candidate) => candidate.entry_id === entry.entry_id,
   );
-  return exists
-    ? activities.map((candidate) =>
-        candidate.activity_id === activity.activity_id
-          ? activity
-          : candidate,
-      )
-    : [...activities, activity];
+  return exists ? timeline : [...timeline, entry];
+}
+
+function updateTimelineEntry(
+  timeline: TimelineEntry[],
+  entry: TimelineEntry,
+): TimelineEntry[] {
+  const existingIndex = timeline.findIndex(
+    (candidate) => candidate.entry_id === entry.entry_id,
+  );
+  return existingIndex === -1
+    ? timeline
+    : replaceAt(timeline, existingIndex, entry);
+}
+
+function appendAssistantBlock(
+  timeline: TimelineEntry[],
+  entryId: string,
+  block: AssistantBlock,
+): TimelineEntry[] {
+  return updateAssistantEntry(timeline, entryId, (entry) => {
+    const exists = entry.blocks.some(
+      (candidate) => candidate.block_id === block.block_id,
+    );
+    if (exists) return entry;
+    return {
+      ...entry,
+      blocks: [...entry.blocks, block],
+    };
+  });
+}
+
+function appendAssistantBlockDelta(
+  timeline: TimelineEntry[],
+  entryId: string,
+  blockId: string,
+  blockType: "assistant_text" | "reasoning",
+  textDelta: string,
+): TimelineEntry[] {
+  return updateAssistantEntry(timeline, entryId, (entry) => {
+    const blockIndex = entry.blocks.findIndex(
+      (candidate) =>
+        candidate.block_id === blockId && candidate.type === blockType,
+    );
+    if (blockIndex === -1) return entry;
+
+    const block = entry.blocks[blockIndex];
+    if (block.type !== "assistant_text" && block.type !== "reasoning") {
+      return entry;
+    }
+    return {
+      ...entry,
+      blocks: replaceAt(entry.blocks, blockIndex, {
+        ...block,
+        text: block.text + textDelta,
+      }),
+    };
+  });
+}
+
+function updateAssistantBlock(
+  timeline: TimelineEntry[],
+  entryId: string,
+  block: AssistantBlock,
+): TimelineEntry[] {
+  return updateAssistantEntry(timeline, entryId, (entry) => {
+    const blockIndex = entry.blocks.findIndex(
+      (candidate) => candidate.block_id === block.block_id,
+    );
+    return blockIndex === -1
+      ? entry
+      : {
+          ...entry,
+          blocks: replaceAt(entry.blocks, blockIndex, block),
+        };
+  });
+}
+
+function updateAssistantEntry(
+  timeline: TimelineEntry[],
+  entryId: string,
+  update: (
+    entry: Extract<TimelineEntry, { type: "assistant_message" }>,
+  ) => Extract<TimelineEntry, { type: "assistant_message" }>,
+): TimelineEntry[] {
+  const entryIndex = timeline.findIndex(
+    (candidate) =>
+      candidate.entry_id === entryId &&
+      candidate.type === "assistant_message",
+  );
+  if (entryIndex === -1) return timeline;
+
+  const entry = timeline[entryIndex];
+  if (entry.type !== "assistant_message") return timeline;
+  const updatedEntry = update(entry);
+  return updatedEntry === entry
+    ? timeline
+    : replaceAt(timeline, entryIndex, updatedEntry);
+}
+
+function replaceAt<T>(values: T[], index: number, value: T): T[] {
+  return values.map((candidate, candidateIndex) =>
+    candidateIndex === index ? value : candidate,
+  );
 }

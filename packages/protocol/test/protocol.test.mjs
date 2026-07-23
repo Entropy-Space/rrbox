@@ -4,10 +4,11 @@ import {
   PROTOCOL_VERSION,
   createCommand,
   parseCoreEvent,
+  parseTimeline,
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v6 command", () => {
+test("round-trips every protocol-v7 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("project_create", { name: "Docs" }),
@@ -60,73 +61,256 @@ test("round-trips every protocol-v6 command", () => {
   }
 });
 
-test("rejects retired commands and older protocol versions", () => {
-  assert.throws(
-    () =>
-      parseViewerCommand({
-        protocol_version: PROTOCOL_VERSION,
-        request_id: "request-1",
-        type: "session_create",
-        payload: { project_id: "project-1" },
-      }),
-    /Unknown command type: session_create/,
+test("round-trips an ordered timeline with every block and entry type", () => {
+  const timeline = createTimeline();
+
+  assert.deepEqual(parseTimeline(timeline), timeline);
+  assert.deepEqual(
+    timeline.map((entry) => entry.type),
+    [
+      "user_message",
+      "assistant_message",
+      "tool_result",
+      "assistant_message",
+    ],
   );
-  assert.throws(
-    () =>
-      parseViewerCommand({
-        protocol_version: 2,
-        request_id: "request-2",
-        type: "bootstrap",
-        payload: {},
-      }),
-    /Unsupported protocol version/,
+  assert.deepEqual(
+    timeline[1].blocks.map((block) => block.type),
+    ["reasoning", "assistant_text", "tool_call"],
   );
 });
 
-test("validates authoritative state snapshots with persisted sessions", () => {
-  const event = parseCoreEvent({
-    protocol_version: PROTOCOL_VERSION,
-    event_id: "event-1",
-    request_id: "request-1",
-    type: "ready",
-    payload: { state: createPersistedState() },
+test("timeline order, run identity, and internal IDs are authoritative", () => {
+  const noncontiguous = createTimeline();
+  noncontiguous.push({
+    ...createUserEntry("run-1"),
+    entry_id: "user-repeated-run",
+  });
+  assert.throws(
+    () => parseTimeline(noncontiguous),
+    /run is not contiguous|exactly one user_message/,
+  );
+
+  const noUser = createTimeline().slice(1);
+  assert.throws(
+    () => parseTimeline(noUser),
+    /run must start with a user_message/,
+  );
+
+  const duplicateUser = createTimeline();
+  duplicateUser.splice(1, 0, {
+    ...createUserEntry("run-1"),
+    entry_id: "second-user",
+  });
+  assert.throws(
+    () => parseTimeline(duplicateUser),
+    /exactly one user_message/,
+  );
+
+  const duplicateEntry = createTimeline();
+  duplicateEntry[1].entry_id = duplicateEntry[0].entry_id;
+  assert.throws(
+    () => parseTimeline(duplicateEntry),
+    /Duplicate timeline entry_id/,
+  );
+
+  const duplicateBlock = createTimeline();
+  duplicateBlock[3].blocks[0].block_id = "reasoning-1";
+  assert.throws(
+    () => parseTimeline(duplicateBlock),
+    /Duplicate assistant block_id/,
+  );
+});
+
+test("tool results require one earlier matching call in the same run", () => {
+  const missing = createTimeline();
+  missing[2].tool_call_block_id = "missing";
+  assert.throws(
+    () => parseTimeline(missing),
+    /active assistant tool-call group/,
+  );
+
+  const mismatchedRawId = createTimeline();
+  mismatchedRawId[2].tool_call_id = "other";
+  delete mismatchedRawId[2].file_change;
+  assert.throws(
+    () => parseTimeline(mismatchedRawId),
+    /identity must match/,
+  );
+
+  const mismatchedName = createTimeline();
+  mismatchedName[2].tool_name = "read_file";
+  assert.throws(
+    () => parseTimeline(mismatchedName),
+    /identity must match/,
+  );
+
+  const mismatchedRun = createTimeline();
+  mismatchedRun[2].run_id = "run-2";
+  assert.throws(
+    () => parseTimeline(mismatchedRun),
+    /run must start with a user_message/,
+  );
+
+  const duplicateResult = createTimeline();
+  duplicateResult.splice(3, 0, {
+    ...structuredClone(duplicateResult[2]),
+    entry_id: "result-2",
+  });
+  assert.throws(
+    () => parseTimeline(duplicateResult),
+    /at most one tool result/,
+  );
+});
+
+test("tool results stay adjacent to their assistant tool-call group", () => {
+  const unresolvedTail = createTimeline().slice(0, 2);
+  assert.deepEqual(parseTimeline(unresolvedTail), unresolvedTail);
+
+  const interveningAssistant = createTimeline();
+  interveningAssistant.splice(
+    2,
+    0,
+    createAssistantEntry({
+      entry_id: "intervening-assistant",
+      blocks: [
+        {
+          type: "assistant_text",
+          block_id: "intervening-text",
+          text: "Still working.",
+        },
+      ],
+    }),
+  );
+  assert.throws(
+    () => parseTimeline(interveningAssistant),
+    /followed immediately by their tool results/,
+  );
+
+  const nextRunBeforeResult = createTimeline();
+  nextRunBeforeResult.splice(2, 0, {
+    ...createUserEntry("run-2"),
+    entry_id: "user-2",
+  });
+  assert.throws(
+    () => parseTimeline(nextRunBeforeResult),
+    /followed immediately by their tool results/,
+  );
+});
+
+test("a partial tool-result group is valid only at timeline tail", () => {
+  const timeline = createTimeline();
+  timeline[1].blocks.push({
+    type: "tool_call",
+    block_id: "tool-block-2",
+    tool_call_id: "tool-2",
+    tool_name: "read_file",
+    arguments: { path: "/README.md" },
+  });
+  const partialTail = timeline.slice(0, 3);
+  assert.deepEqual(parseTimeline(partialTail), partialTail);
+
+  partialTail.push(
+    createAssistantEntry({
+      entry_id: "assistant-after-partial-results",
+      blocks: [
+        {
+          type: "assistant_text",
+          block_id: "text-after-partial-results",
+          text: "Continuing.",
+        },
+      ],
+    }),
+  );
+  assert.throws(
+    () => parseTimeline(partialTail),
+    /followed immediately by their tool results/,
+  );
+});
+
+test("provider tool-call IDs are unique within one assistant message", () => {
+  const timeline = createTimeline().slice(0, 2);
+  timeline[1].blocks.push({
+    type: "tool_call",
+    block_id: "tool-block-duplicate-raw-id",
+    tool_call_id: "tool-1",
+    tool_name: "read_file",
+    arguments: { path: "/README.md" },
   });
 
-  assert.equal(event.type, "ready");
-  assert.equal(event.payload.state.active_project_id, "project-1");
-  assert.equal(event.payload.state.active_session_id, "session-1");
-  assert.equal(event.payload.state.input_draft, "draft reply");
-  assert.equal(event.payload.state.workspace_revision, 0);
-  assert.equal(event.payload.state.providers[0]?.provider_id, "researchbox");
-  assert.deepEqual(event.payload.state.active_model, {
-    provider_id: "researchbox",
-    model_id: "researchbox-mock",
-  });
-  assert.equal(event.payload.state.sessions[0]?.message_count, 0);
-  assert.equal(event.payload.state.files[0]?.path, "/README.md");
+  assert.throws(
+    () => parseTimeline(timeline),
+    /Duplicate tool_call_id in assistant message/,
+  );
 });
 
-test("accepts virtual new chat state and preserves its draft exactly", () => {
-  const state = createVirtualState();
-  const event = parseCoreEvent(
-    coreEvent("state_snapshot", { state }, "request-new-chat"),
+test("timeline timestamps must be canonical finite ISO timestamps", () => {
+  const invalid = createTimeline();
+  invalid[0].created_at = "not-a-date";
+  assert.throws(
+    () => parseTimeline(invalid),
+    /valid canonical ISO timestamp/,
   );
 
-  assert.equal(event.type, "state_snapshot");
-  assert.equal(event.payload.state.active_session_id, null);
-  assert.equal(event.payload.state.sessions.length, 0);
-  assert.equal(event.payload.state.input_draft, "  unfinished message\n");
+  const noncanonical = createTimeline();
+  noncanonical[0].created_at = "2026-07-22T00:00:00Z";
+  assert.throws(
+    () => parseTimeline(noncanonical),
+    /valid canonical ISO timestamp/,
+  );
+
+  assert.deepEqual(parseTimeline(createTimeline()), createTimeline());
 });
 
-test("round-trips every core event variant", () => {
-  const scope = { project_id: "project-1", session_id: "session-1" };
-  const message = {
-    id: "message-1",
-    role: "assistant",
-    content: "Hello",
-    created_at: "2026-07-22T00:00:00.000Z",
-    status: "complete",
+test("assistant status and stop reason remain consistent", () => {
+  const streaming = createAssistantEntry({
+    entry_id: "streaming",
+    status: "streaming",
+    blocks: [],
+  });
+  delete streaming.stop_reason;
+  assert.deepEqual(parseTimeline([createUserEntry("run-1"), streaming]), [
+    createUserEntry("run-1"),
+    streaming,
+  ]);
+
+  for (const [status, stopReason] of [
+    ["streaming", "stop"],
+    ["complete", undefined],
+    ["complete", "error"],
+    ["aborted", "stop"],
+    ["error", "aborted"],
+  ]) {
+    const invalid = createAssistantEntry({
+      entry_id: `invalid-${status}-${stopReason}`,
+      status,
+      stop_reason: stopReason,
+      blocks: [],
+    });
+    assert.throws(() =>
+      parseTimeline([createUserEntry("run-1"), invalid]),
+    );
+  }
+});
+
+test("tool arguments must be JSON and are cloned by the parser", () => {
+  const timeline = createTimeline();
+  timeline[1].blocks[2].arguments = {
+    path: "/README.md",
+    nested: { enabled: true },
   };
+  const parsed = parseTimeline(timeline);
+  timeline[1].blocks[2].arguments.nested.enabled = false;
+  assert.equal(parsed[1].blocks[2].arguments.nested.enabled, true);
+
+  const invalid = createTimeline();
+  invalid[1].blocks[2].arguments = { value: undefined };
+  assert.throws(() => parseTimeline(invalid), /only JSON values/);
+});
+
+test("round-trips every normalized timeline core event", () => {
+  const scope = { project_id: "project-1", session_id: "session-1" };
+  const timeline = createTimeline();
   const events = [
     coreEvent("core_lifecycle", {
       phase: "waiting_for_writer",
@@ -143,32 +327,30 @@ test("round-trips every core event variant", () => {
       "request-state",
     ),
     coreEvent("run_state", { ...scope, is_running: true }),
-    coreEvent("message_added", { ...scope, message }),
-    coreEvent("message_delta", {
+    coreEvent("timeline_entry_appended", {
       ...scope,
-      message_id: "message-1",
+      entry: timeline[0],
+    }),
+    coreEvent("assistant_block_appended", {
+      ...scope,
+      entry_id: "assistant-1",
+      block: timeline[1].blocks[0],
+    }),
+    coreEvent("assistant_block_delta", {
+      ...scope,
+      entry_id: "assistant-1",
+      block_id: "reasoning-1",
+      block_type: "reasoning",
       text_delta: "chunk",
     }),
-    ...["complete", "aborted", "error"].map((status) =>
-      coreEvent("message_finished", {
-        ...scope,
-        message_id: "message-1",
-        status,
-        ...(status === "error" ? { error_message: "Provider failed" } : {}),
-      }),
-    ),
-    coreEvent("tool_activity", {
+    coreEvent("timeline_entry_updated", {
       ...scope,
-      activity: {
-        activity_id: "activity-1",
-        tool_call_id: "tool-1",
-        message_id: "message-1",
-        tool_name: "write_file",
-        label: "Write README",
-        status: "complete",
-        summary: "Complete",
-        file_change: createFileChange(),
-      },
+      entry: timeline[1],
+    }),
+    coreEvent("assistant_block_updated", {
+      ...scope,
+      entry_id: "assistant-1",
+      block: timeline[1].blocks[2],
     }),
     coreEvent("workspace_changed", {
       ...scope,
@@ -202,16 +384,7 @@ test("round-trips every core event variant", () => {
         session_id: null,
         input_draft: "",
       },
-      "request-new-draft",
-    ),
-    coreEvent(
-      "input_draft_saved",
-      {
-        project_id: "project-1",
-        session_id: "session-1",
-        input_draft: "  next prompt\n",
-      },
-      "request-session-draft",
+      "request-draft",
     ),
     coreEvent("error", {
       code: "agent_run_failed",
@@ -223,30 +396,72 @@ test("round-trips every core event variant", () => {
   for (const event of events) assert.deepEqual(parseCoreEvent(event), event);
 });
 
-test("validates independent lifecycle and provider catalog events", () => {
+test("rejects retired message and activity events", () => {
+  for (const type of [
+    "message_added",
+    "message_delta",
+    "message_finished",
+    "tool_activity",
+  ]) {
+    assert.throws(
+      () =>
+        parseCoreEvent(
+          coreEvent(type, {
+            project_id: "project-1",
+            session_id: "session-1",
+          }),
+        ),
+      new RegExp(`Unknown core event type: ${type}`),
+    );
+  }
+});
+
+test("validates timeline snapshots and user-prompt message counts", () => {
+  const state = createPersistedState();
+  const event = parseCoreEvent(coreEvent("ready", { state }));
+  assert.equal(event.payload.state.timeline.length, 4);
+  assert.equal(event.payload.state.sessions[0].message_count, 1);
+
+  const mismatch = createPersistedState();
+  mismatch.sessions[0].message_count = 2;
+  assert.throws(
+    () => parseCoreEvent(coreEvent("state_snapshot", { state: mismatch })),
+    /message_count must equal its user prompt count/,
+  );
+});
+
+test("virtual new chat requires an empty timeline and cannot run", () => {
+  const valid = parseCoreEvent(
+    coreEvent("state_snapshot", { state: createVirtualState() }),
+  );
+  assert.equal(valid.payload.state.active_session_id, null);
+  assert.deepEqual(valid.payload.state.timeline, []);
+
   assert.throws(
     () =>
       parseCoreEvent(
-        coreEvent("core_lifecycle", {
-          phase: "querying_models",
+        coreEvent("state_snapshot", {
+          state: {
+            ...createVirtualState(),
+            timeline: [createUserEntry("run-1")],
+          },
         }),
       ),
-    /Invalid core lifecycle phase/,
+    /Virtual new chat cannot contain timeline entries/,
   );
   assert.throws(
     () =>
       parseCoreEvent(
-        coreEvent("provider_catalog_snapshot", {
-          catalog_revision: 1,
-          providers: [createMockProvider(), createMockProvider()],
+        coreEvent("state_snapshot", {
+          state: { ...createVirtualState(), is_running: true },
         }),
       ),
-    /Duplicate provider_id/,
+    /Virtual new chat cannot have an active run/,
   );
 });
 
 test("requires request correlation for filesystem and draft results", () => {
-  const uncorrelatedEvents = [
+  for (const event of [
     coreEvent("files_snapshot", {
       project_id: "project-1",
       path: "/",
@@ -264,95 +479,17 @@ test("requires request correlation for filesystem and draft results", () => {
       session_id: null,
       input_draft: "draft",
     }),
-  ];
-
-  for (const event of uncorrelatedEvents) {
+  ]) {
     assert.throws(() => parseCoreEvent(event), /require request_id/);
   }
-  assert.throws(
-    () =>
-      parseCoreEvent(
-        coreEvent("error", {
-          code: "fs_read_failed",
-          message: "Missing",
-          project_id: "project-1",
-        }),
-      ),
-    /require request_id/,
-  );
 });
 
-test("requires explicit nullable session scope for drafts and prompts", () => {
-  for (const command of [
-    {
-      type: "prompt",
-      payload: { project_id: "project-1", text: "hello" },
-    },
-    {
-      type: "input_draft_update",
-      payload: { project_id: "project-1", input_draft: "hello" },
-    },
-  ]) {
-    assert.throws(
-      () =>
-        parseViewerCommand({
-          protocol_version: PROTOCOL_VERSION,
-          request_id: "request-missing-session",
-          ...command,
-        }),
-      /session_id must be null or a non-empty string/,
-    );
-  }
-
+test("validates workspace change identity and numeric fields", () => {
+  const timeline = createTimeline();
+  timeline[2].file_change.tool_call_id = "different";
   assert.throws(
-    () =>
-      parseViewerCommand({
-        protocol_version: PROTOCOL_VERSION,
-        request_id: "request-empty-session",
-        type: "prompt",
-        payload: {
-          project_id: "project-1",
-          session_id: "",
-          text: "hello",
-        },
-      }),
-    /session_id must be null or a non-empty string/,
-  );
-});
-
-test("validates workspace revisions and file change summaries", () => {
-  assert.throws(
-    () =>
-      parseCoreEvent(
-        coreEvent("tool_activity", {
-          project_id: "project-1",
-          session_id: "session-1",
-          activity: {
-            tool_call_id: "tool-1",
-            message_id: "message-1",
-            tool_name: "write_file",
-            label: "Write README",
-            status: "running",
-          },
-        }),
-      ),
-    /activity_id must be a non-empty string/,
-  );
-
-  assert.throws(
-    () =>
-      parseCoreEvent(
-        coreEvent(
-          "files_snapshot",
-          {
-            project_id: "project-1",
-            path: "/",
-            files: [],
-          },
-          "request-list",
-        ),
-      ),
-    /workspace_revision must be a non-negative number/,
+    () => parseTimeline(timeline),
+    /file_change must match tool_call_id/,
   );
 
   assert.throws(
@@ -367,163 +504,160 @@ test("validates workspace revisions and file change summaries", () => {
       ),
     /additions must be a non-negative number/,
   );
-
-  assert.throws(
-    () =>
-      parseCoreEvent(
-        coreEvent("tool_activity", {
-          project_id: "project-1",
-          session_id: "session-1",
-          activity: {
-            activity_id: "activity-1",
-            tool_call_id: "tool-other",
-            message_id: "message-1",
-            tool_name: "write_file",
-            label: "Write README",
-            status: "complete",
-            file_change: createFileChange(),
-          },
-        }),
-      ),
-    /file_change must match tool_call_id/,
-  );
 });
 
-test("rejects malformed nested state and mismatched active scope", () => {
+test("validates provider inventories and active ownership", () => {
+  const unknownProvider = createPersistedState();
+  unknownProvider.active_model.provider_id = "missing";
   assert.throws(
     () =>
-      parseCoreEvent({
-        protocol_version: PROTOCOL_VERSION,
-        event_id: "event-1",
-        type: "ready",
-        payload: {
-          state: {
-            ...createPersistedState(),
-            activities: [
-              {
-                activity_id: "activity-1",
-                tool_call_id: "tool-1",
-                tool_name: "read_file",
-                label: "Read",
-                status: "running",
-              },
-            ],
-          },
-        },
-      }),
-    /message_id must be a non-empty string/,
-  );
-  assert.throws(
-    () =>
-      parseViewerCommand({
-        protocol_version: PROTOCOL_VERSION,
-        request_id: "request-2",
-        type: "prompt",
-        payload: { session_id: "session-1", text: "hello" },
-      }),
-    /project_id must be a non-empty string/,
+      parseCoreEvent(coreEvent("state_snapshot", { state: unknownProvider })),
+    /unknown provider_id/,
   );
 
   const mismatched = createPersistedState();
   mismatched.projects.push({
     ...mismatched.projects[0],
     project_id: "project-2",
-    name: "Other",
   });
   mismatched.active_project_id = "project-2";
   assert.throws(
+    () => parseCoreEvent(coreEvent("state_snapshot", { state: mismatched })),
+    /does not belong to active project/,
+  );
+});
+
+test("rejects older protocol versions and missing nullable session scope", () => {
+  assert.throws(
     () =>
-      parseCoreEvent({
-        protocol_version: PROTOCOL_VERSION,
-        event_id: "event-3",
-        type: "state_snapshot",
-        payload: { state: mismatched },
+      parseViewerCommand({
+        protocol_version: 6,
+        request_id: "request-old",
+        type: "bootstrap",
+        payload: {},
       }),
-    /Active session does not belong to active project/,
+    /Unsupported protocol version/,
+  );
+  assert.throws(
+    () =>
+      parseViewerCommand({
+        protocol_version: PROTOCOL_VERSION,
+        request_id: "request-missing-session",
+        type: "prompt",
+        payload: { project_id: "project-1", text: "hello" },
+      }),
+    /session_id must be null or a non-empty string/,
   );
 });
 
-test("validates provider inventories and the active model selection", () => {
-  const unknownProvider = createPersistedState();
-  unknownProvider.active_model = {
-    provider_id: "missing-provider",
-    model_id: "researchbox-mock",
+function createTimeline() {
+  return [
+    createUserEntry("run-1"),
+    createAssistantEntry({
+      entry_id: "assistant-1",
+      blocks: [
+        {
+          type: "reasoning",
+          block_id: "reasoning-1",
+          text: "I should inspect the file.",
+          thinking_signature: "opaque-thinking",
+          redacted: false,
+        },
+        {
+          type: "assistant_text",
+          block_id: "text-1",
+          text: "I’ll update it.",
+          text_signature: "opaque-text",
+        },
+        {
+          type: "tool_call",
+          block_id: "tool-block-1",
+          tool_call_id: "tool-1",
+          tool_name: "write_file",
+          arguments: { path: "/README.md", content: "# Updated" },
+          thought_signature: "opaque-thought",
+          label: "Writing /README.md",
+        },
+      ],
+    }),
+    {
+      type: "tool_result",
+      entry_id: "result-1",
+      run_id: "run-1",
+      created_at: "2026-07-22T00:00:02.000Z",
+      tool_call_block_id: "tool-block-1",
+      tool_call_id: "tool-1",
+      tool_name: "write_file",
+      content: '{"path":"/README.md"}',
+      is_error: false,
+      summary: "Updated · +1 −1",
+      file_change: createFileChange(),
+    },
+    createAssistantEntry({
+      entry_id: "assistant-2",
+      created_at: "2026-07-22T00:00:03.000Z",
+      blocks: [
+        {
+          type: "assistant_text",
+          block_id: "text-2",
+          text: "Done.",
+        },
+      ],
+    }),
+  ];
+}
+
+function createUserEntry(runId) {
+  return {
+    type: "user_message",
+    entry_id: "user-1",
+    run_id: runId,
+    created_at: "2026-07-22T00:00:00.000Z",
+    content: "Update the README",
   };
-  assert.throws(
-    () =>
-      parseCoreEvent(
-        coreEvent("state_snapshot", { state: unknownProvider }),
-      ),
-    /active_model references an unknown provider_id/,
-  );
+}
 
-  const unknownModel = createPersistedState();
-  unknownModel.active_model = {
-    provider_id: "researchbox",
-    model_id: "missing-model",
+function createAssistantEntry(overrides = {}) {
+  return {
+    type: "assistant_message",
+    entry_id: "assistant-default",
+    run_id: "run-1",
+    created_at: "2026-07-22T00:00:01.000Z",
+    status: "complete",
+    api: "openai-completions",
+    provider: "local-openai",
+    model: "gpt-5.4",
+    response_model: "gpt-5.4-2026-07-01",
+    response_id: "response-1",
+    usage: createUsage(),
+    stop_reason: "stop",
+    blocks: [],
+    ...overrides,
   };
-  assert.throws(
-    () => parseCoreEvent(coreEvent("state_snapshot", { state: unknownModel })),
-    /active_model references an unknown model_id/,
-  );
+}
 
-  const mismatchedModelProvider = createPersistedState();
-  mismatchedModelProvider.providers[0].models[0].provider_id = "local-openai";
-  assert.throws(
-    () =>
-      parseCoreEvent(
-        coreEvent("state_snapshot", { state: mismatchedModelProvider }),
-      ),
-    /Model provider_id does not match its provider/,
-  );
-
-  const duplicateModel = createPersistedState();
-  duplicateModel.providers[0].models.push({
-    ...duplicateModel.providers[0].models[0],
-  });
-  assert.throws(
-    () => parseCoreEvent(coreEvent("state_snapshot", { state: duplicateModel })),
-    /Duplicate model_id/,
-  );
-});
-
-test("rejects runtime state on virtual new chat", () => {
-  assert.throws(
-    () =>
-      parseCoreEvent(
-        coreEvent("state_snapshot", {
-          state: {
-            ...createVirtualState(),
-            messages: [
-              {
-                id: "message-1",
-                role: "user",
-                content: "hello",
-                created_at: "2026-07-22T00:00:00.000Z",
-                status: "complete",
-              },
-            ],
-          },
-        }),
-      ),
-    /Virtual new chat cannot contain messages or tool activities/,
-  );
-  assert.throws(
-    () =>
-      parseCoreEvent(
-        coreEvent("state_snapshot", {
-          state: { ...createVirtualState(), is_running: true },
-        }),
-      ),
-    /Virtual new chat cannot have an active run/,
-  );
-});
+function createUsage() {
+  return {
+    input: 10,
+    output: 20,
+    cache_read: 2,
+    cache_write: 0,
+    total_tokens: 32,
+    cost: {
+      input: 0.01,
+      output: 0.02,
+      cache_read: 0,
+      cache_write: 0,
+      total: 0.03,
+    },
+  };
+}
 
 function createPersistedState() {
   return {
     state_revision: 1,
     catalog_revision: 1,
-    workspace_revision: 0,
+    workspace_revision: 2,
     projects: [createProject()],
     sessions: [
       {
@@ -532,7 +666,7 @@ function createPersistedState() {
         title: "Notes",
         created_at: "2026-07-22T00:00:00.000Z",
         updated_at: "2026-07-22T00:00:00.000Z",
-        message_count: 0,
+        message_count: 1,
       },
     ],
     providers: [createMockProvider()],
@@ -543,8 +677,7 @@ function createPersistedState() {
     active_project_id: "project-1",
     active_session_id: "session-1",
     input_draft: "draft reply",
-    messages: [],
-    activities: [],
+    timeline: createTimeline(),
     files: [
       {
         name: "README.md",
@@ -572,8 +705,7 @@ function createVirtualState() {
     active_project_id: "project-1",
     active_session_id: null,
     input_draft: "  unfinished message\n",
-    messages: [],
-    activities: [],
+    timeline: [],
     files: [],
     is_running: false,
   };

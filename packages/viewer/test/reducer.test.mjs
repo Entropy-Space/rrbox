@@ -13,19 +13,23 @@ test("viewer applies authoritative snapshots and ignores stale session events", 
 
   state = coreReducer(
     state,
-    event("message_added", {
+    event("timeline_entry_appended", {
       project_id: "p2",
       session_id: "s2",
-      message: chatMessage("late"),
+      entry: assistantMessageEntry("late"),
     }),
   );
-  assert.deepEqual(state.messages, []);
+  assert.deepEqual(state.timeline, []);
 
   const switched = snapshot("p2", "s2", 4);
-  switched.messages = [chatMessage("current")];
+  switched.timeline = [
+    userMessageEntry("current-user", "current-run"),
+    assistantMessageEntry("current", {}, "current-run"),
+  ];
+  switched.sessions[0].message_count = 1;
   state = coreReducer(state, event("state_snapshot", { state: switched }));
   assert.equal(state.active_project_id, "p2");
-  assert.equal(state.messages[0].id, "current");
+  assert.equal(state.timeline[1].entry_id, "current");
   assert.equal(state.current_path, "/");
   assert.equal(state.selected_file, null);
 
@@ -148,50 +152,141 @@ test("transport failure disables a previously ready core", () => {
   assert.equal(state.error_message, "The browser core stopped.");
 });
 
-test("tool activity is keyed by stable activity identity", () => {
+test("timeline entries and assistant blocks update in canonical array order", () => {
   let state = coreReducer(
     initialAgentSessionState,
     event("ready", { state: snapshot("p1", "s1", 1) }),
   );
-  const activity = {
-    activity_id: "activity-1",
-    tool_call_id: "tool-1",
-    message_id: "assistant-1",
-    tool_name: "read_file",
-    label: "Reading README",
-    status: "running",
-  };
+  const assistant = assistantMessageEntry("assistant-1", {
+    status: "streaming",
+  });
   state = coreReducer(
     state,
-    event("tool_activity", {
+    event("timeline_entry_appended", {
       project_id: "p1",
       session_id: "s1",
-      activity,
+      entry: assistant,
     }),
   );
   state = coreReducer(
     state,
-    event("tool_activity", {
+    event("assistant_block_appended", {
       project_id: "p1",
       session_id: "s1",
-      activity: { ...activity, status: "complete", summary: "Complete" },
-    }),
-  );
-  state = coreReducer(
-    state,
-    event("tool_activity", {
-      project_id: "p1",
-      session_id: "s1",
-      activity: {
-        ...activity,
-        activity_id: "activity-2",
-        status: "complete",
+      entry_id: "assistant-1",
+      block: {
+        type: "reasoning",
+        block_id: "reasoning-1",
+        text: "Check",
       },
     }),
   );
-  assert.equal(state.activities.length, 2);
-  assert.equal(state.activities[0].status, "complete");
-  assert.equal(state.activities[1].message_id, "assistant-1");
+  state = coreReducer(
+    state,
+    event("assistant_block_appended", {
+      project_id: "p1",
+      session_id: "s1",
+      entry_id: "assistant-1",
+      block: {
+        type: "assistant_text",
+        block_id: "text-1",
+        text: "Hel",
+      },
+    }),
+  );
+  state = coreReducer(
+    state,
+    event("assistant_block_delta", {
+      project_id: "p1",
+      session_id: "s1",
+      entry_id: "assistant-1",
+      block_id: "text-1",
+      block_type: "assistant_text",
+      text_delta: "lo",
+    }),
+  );
+  state = coreReducer(
+    state,
+    event("assistant_block_appended", {
+      project_id: "p1",
+      session_id: "s1",
+      entry_id: "assistant-1",
+      block: {
+        type: "assistant_text",
+        block_id: "text-1",
+        text: "Hel",
+      },
+    }),
+  );
+  state = coreReducer(
+    state,
+    event("assistant_block_updated", {
+      project_id: "p1",
+      session_id: "s1",
+      entry_id: "assistant-1",
+      block: {
+        type: "reasoning",
+        block_id: "reasoning-1",
+        text: "Checked",
+      },
+    }),
+  );
+  state = coreReducer(
+    state,
+    event("timeline_entry_updated", {
+      project_id: "p1",
+      session_id: "s1",
+      entry: {
+        ...state.timeline[0],
+        status: "complete",
+        stop_reason: "stop",
+      },
+    }),
+  );
+
+  assert.equal(state.timeline.length, 1);
+  assert.equal(state.timeline[0].status, "complete");
+  assert.deepEqual(
+    state.timeline[0].blocks.map((block) => block.block_id),
+    ["reasoning-1", "text-1"],
+  );
+  assert.equal(state.timeline[0].blocks[0].text, "Checked");
+  assert.equal(state.timeline[0].blocks[1].text, "Hello");
+});
+
+test("duplicate append events are idempotent and preserve streamed state", () => {
+  const original = assistantMessageEntry("assistant-1", {
+    status: "streaming",
+  });
+  let state = {
+    ...initialAgentSessionState,
+    active_project_id: "p1",
+    active_session_id: "s1",
+    timeline: [
+      userMessageEntry("user-1"),
+      original,
+      assistantMessageEntry("assistant-2"),
+    ],
+  };
+
+  state = coreReducer(
+    state,
+    event("timeline_entry_appended", {
+      project_id: "p1",
+      session_id: "s1",
+      entry: {
+        ...original,
+        status: "complete",
+        stop_reason: "stop",
+      },
+    }),
+  );
+
+  assert.deepEqual(
+    state.timeline.map((entry) => entry.entry_id),
+    ["user-1", "assistant-1", "assistant-2"],
+  );
+  assert.equal(state.timeline[1].status, "streaming");
 });
 
 test("filesystem responses are correlated to the latest request", () => {
@@ -795,11 +890,11 @@ test("an accepted prompt clears only the draft version that was submitted", () =
   state = coreReducer(
     state,
     event(
-      "message_added",
+      "timeline_entry_appended",
       {
         project_id: "p1",
         session_id: "s1",
-        message: chatMessage("user-1", "user"),
+        entry: userMessageEntry("user-1"),
       },
       "prompt-1",
     ),
@@ -832,11 +927,11 @@ test("an accepted prompt clears only the draft version that was submitted", () =
   state = coreReducer(
     state,
     event(
-      "message_added",
+      "timeline_entry_appended",
       {
         project_id: "p1",
         session_id: "s1",
-        message: chatMessage("user-2", "user"),
+        entry: userMessageEntry("user-2"),
       },
       "prompt-2",
     ),
@@ -931,8 +1026,7 @@ function snapshot(projectId, sessionId, revision, inputDraft = "") {
     active_project_id: projectId,
     active_session_id: sessionId,
     input_draft: inputDraft,
-    messages: [],
-    activities: [],
+    timeline: [],
     files: [],
     is_running: false,
   };
@@ -972,13 +1066,48 @@ function localOpenAiProvider() {
   };
 }
 
-function chatMessage(id, role = "assistant") {
+function userMessageEntry(entryId, runId = "run-1") {
   return {
-    id,
-    role,
+    type: "user_message",
+    entry_id: entryId,
+    run_id: runId,
     content: "hello",
     created_at: "2026-07-22T00:00:00.000Z",
-    status: "complete",
+  };
+}
+
+function assistantMessageEntry(
+  entryId,
+  overrides = {},
+  runId = "run-1",
+) {
+  const status = overrides.status ?? "complete";
+  return {
+    type: "assistant_message",
+    entry_id: entryId,
+    run_id: runId,
+    created_at: "2026-07-22T00:00:00.000Z",
+    status,
+    api: "mock",
+    provider: "researchbox",
+    model: "researchbox-mock",
+    usage: {
+      input: 0,
+      output: 0,
+      cache_read: 0,
+      cache_write: 0,
+      total_tokens: 0,
+      cost: {
+        input: 0,
+        output: 0,
+        cache_read: 0,
+        cache_write: 0,
+        total: 0,
+      },
+    },
+    ...(status === "complete" ? { stop_reason: "stop" } : {}),
+    blocks: [],
+    ...overrides,
   };
 }
 

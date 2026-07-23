@@ -1,57 +1,115 @@
-import type {
-  AgentMessage,
-} from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type {
   AssistantMessage,
-  ImageContent,
   Message,
-  TextContent,
-  ThinkingContent,
-  ToolCall,
   ToolResultMessage,
-  UserMessage,
 } from "@earendil-works/pi-ai";
+import type {
+  AssistantBlock,
+  AssistantMessageEntry,
+  AssistantStopReason,
+  AssistantUsage,
+  TimelineEntry,
+  ToolResultEntry,
+} from "@researchbox/protocol";
 
-export function encodeAgentMessages(messages: AgentMessage[]): unknown[] {
-  return messages.map((message) => encodeMessage(requireStandardMessage(message)));
+export function timelineToAgentMessages(
+  timeline: readonly TimelineEntry[],
+): AgentMessage[] {
+  return timeline.map((entry): Message => {
+    switch (entry.type) {
+      case "user_message":
+        return {
+          role: "user",
+          content: entry.content,
+          timestamp: parseTimestamp(entry.created_at),
+        };
+      case "assistant_message":
+        if (entry.status === "streaming") {
+          throw new Error(
+            "A streaming assistant entry cannot be restored into the agent transcript.",
+          );
+        }
+        return {
+          role: "assistant",
+          content: entry.blocks.map(toAgentAssistantBlock),
+          api: entry.api,
+          provider: entry.provider,
+          model: entry.model,
+          ...(entry.response_model === undefined
+            ? {}
+            : { responseModel: entry.response_model }),
+          ...(entry.response_id === undefined
+            ? {}
+            : { responseId: entry.response_id }),
+          usage: {
+            input: entry.usage.input,
+            output: entry.usage.output,
+            cacheRead: entry.usage.cache_read,
+            cacheWrite: entry.usage.cache_write,
+            totalTokens: entry.usage.total_tokens,
+            cost: {
+              input: entry.usage.cost.input,
+              output: entry.usage.cost.output,
+              cacheRead: entry.usage.cost.cache_read,
+              cacheWrite: entry.usage.cost.cache_write,
+              total: entry.usage.cost.total,
+            },
+          },
+          stopReason: fromTimelineStopReason(
+            entry.stop_reason ?? stopReasonForStatus(entry.status),
+          ),
+          ...(entry.error_message === undefined
+            ? {}
+            : { errorMessage: entry.error_message }),
+          timestamp: parseTimestamp(entry.created_at),
+        };
+      case "tool_result":
+        return {
+          role: "toolResult",
+          toolCallId: entry.tool_call_id,
+          toolName: entry.tool_name,
+          content: [{ type: "text", text: entry.content }],
+          details: toolResultDetails(entry),
+          isError: entry.is_error,
+          timestamp: parseTimestamp(entry.created_at),
+        };
+    }
+  });
 }
 
-export function decodeAgentMessages(values: unknown[]): AgentMessage[] {
-  return values.map(decodeMessage);
-}
-
-function requireStandardMessage(message: AgentMessage): Message {
-  const role = (message as { role?: unknown }).role;
-  if (role !== "user" && role !== "assistant" && role !== "toolResult") {
-    throw new Error("Agent message role is not supported by the transcript codec.");
-  }
-  return message as Message;
-}
-
-function encodeMessage(message: Message): Record<string, unknown> {
-  if (message.role === "user") {
-    return {
-      role: "user",
-      content:
-        typeof message.content === "string"
-          ? message.content
-          : message.content.map(encodeContent),
-      timestamp: message.timestamp,
-    };
-  }
-  if (message.role === "toolResult") {
-    return {
-      role: "tool_result",
-      tool_call_id: message.toolCallId,
-      tool_name: message.toolName,
-      content: message.content.map(encodeContent),
-      is_error: message.isError,
-      timestamp: message.timestamp,
-    };
-  }
+export function createStreamingAssistantEntry(
+  message: AssistantMessage,
+  runId: string,
+): AssistantMessageEntry {
   return {
-    role: "assistant",
-    content: message.content.map(encodeContent),
+    type: "assistant_message",
+    entry_id: crypto.randomUUID(),
+    run_id: runId,
+    created_at: toIsoTimestamp(message.timestamp),
+    status: "streaming",
+    api: message.api,
+    provider: message.provider,
+    model: message.model,
+    usage: emptyAssistantUsage(),
+    blocks: [],
+  };
+}
+
+export function finalizeAssistantEntry(
+  entry: AssistantMessageEntry,
+  message: AssistantMessage,
+): AssistantMessageEntry {
+  const base = { ...entry };
+  delete base.response_model;
+  delete base.response_id;
+  delete base.error_message;
+  const blocks = message.content.map((content, index) =>
+    toTimelineAssistantBlock(content, entry.blocks[index]),
+  );
+  return {
+    ...base,
+    status: assistantStatus(message.stopReason),
     api: message.api,
     provider: message.provider,
     model: message.model,
@@ -61,50 +119,115 @@ function encodeMessage(message: Message): Record<string, unknown> {
     ...(message.responseId === undefined
       ? {}
       : { response_id: message.responseId }),
-    usage: {
-      input: message.usage.input,
-      output: message.usage.output,
-      cache_read: message.usage.cacheRead,
-      cache_write: message.usage.cacheWrite,
-      total_tokens: message.usage.totalTokens,
-      cost: {
-        input: message.usage.cost.input,
-        output: message.usage.cost.output,
-        cache_read: message.usage.cost.cacheRead,
-        cache_write: message.usage.cost.cacheWrite,
-        total: message.usage.cost.total,
-      },
-    },
-    stop_reason: message.stopReason,
+    usage: toTimelineUsage(message),
+    stop_reason: toTimelineStopReason(message.stopReason),
     ...(message.errorMessage === undefined
       ? {}
       : { error_message: message.errorMessage }),
-    timestamp: message.timestamp,
+    blocks,
   };
 }
 
-function encodeContent(
-  content: TextContent | ImageContent | ThinkingContent | ToolCall,
-): Record<string, unknown> {
+export function createToolResultEntry(
+  message: ToolResultMessage,
+  runId: string,
+  toolCallBlockId: string,
+): ToolResultEntry {
+  const details = isRecord(message.details) ? message.details : undefined;
+  const summary =
+    typeof details?.summary === "string" ? details.summary : undefined;
+  const fileChange = isWorkspaceChangeSummary(details?.file_change)
+    ? structuredClone(details.file_change)
+    : undefined;
+  return {
+    type: "tool_result",
+    entry_id: crypto.randomUUID(),
+    run_id: runId,
+    created_at: toIsoTimestamp(message.timestamp),
+    tool_call_block_id: toolCallBlockId,
+    tool_call_id: message.toolCallId,
+    tool_name: message.toolName,
+    content: message.content
+      .filter((content) => content.type === "text")
+      .map((content) => content.text)
+      .join("\n"),
+    is_error: message.isError,
+    ...(summary === undefined ? {} : { summary }),
+    ...(fileChange === undefined ? {} : { file_change: fileChange }),
+  };
+}
+
+export function emptyAssistantUsage(): AssistantUsage {
+  return {
+    input: 0,
+    output: 0,
+    cache_read: 0,
+    cache_write: 0,
+    total_tokens: 0,
+    cost: {
+      input: 0,
+      output: 0,
+      cache_read: 0,
+      cache_write: 0,
+      total: 0,
+    },
+  };
+}
+
+function toAgentAssistantBlock(
+  block: AssistantBlock,
+): AssistantMessage["content"][number] {
+  switch (block.type) {
+    case "assistant_text":
+      return {
+        type: "text",
+        text: block.text,
+        ...(block.text_signature === undefined
+          ? {}
+          : { textSignature: block.text_signature }),
+      };
+    case "reasoning":
+      return {
+        type: "thinking",
+        thinking: block.text,
+        ...(block.thinking_signature === undefined
+          ? {}
+          : { thinkingSignature: block.thinking_signature }),
+        ...(block.redacted === undefined ? {} : { redacted: block.redacted }),
+      };
+    case "tool_call":
+      return {
+        type: "toolCall",
+        id: block.tool_call_id,
+        name: block.tool_name,
+        arguments: structuredClone(block.arguments),
+        ...(block.thought_signature === undefined
+          ? {}
+          : { thoughtSignature: block.thought_signature }),
+      };
+  }
+}
+
+function toTimelineAssistantBlock(
+  content: AssistantMessage["content"][number],
+  existing: AssistantBlock | undefined,
+): AssistantBlock {
+  const blockId = existing?.block_id ?? crypto.randomUUID();
   switch (content.type) {
     case "text":
       return {
-        type: "text",
+        type: "assistant_text",
+        block_id: blockId,
         text: content.text,
         ...(content.textSignature === undefined
           ? {}
           : { text_signature: content.textSignature }),
       };
-    case "image":
-      return {
-        type: "image",
-        data: content.data,
-        mime_type: content.mimeType,
-      };
     case "thinking":
       return {
-        type: "thinking",
-        thinking: content.thinking,
+        type: "reasoning",
+        block_id: blockId,
+        text: content.thinking,
         ...(content.thinkingSignature === undefined
           ? {}
           : { thinking_signature: content.thinkingSignature }),
@@ -115,235 +238,111 @@ function encodeContent(
     case "toolCall":
       return {
         type: "tool_call",
-        id: content.id,
-        name: content.name,
+        block_id: blockId,
+        tool_call_id: content.id,
+        tool_name: content.name,
         arguments: structuredClone(content.arguments),
         ...(content.thoughtSignature === undefined
           ? {}
           : { thought_signature: content.thoughtSignature }),
+        ...(existing?.type === "tool_call" && existing.label !== undefined
+          ? { label: existing.label }
+          : {}),
       };
   }
 }
 
-function decodeMessage(value: unknown): AgentMessage {
-  const message = requireRecord(value, "Stored agent message");
-  switch (message.role) {
-    case "user":
-      return decodeUserMessage(message);
-    case "assistant":
-      return decodeAssistantMessage(message);
-    case "tool_result":
-      return decodeToolResultMessage(message);
-    default:
-      throw new Error("Stored agent message role is invalid.");
-  }
-}
-
-function decodeUserMessage(message: Record<string, unknown>): UserMessage {
-  const content = message.content;
+function toTimelineUsage(message: AssistantMessage): AssistantUsage {
   return {
-    role: "user",
-    content:
-      typeof content === "string"
-        ? content
-        : requireArray(message, "content").map((value) => {
-            const decoded = decodeContent(value);
-            if (decoded.type === "thinking" || decoded.type === "toolCall") {
-              throw new Error("Stored user content block is invalid.");
-            }
-            return decoded;
-          }),
-    timestamp: requireNumber(message, "timestamp"),
-  };
-}
-
-function decodeAssistantMessage(
-  message: Record<string, unknown>,
-): AssistantMessage {
-  const usage = requireRecord(message.usage, "Stored usage");
-  const cost = requireRecord(usage.cost, "Stored usage cost");
-  const stopReason = message.stop_reason;
-  if (
-    stopReason !== "stop" &&
-    stopReason !== "length" &&
-    stopReason !== "toolUse" &&
-    stopReason !== "error" &&
-    stopReason !== "aborted"
-  ) {
-    throw new Error("Stored assistant stop_reason is invalid.");
-  }
-  const content = requireArray(message, "content").map((value) => {
-    const decoded = decodeContent(value);
-    if (decoded.type === "image") {
-      throw new Error("Stored assistant content block is invalid.");
-    }
-    return decoded;
-  });
-  return {
-    role: "assistant",
-    content,
-    api: requireString(message, "api") as AssistantMessage["api"],
-    provider: requireString(message, "provider") as AssistantMessage["provider"],
-    model: requireString(message, "model"),
-    ...optionalMappedString(message, "response_model", "responseModel"),
-    ...optionalMappedString(message, "response_id", "responseId"),
-    usage: {
-      input: requireNumber(usage, "input"),
-      output: requireNumber(usage, "output"),
-      cacheRead: requireNumber(usage, "cache_read"),
-      cacheWrite: requireNumber(usage, "cache_write"),
-      totalTokens: requireNumber(usage, "total_tokens"),
-      cost: {
-        input: requireNumber(cost, "input"),
-        output: requireNumber(cost, "output"),
-        cacheRead: requireNumber(cost, "cache_read"),
-        cacheWrite: requireNumber(cost, "cache_write"),
-        total: requireNumber(cost, "total"),
-      },
+    input: message.usage.input,
+    output: message.usage.output,
+    cache_read: message.usage.cacheRead,
+    cache_write: message.usage.cacheWrite,
+    total_tokens: message.usage.totalTokens,
+    cost: {
+      input: message.usage.cost.input,
+      output: message.usage.cost.output,
+      cache_read: message.usage.cost.cacheRead,
+      cache_write: message.usage.cost.cacheWrite,
+      total: message.usage.cost.total,
     },
-    stopReason,
-    ...optionalMappedString(message, "error_message", "errorMessage"),
-    timestamp: requireNumber(message, "timestamp"),
   };
 }
 
-function decodeToolResultMessage(
-  message: Record<string, unknown>,
-): ToolResultMessage {
-  const content = requireArray(message, "content").map((value) => {
-    const decoded = decodeContent(value);
-    if (decoded.type === "thinking" || decoded.type === "toolCall") {
-      throw new Error("Stored tool result content block is invalid.");
-    }
-    return decoded;
-  });
-  return {
-    role: "toolResult",
-    toolCallId: requireString(message, "tool_call_id"),
-    toolName: requireString(message, "tool_name"),
-    content,
-    isError: requireBoolean(message, "is_error"),
-    timestamp: requireNumber(message, "timestamp"),
-  };
+function assistantStatus(
+  stopReason: AssistantMessage["stopReason"],
+): AssistantMessageEntry["status"] {
+  if (stopReason === "aborted") return "aborted";
+  if (stopReason === "error") return "error";
+  return "complete";
 }
 
-function decodeContent(
-  value: unknown,
-): TextContent | ImageContent | ThinkingContent | ToolCall {
-  const content = requireRecord(value, "Stored content block");
-  switch (content.type) {
-    case "text":
-      return {
-        type: "text",
-        text: requireString(content, "text", true),
-        ...optionalMappedString(content, "text_signature", "textSignature"),
-      };
-    case "image":
-      return {
-        type: "image",
-        data: requireString(content, "data"),
-        mimeType: requireString(content, "mime_type"),
-      };
-    case "thinking": {
-      const redacted = content.redacted;
-      if (redacted !== undefined && typeof redacted !== "boolean") {
-        throw new Error("Stored thinking redacted must be a boolean.");
-      }
-      return {
-        type: "thinking",
-        thinking: requireString(content, "thinking", true),
-        ...optionalMappedString(
-          content,
-          "thinking_signature",
-          "thinkingSignature",
-        ),
-        ...(redacted === undefined ? {} : { redacted }),
-      };
-    }
-    case "tool_call":
-      return {
-        type: "toolCall",
-        id: requireString(content, "id"),
-        name: requireString(content, "name"),
-        arguments: structuredClone(
-          requireRecord(content.arguments, "Stored tool arguments"),
-        ),
-        ...optionalMappedString(
-          content,
-          "thought_signature",
-          "thoughtSignature",
-        ),
-      };
-    default:
-      throw new Error("Stored content block type is invalid.");
-  }
+function toTimelineStopReason(
+  stopReason: AssistantMessage["stopReason"],
+): AssistantStopReason {
+  return stopReason === "toolUse" ? "tool_use" : stopReason;
 }
 
-function optionalMappedString<TName extends string>(
-  value: Record<string, unknown>,
-  source: string,
-  target: TName,
-): Partial<Record<TName, string>> {
-  const candidate = value[source];
-  if (candidate === undefined) return {};
-  if (typeof candidate !== "string") {
-    throw new Error(`${source} must be a string.`);
-  }
-  return { [target]: candidate } as Partial<Record<TName, string>>;
+function fromTimelineStopReason(
+  stopReason: AssistantStopReason,
+): AssistantMessage["stopReason"] {
+  return stopReason === "tool_use" ? "toolUse" : stopReason;
 }
 
-function requireArray(
-  value: Record<string, unknown>,
-  field: string,
-): unknown[] {
-  const candidate = value[field];
-  if (!Array.isArray(candidate)) throw new Error(`${field} must be an array.`);
-  return candidate;
+function stopReasonForStatus(
+  status: Exclude<AssistantMessageEntry["status"], "streaming">,
+): AssistantStopReason {
+  if (status === "aborted") return "aborted";
+  if (status === "error") return "error";
+  return "stop";
 }
 
-function requireRecord(
-  value: unknown,
-  label: string,
+function toolResultDetails(
+  entry: ToolResultEntry,
 ): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error(`${label} must be an object.`);
-  }
-  return value as Record<string, unknown>;
+  return {
+    ...(entry.summary === undefined ? {} : { summary: entry.summary }),
+    ...(entry.file_change === undefined
+      ? {}
+      : { file_change: structuredClone(entry.file_change) }),
+  };
 }
 
-function requireBoolean(
-  value: Record<string, unknown>,
-  field: string,
-): boolean {
-  const candidate = value[field];
-  if (typeof candidate !== "boolean") {
-    throw new Error(`${field} must be a boolean.`);
-  }
-  return candidate;
+function isWorkspaceChangeSummary(
+  value: unknown,
+): value is NonNullable<ToolResultEntry["file_change"]> {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.change_id === "string" &&
+    typeof value.tool_call_id === "string" &&
+    typeof value.path === "string" &&
+    (value.change_kind === "created" || value.change_kind === "updated") &&
+    isNonNegativeInteger(value.additions) &&
+    isNonNegativeInteger(value.deletions) &&
+    isNonNegativeInteger(value.byte_size)
+  );
 }
 
-function requireNumber(
-  value: Record<string, unknown>,
-  field: string,
-): number {
-  const candidate = value[field];
-  if (typeof candidate !== "number" || !Number.isFinite(candidate)) {
-    throw new Error(`${field} must be a finite number.`);
-  }
-  return candidate;
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-function requireString(
-  value: Record<string, unknown>,
-  field: string,
-  allowEmpty = false,
-): string {
-  const candidate = value[field];
-  if (
-    typeof candidate !== "string" ||
-    (!allowEmpty && candidate.length === 0)
-  ) {
-    throw new Error(`${field} must be a non-empty string.`);
+function parseTimestamp(value: string): number {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    throw new Error("Timeline entry created_at must be a valid timestamp.");
   }
-  return candidate;
+  return timestamp;
+}
+
+function toIsoTimestamp(value: number): string {
+  const timestamp = new Date(value);
+  if (!Number.isFinite(timestamp.getTime())) {
+    throw new Error("Agent message timestamp must be finite.");
+  }
+  return timestamp.toISOString();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

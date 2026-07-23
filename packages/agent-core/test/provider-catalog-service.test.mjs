@@ -64,6 +64,43 @@ test("provider discovery starts independently and coalesces its first refresh", 
   assert.ok(snapshots.at(-1).catalog_revision > snapshots[0].catalog_revision);
 });
 
+test("preserves reasoning-effort support independently from reasoning", async () => {
+  const catalog = new ProviderCatalogService({
+    model: defaultModel,
+    providers: providerDefinitions,
+    modelCatalog: {
+      async listModels() {
+        return [
+          {
+            ...descriptor("reasoning-only", true),
+            supports_reasoning: true,
+          },
+          {
+            ...descriptor("reasoning-effort", true),
+            supports_reasoning: true,
+            supports_reasoning_effort: true,
+          },
+        ];
+      },
+    },
+  });
+
+  await catalog.refreshProvider("local-openai", { force: true });
+
+  const reasoningOnly = catalog.getModel({
+    provider_id: "local-openai",
+    model_id: "reasoning-only",
+  });
+  const reasoningEffort = catalog.getModel({
+    provider_id: "local-openai",
+    model_id: "reasoning-effort",
+  });
+  assert.equal(reasoningOnly?.reasoning, true);
+  assert.equal(reasoningOnly?.supports_reasoning_effort, false);
+  assert.equal(reasoningEffort?.reasoning, true);
+  assert.equal(reasoningEffort?.supports_reasoning_effort, true);
+});
+
 test("forced refreshes expose failures and recover without changing providers", async () => {
   let failure = new Error("gateway offline");
   const catalog = new ProviderCatalogService({

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  ModelStreamEventSequenceValidator,
   isModelToolName,
+  parseModelDescriptor,
   parseModelToolCall,
   parseModelRequest,
   parseModelStreamEvent,
@@ -23,13 +25,16 @@ test("parses a model request with a serialized conversation and tools", () => {
     provider_id: "researchbox-mock",
     model_id: "researchbox-mock",
     system_prompt: "Help with the workspace.",
+    reasoning_effort: "medium",
     messages: [
       { role: "user", content: "inspect the workspace" },
       {
         role: "assistant",
-        content: "",
-        tool_calls: [
+        content_blocks: [
+          { type: "reasoning", reasoning: "I should inspect first." },
+          { type: "text", text: "Inspecting." },
           {
+            type: "tool_call",
             tool_call_id: "tool-1",
             tool_name: "list_files",
             arguments: { path: "/" },
@@ -55,18 +60,88 @@ test("parses a model request with a serialized conversation and tools", () => {
 
   assert.equal(request.messages[2]?.role, "tool");
   assert.equal(request.tools[0]?.name, "list_files");
+  assert.equal(request.reasoning_effort, "medium");
+  assert.throws(
+    () =>
+      parseModelRequest({
+        ...modelRequest,
+        reasoning_effort: "extreme",
+      }),
+    /Invalid reasoning_effort/,
+  );
 });
 
-test("allows empty message content while requiring nonempty identifiers", () => {
+test("model descriptors default reasoning-effort support independently", () => {
+  const descriptor = {
+    provider_id: "local-openai",
+    provider_display_name: "Local OpenAI",
+    model_id: "reasoning-model",
+    display_name: "Reasoning model",
+    context_window: 128_000,
+    max_output_tokens: 8_192,
+    supports_tools: true,
+    supports_reasoning: true,
+  };
+
+  assert.equal(
+    parseModelDescriptor(descriptor).supports_reasoning_effort,
+    false,
+  );
+  assert.equal(
+    parseModelDescriptor({
+      ...descriptor,
+      supports_reasoning_effort: true,
+    }).supports_reasoning_effort,
+    true,
+  );
+});
+
+test("preserves text, tool, result, and next-turn reasoning order", () => {
+  const messages = [
+    { role: "user", content: "Inspect the README." },
+    {
+      role: "assistant",
+      content_blocks: [
+        { type: "text", text: "I will inspect it." },
+        {
+          type: "tool_call",
+          tool_call_id: "read-1",
+          tool_name: "read_file",
+          arguments: { path: "/README.md" },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: "read-1",
+      tool_name: "read_file",
+      content: "# ResearchBox",
+      is_error: false,
+    },
+    {
+      role: "assistant",
+      content_blocks: [
+        { type: "reasoning", reasoning: "The title identifies the project." },
+        { type: "text", text: "This is the ResearchBox project." },
+      ],
+    },
+  ];
+
+  const request = parseModelRequest({ ...modelRequest, messages });
+
+  assert.deepEqual(request.messages, messages);
+});
+
+test("allows empty user and tool content while requiring assistant blocks", () => {
   const request = parseModelRequest({
     ...modelRequest,
     messages: [
       { role: "user", content: "" },
       {
         role: "assistant",
-        content: "",
-        tool_calls: [
+        content_blocks: [
           {
+            type: "tool_call",
             tool_call_id: "tool-1",
             tool_name: "list_files",
             arguments: { path: "/" },
@@ -89,16 +164,27 @@ test("allows empty message content while requiring nonempty identifiers", () => 
     () => parseModelRequest({ ...modelRequest, session_id: "  " }),
     /session_id must be a non-empty string/,
   );
+  assert.throws(
+    () =>
+      parseModelRequest({
+        ...modelRequest,
+        messages: [{ role: "assistant", content_blocks: [] }],
+      }),
+    /at least one content block/,
+  );
 });
 
 test("rejects unsupported model tools", () => {
   assert.throws(
     () =>
       parseModelStreamEvent({
-        type: "tool_call",
-        tool_call_id: "tool-1",
-        tool_name: "run_shell",
-        arguments: { path: "/" },
+        type: "tool_call_end",
+        content_index: 0,
+        tool_call: {
+          tool_call_id: "tool-1",
+          tool_name: "run_shell",
+          arguments: { path: "/" },
+        },
       }),
     /Unsupported tool/,
   );
@@ -191,7 +277,6 @@ test("validates tool arguments according to the tool name", () => {
 
 test("NDJSON transport preserves multiline mutation arguments", async () => {
   const writeCall = {
-    type: "tool_call",
     tool_call_id: "write-1",
     tool_name: "write_file",
     arguments: {
@@ -199,16 +284,37 @@ test("NDJSON transport preserves multiline mutation arguments", async () => {
       content: "line one\n\nline three\n",
     },
   };
+  const argumentsJson = JSON.stringify(writeCall.arguments);
+  const lifecycle = [
+    { type: "tool_call_start", content_index: 0 },
+    {
+      type: "tool_call_delta",
+      content_index: 0,
+      tool_call_id_delta: writeCall.tool_call_id,
+      tool_name_delta: writeCall.tool_name,
+      arguments_delta: argumentsJson,
+    },
+    {
+      type: "tool_call_end",
+      content_index: 0,
+      tool_call: writeCall,
+    },
+    { type: "done" },
+  ];
   const events = await collectStream(
-    `${JSON.stringify(writeCall)}\n${JSON.stringify({ type: "done" })}\n`,
+    `${lifecycle.map((event) => JSON.stringify(event)).join("\n")}\n`,
   );
 
-  assert.deepEqual(events, [writeCall, { type: "done" }]);
+  assert.deepEqual(events, lifecycle);
 });
 
 test("rejects a model stream that ends without done", async () => {
   await assert.rejects(
-    collectStream('{"type":"text_delta","text_delta":"partial"}\n'),
+    collectStream(
+      '{"type":"text_start","content_index":0}\n' +
+        '{"type":"text_delta","content_index":0,"text_delta":"partial"}\n' +
+        '{"type":"text_end","content_index":0}\n',
+    ),
     /ended before a done event/,
   );
 });
@@ -216,7 +322,7 @@ test("rejects a model stream that ends without done", async () => {
 test("stops consuming model events at done", async () => {
   const events = await collectStream(
     '{"type":"done"}\n' +
-      '{"type":"tool_call","tool_call_id":"late","tool_name":"read_file","arguments":{"path":"/README.md"}}\n',
+      '{"type":"text_start","content_index":0}\n',
   );
 
   assert.deepEqual(events, [{ type: "done" }]);
@@ -239,6 +345,112 @@ test("invokes fetch with the active global scope", async () => {
 
   assert.deepEqual(await collectTransport(transport), [{ type: "done" }]);
   assert.equal(callCount, 1);
+});
+
+test("validates monotonic block lifecycle and tool identity", () => {
+  const sequence = new ModelStreamEventSequenceValidator();
+  const call = {
+    tool_call_id: "write-1",
+    tool_name: "write_file",
+    arguments: {
+      path: "/notes.md",
+      content: "first\n\nsecond\n",
+    },
+  };
+  for (const event of [
+    { type: "text_start", content_index: 0 },
+    { type: "text_delta", content_index: 0, text_delta: "before" },
+    { type: "text_end", content_index: 0 },
+    { type: "reasoning_start", content_index: 1 },
+    {
+      type: "reasoning_delta",
+      content_index: 1,
+      reasoning_delta: "consider",
+    },
+    { type: "reasoning_end", content_index: 1 },
+    { type: "text_start", content_index: 2 },
+    { type: "text_delta", content_index: 2, text_delta: "after" },
+    { type: "text_end", content_index: 2 },
+    { type: "tool_call_start", content_index: 3 },
+    {
+      type: "tool_call_delta",
+      content_index: 3,
+      tool_call_id_delta: call.tool_call_id,
+      tool_name_delta: call.tool_name,
+      arguments_delta: JSON.stringify(call.arguments),
+    },
+    {
+      type: "tool_call_end",
+      content_index: 3,
+      tool_call: call,
+    },
+    { type: "done" },
+  ]) {
+    sequence.accept(event);
+  }
+  sequence.assertComplete();
+
+  const duplicateIndex = new ModelStreamEventSequenceValidator();
+  duplicateIndex.accept({ type: "text_start", content_index: 0 });
+  assert.throws(
+    () => duplicateIndex.accept({ type: "text_start", content_index: 0 }),
+    /Expected content_index 1/,
+  );
+
+  const mismatched = new ModelStreamEventSequenceValidator();
+  mismatched.accept({ type: "tool_call_start", content_index: 0 });
+  mismatched.accept({
+    type: "tool_call_delta",
+    content_index: 0,
+    tool_call_id_delta: "read-1",
+    tool_name_delta: "read_file",
+    arguments_delta: '{"path":"/README.md"}',
+  });
+  assert.throws(
+    () =>
+      mismatched.accept({
+        type: "tool_call_end",
+        content_index: 0,
+        tool_call: {
+          tool_call_id: "other",
+          tool_name: "read_file",
+          arguments: { path: "/README.md" },
+        },
+      }),
+    /does not match deltas/,
+  );
+
+  const duplicateToolCallId = new ModelStreamEventSequenceValidator();
+  for (const contentIndex of [0, 1]) {
+    duplicateToolCallId.accept({
+      type: "tool_call_start",
+      content_index: contentIndex,
+    });
+    duplicateToolCallId.accept({
+      type: "tool_call_delta",
+      content_index: contentIndex,
+      tool_call_id_delta: "read-1",
+      tool_name_delta: "read_file",
+      arguments_delta: '{"path":"/README.md"}',
+    });
+    const end = {
+      type: "tool_call_end",
+      content_index: contentIndex,
+      tool_call: {
+        tool_call_id: "read-1",
+        tool_name: "read_file",
+        arguments: { path: "/README.md" },
+      },
+    };
+    if (contentIndex === 0) {
+      duplicateToolCallId.accept(end);
+    } else {
+      assert.throws(
+        () => duplicateToolCallId.accept(end),
+        /Duplicate completed tool_call_id: read-1/,
+      );
+    }
+  }
 });
 
 async function collectStream(body) {

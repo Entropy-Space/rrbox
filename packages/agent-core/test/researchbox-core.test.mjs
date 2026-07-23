@@ -45,11 +45,9 @@ test("keeps new chat virtual and persists the first prompt before transport", as
       assert.equal(request.session_id, persisted.sessions[0].session_id);
       assert.equal(persisted.projects[0].new_chat_draft, "");
       assert.equal(persisted.documents[0].input_draft, "");
-      assert.equal(persisted.documents[0].messages.length, 2);
-      assert.equal(persisted.documents[0].messages[0].content, prompt);
-      assert.equal(persisted.documents[0].messages[1].status, "streaming");
-      assert.equal(persisted.documents[0].agent_messages.at(-1).role, "user");
-      yield { type: "text_delta", text_delta: `Echo: ${prompt}` };
+      assert.equal(persisted.documents[0].timeline.length, 1);
+      assert.equal(persisted.documents[0].timeline[0].content, prompt);
+      yield* textEvents(`Echo: ${prompt}`);
       yield { type: "done" };
     },
   });
@@ -80,8 +78,8 @@ test("keeps new chat virtual and persists the first prompt before transport", as
       const persisted = await store.load();
       const prompt = promptFromRequest(request);
       assert.equal(persisted.sessions.length, 1);
-      assert.equal(persisted.documents[0].messages.length, 2);
-      assert.equal(persisted.documents[0].messages[0].content, prompt);
+      assert.equal(persisted.documents[0].timeline.length, 1);
+      assert.equal(persisted.documents[0].timeline[0].content, prompt);
       yield { type: "done" };
     },
   });
@@ -102,8 +100,11 @@ test("keeps new chat virtual and persists the first prompt before transport", as
   const persisted = await store.load();
   assert.equal(persisted.sessions.length, 1);
   assert.equal(persisted.sessions[0].title, "Plan the persistence layer");
-  assert.equal(persisted.documents[0].messages[0].content, "Plan the persistence layer");
-  assert.equal(persisted.documents[0].messages[1].status, "complete");
+  assert.equal(
+    persisted.documents[0].timeline[0].content,
+    "Plan the persistence layer",
+  );
+  assert.equal(persisted.documents[0].timeline[1].status, "complete");
   assert.equal(latestState(reloadedEvents).input_draft, "");
 });
 
@@ -744,9 +745,9 @@ test("abort bypasses catalog serialization and checkpoints a terminal assistant"
   await prompt;
 
   const document = (await store.load()).documents[0];
-  assert.equal(document.messages.at(-1).status, "aborted");
-  assert.equal(document.agent_messages.at(-1).role, "assistant");
-  assert.equal(document.agent_messages.at(-1).stop_reason, "aborted");
+  assert.equal(document.timeline.at(-1).type, "assistant_message");
+  assert.equal(document.timeline.at(-1).status, "aborted");
+  assert.equal(document.timeline.at(-1).stop_reason, "aborted");
 });
 
 test("abort repairs unexecuted sequential tool calls before the next prompt", async () => {
@@ -774,22 +775,20 @@ test("abort repairs unexecuted sequential tool calls before the next prompt", as
     async *stream(request) {
       requests.push(structuredClone(request));
       if (requests.length === 1) {
-        yield {
-          type: "tool_call",
+        yield* toolCallEvents({
           tool_call_id: "read-call",
           tool_name: "read_file",
           arguments: { path: "/README.md" },
-        };
-        yield {
-          type: "tool_call",
+        }, 0);
+        yield* toolCallEvents({
           tool_call_id: "list-call",
           tool_name: "list_files",
           arguments: { path: "/" },
-        };
+        }, 1);
         yield { type: "done", stop_reason: "tool_use" };
         return;
       }
-      yield { type: "text_delta", text_delta: "Recovered" };
+      yield* textEvents("Recovered");
       yield { type: "done", stop_reason: "stop" };
     },
   });
@@ -817,18 +816,44 @@ test("abort repairs unexecuted sequential tool calls before the next prompt", as
   await firstPrompt;
 
   const afterAbort = (await store.load()).documents[0];
-  assert.equal(afterAbort.messages.at(-1).status, "aborted");
-  const skippedResult = afterAbort.agent_messages.find(
-    (message) =>
-      message.role === "tool_result" && message.tool_call_id === "list-call",
+  assert.deepEqual(
+    afterAbort.timeline.slice(0, 2).map((entry) => entry.type),
+    ["user_message", "assistant_message"],
+  );
+  assert.equal(afterAbort.timeline[1].status, "complete");
+  assert.equal(afterAbort.timeline[1].stop_reason, "tool_use");
+  const resultIndexes = afterAbort.timeline.flatMap((entry, index) =>
+    entry.type === "tool_result" ? [index] : [],
+  );
+  assert.equal(resultIndexes.length, 2);
+  const laterAssistant = afterAbort.timeline.findIndex(
+    (entry, index) => index > 1 && entry.type === "assistant_message",
+  );
+  assert.equal(
+    laterAssistant === -1 || laterAssistant > Math.max(...resultIndexes),
+    true,
+    "All tool results must precede a terminal assistant entry",
+  );
+  const skippedResult = afterAbort.timeline.find(
+    (entry) =>
+      entry.type === "tool_result" && entry.tool_call_id === "list-call",
   );
   assert.ok(skippedResult, "Expected a result for the unexecuted tool call");
   assert.equal(skippedResult.tool_name, "list_files");
   assert.equal(skippedResult.is_error, true);
   assert.equal(
-    skippedResult.content[0].text,
+    skippedResult.content,
     "Tool execution was skipped because the run was aborted.",
   );
+  const skippedCall = afterAbort.timeline
+    .filter((entry) => entry.type === "assistant_message")
+    .flatMap((entry) => entry.blocks)
+    .find(
+      (block) =>
+        block.type === "tool_call" && block.tool_call_id === "list-call",
+    );
+  assert.ok(skippedCall);
+  assert.equal(skippedResult.tool_call_block_id, skippedCall.block_id);
 
   await core.handle(
     createCommand("prompt", {
@@ -845,7 +870,9 @@ test("abort repairs unexecuted sequential tool calls before the next prompt", as
   );
   const priorAssistant = requests[1].messages[1];
   assert.deepEqual(
-    priorAssistant.tool_calls.map((toolCall) => toolCall.tool_call_id),
+    priorAssistant.content_blocks
+      .filter((block) => block.type === "tool_call")
+      .map((toolCall) => toolCall.tool_call_id),
     ["read-call", "list-call"],
   );
   assert.deepEqual(
@@ -859,7 +886,265 @@ test("abort repairs unexecuted sequential tool calls before the next prompt", as
     ],
   );
   assert.equal(
-    (await store.load()).documents[0].messages.at(-1).status,
+    (await store.load()).documents[0].timeline.at(-1).status,
+    "complete",
+  );
+});
+
+test("timeline preserves reasoning, text, tool, result, and final text order across reload", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  let requestCount = 0;
+  const core = createCore(store, provider, events, {
+    async *stream() {
+      requestCount += 1;
+      if (requestCount === 1) {
+        yield* reasoningEvents("I should inspect the workspace.", 0);
+        yield* textEvents("I will read the README first.", 1);
+        yield* toolCallEvents(
+          {
+            tool_call_id: "read-readme",
+            tool_name: "read_file",
+            arguments: { path: "/README.md" },
+          },
+          2,
+        );
+        yield { type: "done", stop_reason: "tool_use" };
+        return;
+      }
+      yield* textEvents("The README contains the test workspace.", 0);
+      yield { type: "done", stop_reason: "stop" };
+    },
+  });
+
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await core.handle(
+    createCommand("prompt", {
+      project_id: initial.active_project_id,
+      session_id: null,
+      text: "Inspect the README",
+    }),
+  );
+
+  const persistedTimeline = (await store.load()).documents[0].timeline;
+  assert.deepEqual(describeTimeline(persistedTimeline), [
+    { type: "user_message", content: "Inspect the README" },
+    {
+      type: "assistant_message",
+      status: "complete",
+      blocks: [
+        { type: "reasoning", text: "I should inspect the workspace." },
+        { type: "assistant_text", text: "I will read the README first." },
+        {
+          type: "tool_call",
+          tool_call_id: "read-readme",
+          tool_name: "read_file",
+        },
+      ],
+    },
+    {
+      type: "tool_result",
+      tool_call_id: "read-readme",
+      tool_name: "read_file",
+      is_error: false,
+    },
+    {
+      type: "assistant_message",
+      status: "complete",
+      blocks: [
+        {
+          type: "assistant_text",
+          text: "The README contains the test workspace.",
+        },
+      ],
+    },
+  ]);
+  assert.deepEqual(latestState(events).timeline, persistedTimeline);
+  const call = persistedTimeline[1].blocks[2];
+  const result = persistedTimeline[2];
+  assert.equal(result.tool_call_block_id, call.block_id);
+
+  const reloadedEvents = [];
+  const reloaded = createCore(store, provider, reloadedEvents);
+  await reloaded.handle(createCommand("bootstrap", {}));
+  assert.deepEqual(latestState(reloadedEvents).timeline, persistedTimeline);
+  assert.deepEqual(
+    describeTimeline(latestState(reloadedEvents).timeline),
+    describeTimeline(persistedTimeline),
+  );
+});
+
+test("overlapping tool calls keep start order and block identities when ends interleave", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  let requestCount = 0;
+  const firstCall = {
+    tool_call_id: "read-first",
+    tool_name: "read_file",
+    arguments: { path: "/README.md" },
+  };
+  const secondCall = {
+    tool_call_id: "list-second",
+    tool_name: "list_files",
+    arguments: { path: "/" },
+  };
+  const core = createCore(store, provider, events, {
+    async *stream() {
+      requestCount += 1;
+      if (requestCount === 1) {
+        yield { type: "tool_call_start", content_index: 0 };
+        yield { type: "tool_call_start", content_index: 1 };
+        yield {
+          type: "tool_call_delta",
+          content_index: 0,
+          tool_call_id_delta: firstCall.tool_call_id,
+          tool_name_delta: firstCall.tool_name,
+          arguments_delta: JSON.stringify(firstCall.arguments),
+        };
+        yield {
+          type: "tool_call_delta",
+          content_index: 1,
+          tool_call_id_delta: secondCall.tool_call_id,
+          tool_name_delta: secondCall.tool_name,
+          arguments_delta: JSON.stringify(secondCall.arguments),
+        };
+        yield {
+          type: "tool_call_end",
+          content_index: 1,
+          tool_call: secondCall,
+        };
+        yield {
+          type: "tool_call_end",
+          content_index: 0,
+          tool_call: firstCall,
+        };
+        yield { type: "done", stop_reason: "tool_use" };
+        return;
+      }
+      yield* textEvents("Inspection complete.");
+      yield { type: "done", stop_reason: "stop" };
+    },
+  });
+
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await core.handle(
+    createCommand("prompt", {
+      project_id: initial.active_project_id,
+      session_id: null,
+      text: "Inspect the workspace",
+    }),
+  );
+
+  const reordered = events.find(
+    (event) =>
+      event.type === "timeline_entry_updated" &&
+      event.payload.entry.type === "assistant_message" &&
+      event.payload.entry.status === "streaming" &&
+      event.payload.entry.blocks.length === 2,
+  );
+  assert.ok(reordered, "Expected a live snapshot after canonical reordering");
+  assert.deepEqual(
+    reordered.payload.entry.blocks.map((block) => block.tool_call_id),
+    ["read-first", "list-second"],
+  );
+
+  const timeline = (await store.load()).documents[0].timeline;
+  const assistant = timeline.find(
+    (entry) =>
+      entry.type === "assistant_message" &&
+      entry.blocks.some((block) => block.type === "tool_call"),
+  );
+  assert.ok(assistant);
+  assert.deepEqual(
+    assistant.blocks.map((block) => block.tool_call_id),
+    ["read-first", "list-second"],
+  );
+  assert.deepEqual(
+    assistant.blocks.map((block) => block.block_id),
+    reordered.payload.entry.blocks.map((block) => block.block_id),
+  );
+
+  const results = timeline.filter((entry) => entry.type === "tool_result");
+  assert.deepEqual(
+    results.map((result) => ({
+      tool_call_id: result.tool_call_id,
+      tool_call_block_id: result.tool_call_block_id,
+    })),
+    assistant.blocks.map((block) => ({
+      tool_call_id: block.tool_call_id,
+      tool_call_block_id: block.block_id,
+    })),
+  );
+});
+
+test("fragmented tool-call failures persist no incomplete tool block and recover", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const requests = [];
+  const core = createCore(store, provider, events, {
+    async *stream(request) {
+      requests.push(structuredClone(request));
+      if (requests.length === 1) {
+        yield { type: "tool_call_start", content_index: 0 };
+        yield {
+          type: "tool_call_delta",
+          content_index: 0,
+          tool_call_id_delta: "unfinished-",
+          tool_name_delta: "write_",
+          arguments_delta: "{\"path\":\"/notes.md\"",
+        };
+        throw new Error("Connection lost during tool call");
+      }
+      yield* textEvents("Recovered");
+      yield { type: "done", stop_reason: "stop" };
+    },
+  });
+
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await core.handle(
+    createCommand("prompt", {
+      project_id: initial.active_project_id,
+      session_id: null,
+      text: "Start a tool call",
+    }),
+  );
+
+  const failedDocument = (await store.load()).documents[0];
+  assert.deepEqual(
+    failedDocument.timeline.map((entry) => entry.type),
+    ["user_message", "assistant_message"],
+  );
+  const failedAssistant = failedDocument.timeline[1];
+  assert.equal(failedAssistant.status, "error");
+  assert.equal(failedAssistant.stop_reason, "error");
+  assert.match(failedAssistant.error_message, /Connection lost/);
+  assert.deepEqual(failedAssistant.blocks, []);
+
+  const failedState = latestState(events);
+  await core.handle(
+    createCommand("prompt", {
+      project_id: failedState.active_project_id,
+      session_id: failedState.active_session_id,
+      text: "Continue safely",
+    }),
+  );
+
+  assert.equal(requests.length, 2);
+  assert.equal(
+    requests[1].messages.some((message) =>
+      message.role === "assistant" &&
+      message.content_blocks.some((block) => block.type === "tool_call")
+    ),
+    false,
+  );
+  assert.equal(
+    (await store.load()).documents[0].timeline.at(-1).status,
     "complete",
   );
 });
@@ -875,15 +1160,14 @@ test("workspace mutation tools persist receipts and emit live change events", as
     async *stream(request) {
       requests.push(structuredClone(request));
       if (requests.length === 1) {
-        yield {
-          type: "tool_call",
+        yield* toolCallEvents({
           tool_call_id: "write-note",
           tool_name: "write_file",
           arguments: {
             path: "/notes/agent-note.md",
             content: initialContent,
           },
-        };
+        });
         yield { type: "done", stop_reason: "tool_use" };
         return;
       }
@@ -893,8 +1177,7 @@ test("workspace mutation tools persist receipts and emit live change events", as
         assert.equal(writeResult.tool_call_id, "write-note");
         assert.equal(writeResult.tool_name, "write_file");
         assert.equal(writeResult.is_error, false);
-        yield {
-          type: "tool_call",
+        yield* toolCallEvents({
           tool_call_id: "revise-note",
           tool_name: "replace_text",
           arguments: {
@@ -902,7 +1185,7 @@ test("workspace mutation tools persist receipts and emit live change events", as
             old_text: "first draft",
             new_text: "ready to review",
           },
-        };
+        });
         yield { type: "done", stop_reason: "tool_use" };
         return;
       }
@@ -911,7 +1194,7 @@ test("workspace mutation tools persist receipts and emit live change events", as
       assert.equal(replaceResult.tool_call_id, "revise-note");
       assert.equal(replaceResult.tool_name, "replace_text");
       assert.equal(replaceResult.is_error, false);
-      yield { type: "text_delta", text_delta: "The note is ready." };
+      yield* textEvents("The note is ready.");
       yield { type: "done", stop_reason: "stop" };
     },
   });
@@ -984,42 +1267,54 @@ test("workspace mutation tools persist receipts and emit live change events", as
   );
 
   const persisted = await store.load();
+  const toolResults = persisted.documents[0].timeline.filter(
+    (entry) => entry.type === "tool_result",
+  );
   assert.deepEqual(
-    persisted.documents[0].activities.map((activity) => ({
-      tool_call_id: activity.tool_call_id,
-      status: activity.status,
-      path: activity.file_change?.path,
-      summary: activity.summary,
+    toolResults.map((entry) => ({
+      tool_call_id: entry.tool_call_id,
+      is_error: entry.is_error,
+      path: entry.file_change?.path,
+      summary: entry.summary,
     })),
     [
       {
         tool_call_id: "write-note",
-        status: "complete",
+        is_error: false,
         path: "/notes/agent-note.md",
         summary: "Created · +3 −0",
       },
       {
         tool_call_id: "revise-note",
-        status: "complete",
+        is_error: false,
         path: "/notes/agent-note.md",
         summary: "Updated · +1 −1",
       },
     ],
   );
-  assert.equal(
-    persisted.documents[0].agent_messages.filter(
-      (message) => message.role === "tool_result" && !message.is_error,
-    ).length,
-    2,
-  );
+  assert.equal(toolResults.length, 2);
+  for (const result of toolResults) {
+    const toolCall = persisted.documents[0].timeline
+      .filter((entry) => entry.type === "assistant_message")
+      .flatMap((entry) => entry.blocks)
+      .find((block) => block.block_id === result.tool_call_block_id);
+    assert.ok(toolCall, "Tool results must reference an internal call block");
+    assert.equal(toolCall.tool_call_id, result.tool_call_id);
+  }
   assert.equal(latestState(events).workspace_revision, 2);
 
   const reloadedEvents = [];
   const reloaded = createCore(store, provider, reloadedEvents);
   await reloaded.handle(createCommand("bootstrap", {}));
   assert.equal(
-    latestState(reloadedEvents).activities.every(
-      (activity) => activity.status === "complete",
+    latestState(reloadedEvents).timeline.filter(
+      (entry) => entry.type === "tool_result",
+    ).length,
+    2,
+  );
+  assert.equal(
+    latestState(reloadedEvents).timeline.every(
+      (entry) => entry.type !== "assistant_message" || entry.status === "complete",
     ),
     true,
   );
@@ -1035,19 +1330,18 @@ test("reload recovers a committed mutation from its durable receipt", async () =
     async *stream() {
       requestCount += 1;
       if (requestCount === 1) {
-        yield {
-          type: "tool_call",
+        yield* toolCallEvents({
           tool_call_id: "recover-write",
           tool_name: "write_file",
           arguments: {
             path: "/recovered.txt",
             content: "committed before reload\n",
           },
-        };
+        });
         yield { type: "done", stop_reason: "tool_use" };
         return;
       }
-      yield { type: "text_delta", text_delta: "Saved." };
+      yield* textEvents("Saved.");
       yield { type: "done", stop_reason: "stop" };
     },
   });
@@ -1065,15 +1359,12 @@ test("reload recovers a committed mutation from its durable receipt", async () =
   const crashed = await store.load();
   const document = crashed.documents[0];
   assert.deepEqual(
-    document.agent_messages.map((message) => message.role),
-    ["user", "assistant", "tool_result", "assistant"],
+    document.timeline.map((entry) => entry.type),
+    ["user_message", "assistant_message", "tool_result", "assistant_message"],
   );
-  document.agent_messages = document.agent_messages.slice(0, 2);
-  document.messages.at(-1).content = "";
-  document.messages.at(-1).status = "streaming";
-  document.activities[0].status = "running";
-  delete document.activities[0].summary;
-  delete document.activities[0].file_change;
+  const toolBlock = document.timeline[1].blocks[0];
+  assert.equal(toolBlock.type, "tool_call");
+  document.timeline = document.timeline.slice(0, 2);
   const expectedRevision = crashed.state_revision;
   crashed.state_revision += 1;
   await store.save(crashed, expectedRevision);
@@ -1083,22 +1374,21 @@ test("reload recovers a committed mutation from its durable receipt", async () =
   await reloaded.handle(createCommand("bootstrap", {}));
 
   const recovered = (await store.load()).documents[0];
-  assert.equal(recovered.messages.at(-1).status, "aborted");
   assert.deepEqual(
-    recovered.agent_messages.map((message) => message.role),
-    ["user", "assistant", "tool_result"],
+    recovered.timeline.map((entry) => entry.type),
+    ["user_message", "assistant_message", "tool_result"],
   );
-  assert.equal(recovered.agent_messages.at(-1).tool_call_id, "recover-write");
-  assert.equal(recovered.agent_messages.at(-1).is_error, false);
+  const recoveredResult = recovered.timeline.at(-1);
+  assert.equal(recoveredResult.tool_call_id, "recover-write");
+  assert.equal(recoveredResult.tool_call_block_id, toolBlock.block_id);
+  assert.equal(recoveredResult.is_error, false);
   assert.deepEqual(
     {
-      status: recovered.activities[0].status,
-      summary: recovered.activities[0].summary,
-      path: recovered.activities[0].file_change?.path,
-      change_kind: recovered.activities[0].file_change?.change_kind,
+      summary: recoveredResult.summary,
+      path: recoveredResult.file_change?.path,
+      change_kind: recoveredResult.file_change?.change_kind,
     },
     {
-      status: "complete",
       summary: "Created · +1 −0",
       path: "/recovered.txt",
       change_kind: "created",
@@ -1110,6 +1400,70 @@ test("reload recovers a committed mutation from its durable receipt", async () =
   );
 });
 
+test("reload matches a legacy mutation receipt by migrated message identity", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  let requestCount = 0;
+  const core = createCore(store, provider, events, {
+    async *stream() {
+      requestCount += 1;
+      if (requestCount === 1) {
+        yield* toolCallEvents({
+          tool_call_id: "legacy-recover-write",
+          tool_name: "write_file",
+          arguments: {
+            path: "/legacy-recovered.txt",
+            content: "legacy receipt\n",
+          },
+        });
+        yield { type: "done", stop_reason: "tool_use" };
+        return;
+      }
+      yield* textEvents("Saved.");
+      yield { type: "done", stop_reason: "stop" };
+    },
+  });
+
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await core.handle(
+    createCommand("prompt", {
+      project_id: initial.active_project_id,
+      session_id: null,
+      text: "Write a recoverable legacy file",
+    }),
+  );
+
+  const crashed = await store.load();
+  const document = crashed.documents[0];
+  const assistant = document.timeline[1];
+  assert.equal(assistant.type, "assistant_message");
+  document.timeline = document.timeline.slice(0, 2);
+  const expectedRevision = crashed.state_revision;
+  crashed.state_revision += 1;
+  await store.save(crashed, expectedRevision);
+
+  const workspace = await provider.open(initial.active_project_id);
+  const listChanges = workspace.listChanges.bind(workspace);
+  workspace.listChanges = async () =>
+    (await listChanges()).map((record) => ({
+      ...record,
+      tool_call_block_id: null,
+      legacy_message_id: assistant.entry_id,
+      assistant_message_index: 999,
+    }));
+
+  const reloaded = createCore(store, provider, []);
+  await reloaded.handle(createCommand("bootstrap", {}));
+
+  const recovered = (await store.load()).documents[0].timeline.at(-1);
+  assert.equal(recovered.type, "tool_result");
+  assert.equal(recovered.tool_call_id, "legacy-recover-write");
+  assert.equal(recovered.is_error, false);
+  assert.equal(recovered.file_change?.path, "/legacy-recovered.txt");
+});
+
 test("reload recovers a later sequential mutation after prior tool results", async () => {
   const store = new MemoryProjectStore();
   const provider = createWorkspaceProvider();
@@ -1119,28 +1473,26 @@ test("reload recovers a later sequential mutation after prior tool results", asy
     async *stream() {
       requestCount += 1;
       if (requestCount === 1) {
-        yield {
-          type: "tool_call",
+        yield* toolCallEvents({
           tool_call_id: "first-write",
           tool_name: "write_file",
           arguments: {
             path: "/first.txt",
             content: "first\n",
           },
-        };
-        yield {
-          type: "tool_call",
+        }, 0);
+        yield* toolCallEvents({
           tool_call_id: "second-write",
           tool_name: "write_file",
           arguments: {
             path: "/second.txt",
             content: "second\n",
           },
-        };
+        }, 1);
         yield { type: "done", stop_reason: "tool_use" };
         return;
       }
-      yield { type: "text_delta", text_delta: "Both files are saved." };
+      yield* textEvents("Both files are saved.");
       yield { type: "done", stop_reason: "stop" };
     },
   });
@@ -1157,33 +1509,28 @@ test("reload recovers a later sequential mutation after prior tool results", asy
 
   const crashed = await store.load();
   const document = crashed.documents[0];
-  assert.equal(document.activities.length, 2);
+  const assistant = document.timeline[1];
+  assert.equal(assistant.type, "assistant_message");
+  const toolBlocks = assistant.blocks.filter(
+    (block) => block.type === "tool_call",
+  );
+  assert.equal(toolBlocks.length, 2);
   assert.deepEqual(
-    document.activities.map((activity) => activity.tool_call_id),
+    toolBlocks.map((block) => block.tool_call_id),
     ["first-write", "second-write"],
   );
-  assert.notEqual(
-    document.activities[0].activity_id,
-    document.activities[1].activity_id,
-  );
-  assert.equal(
-    document.activities[0].message_id,
-    document.activities[1].message_id,
-  );
+  assert.notEqual(toolBlocks[0].block_id, toolBlocks[1].block_id);
   assert.deepEqual(
-    document.agent_messages.map((message) => message.role),
-    ["user", "assistant", "tool_result", "tool_result", "assistant"],
+    document.timeline.map((entry) => entry.type),
+    [
+      "user_message",
+      "assistant_message",
+      "tool_result",
+      "tool_result",
+      "assistant_message",
+    ],
   );
-  document.agent_messages = document.agent_messages.slice(0, 3);
-  document.messages.at(-1).content = "";
-  document.messages.at(-1).status = "streaming";
-  const secondActivity = document.activities.find(
-    (activity) => activity.tool_call_id === "second-write",
-  );
-  assert.ok(secondActivity);
-  secondActivity.status = "running";
-  delete secondActivity.summary;
-  delete secondActivity.file_change;
+  document.timeline = document.timeline.slice(0, 3);
   const expectedRevision = crashed.state_revision;
   crashed.state_revision += 1;
   await store.save(crashed, expectedRevision);
@@ -1193,24 +1540,21 @@ test("reload recovers a later sequential mutation after prior tool results", asy
 
   const recovered = (await store.load()).documents[0];
   assert.deepEqual(
-    recovered.agent_messages.map((message) => message.role),
-    ["user", "assistant", "tool_result", "tool_result"],
+    recovered.timeline.map((entry) => entry.type),
+    ["user_message", "assistant_message", "tool_result", "tool_result"],
   );
+  const secondResult = recovered.timeline.at(-1);
   assert.deepEqual(
     {
-      tool_call_id: recovered.agent_messages.at(-1).tool_call_id,
-      is_error: recovered.agent_messages.at(-1).is_error,
-      status: recovered.activities.find(
-        (activity) => activity.tool_call_id === "second-write",
-      )?.status,
-      path: recovered.activities.find(
-        (activity) => activity.tool_call_id === "second-write",
-      )?.file_change?.path,
+      tool_call_id: secondResult.tool_call_id,
+      tool_call_block_id: secondResult.tool_call_block_id,
+      is_error: secondResult.is_error,
+      path: secondResult.file_change?.path,
     },
     {
       tool_call_id: "second-write",
+      tool_call_block_id: toolBlocks[1].block_id,
       is_error: false,
-      status: "complete",
       path: "/second.txt",
     },
   );
@@ -1225,19 +1569,18 @@ test("reload never reuses an old receipt for a repeated provider tool id", async
     async *stream() {
       requestCount += 1;
       if (requestCount <= 2) {
-        yield {
-          type: "tool_call",
+        yield* toolCallEvents({
           tool_call_id: "reused-write-id",
           tool_name: "write_file",
           arguments: {
             path: "/same.txt",
             content: "same content\n",
           },
-        };
+        });
         yield { type: "done", stop_reason: "tool_use" };
         return;
       }
-      yield { type: "text_delta", text_delta: "No further changes." };
+      yield* textEvents("No further changes.");
       yield { type: "done", stop_reason: "stop" };
     },
   });
@@ -1259,37 +1602,23 @@ test("reload never reuses an old receipt for a repeated provider tool id", async
 
   const crashed = await store.load();
   const document = crashed.documents[0];
-  assert.equal(document.activities.length, 2);
   assert.deepEqual(
-    document.activities.map((activity) => activity.tool_call_id),
-    ["reused-write-id", "reused-write-id"],
-  );
-  assert.notEqual(
-    document.activities[0].activity_id,
-    document.activities[1].activity_id,
-  );
-  assert.equal(
-    document.activities[0].message_id,
-    document.activities[1].message_id,
-  );
-  assert.deepEqual(
-    document.agent_messages.map((message) => message.role),
+    document.timeline.map((entry) => entry.type),
     [
-      "user",
-      "assistant",
+      "user_message",
+      "assistant_message",
       "tool_result",
-      "assistant",
+      "assistant_message",
       "tool_result",
-      "assistant",
+      "assistant_message",
     ],
   );
-  document.agent_messages = document.agent_messages.slice(0, 4);
-  document.messages.at(-1).content = "";
-  document.messages.at(-1).status = "streaming";
-  const repeatedActivity = document.activities.at(-1);
-  repeatedActivity.status = "running";
-  delete repeatedActivity.summary;
-  delete repeatedActivity.file_change;
+  const firstCall = document.timeline[1].blocks[0];
+  const repeatedCall = document.timeline[3].blocks[0];
+  assert.equal(firstCall.tool_call_id, "reused-write-id");
+  assert.equal(repeatedCall.tool_call_id, "reused-write-id");
+  assert.notEqual(firstCall.block_id, repeatedCall.block_id);
+  document.timeline = document.timeline.slice(0, 4);
   const expectedRevision = crashed.state_revision;
   crashed.state_revision += 1;
   await store.save(crashed, expectedRevision);
@@ -1299,16 +1628,24 @@ test("reload never reuses an old receipt for a repeated provider tool id", async
 
   const recovered = (await store.load()).documents[0];
   assert.deepEqual(
-    recovered.agent_messages.map((message) => message.role),
-    ["user", "assistant", "tool_result", "assistant", "tool_result"],
+    recovered.timeline.map((entry) => entry.type),
+    [
+      "user_message",
+      "assistant_message",
+      "tool_result",
+      "assistant_message",
+      "tool_result",
+    ],
   );
-  assert.equal(recovered.agent_messages.at(-1).tool_call_id, "reused-write-id");
-  assert.equal(recovered.agent_messages.at(-1).is_error, true);
-  assert.equal(recovered.activities.length, 2);
-  assert.equal(recovered.activities[0].status, "complete");
-  assert.equal(recovered.activities[0].file_change?.path, "/same.txt");
-  assert.equal(recovered.activities[1].status, "error");
-  assert.equal(recovered.activities[1].file_change, undefined);
+  const firstResult = recovered.timeline[2];
+  const repeatedResult = recovered.timeline[4];
+  assert.equal(firstResult.tool_call_block_id, firstCall.block_id);
+  assert.equal(firstResult.is_error, false);
+  assert.equal(firstResult.file_change?.path, "/same.txt");
+  assert.equal(repeatedResult.tool_call_id, "reused-write-id");
+  assert.equal(repeatedResult.tool_call_block_id, repeatedCall.block_id);
+  assert.equal(repeatedResult.is_error, true);
+  assert.equal(repeatedResult.file_change, undefined);
   assert.equal(await workspace.read("/same.txt"), "same content\n");
 });
 
@@ -1322,8 +1659,7 @@ test("replace_text rejects overlapping matches without changing the file", async
     async *stream(request) {
       requestCount += 1;
       if (requestCount === 1) {
-        yield {
-          type: "tool_call",
+        yield* toolCallEvents({
           tool_call_id: "ambiguous-replace",
           tool_name: "replace_text",
           arguments: {
@@ -1331,7 +1667,7 @@ test("replace_text rejects overlapping matches without changing the file", async
             old_text: "aa",
             new_text: "b",
           },
-        };
+        });
         yield { type: "done", stop_reason: "tool_use" };
         return;
       }
@@ -1340,7 +1676,7 @@ test("replace_text rejects overlapping matches without changing the file", async
       assert.equal(result.tool_call_id, "ambiguous-replace");
       assert.equal(result.is_error, true);
       assert.match(result.content, /more than once/);
-      yield { type: "text_delta", text_delta: "I need a unique match." };
+      yield* textEvents("I need a unique match.");
       yield { type: "done", stop_reason: "stop" };
     },
   });
@@ -1357,10 +1693,16 @@ test("replace_text rejects overlapping matches without changing the file", async
 
   assert.equal(await workspace.read("/overlap.txt"), "aaa");
   assert.deepEqual(await workspace.listChanges(), []);
-  assert.equal(
-    (await store.load()).documents[0].activities[0].status,
-    "error",
+  const toolResult = (await store.load()).documents[0].timeline.find(
+    (entry) => entry.type === "tool_result",
   );
+  assert.ok(toolResult);
+  assert.equal(toolResult.is_error, true);
+  const toolCall = (await store.load()).documents[0].timeline
+    .filter((entry) => entry.type === "assistant_message")
+    .flatMap((entry) => entry.blocks)
+    .find((block) => block.type === "tool_call");
+  assert.equal(toolResult.tool_call_block_id, toolCall.block_id);
   assert.equal(
     events.some((event) => event.type === "workspace_changed"),
     false,
@@ -1373,7 +1715,7 @@ test("length stops surface as a terminal core error", async () => {
   const events = [];
   const core = createCore(store, provider, events, {
     async *stream() {
-      yield { type: "text_delta", text_delta: "Partial response" };
+      yield* textEvents("Partial response");
       yield { type: "done", stop_reason: "length" };
     },
   });
@@ -1389,17 +1731,18 @@ test("length stops surface as a terminal core error", async () => {
   );
 
   const document = (await store.load()).documents[0];
-  assert.equal(document.messages.at(-1).content, "Partial response");
-  assert.equal(document.messages.at(-1).status, "error");
-  assert.equal(document.agent_messages.at(-1).stop_reason, "length");
-  const messageFinished = events.findLast(
-    (event) => event.type === "message_finished",
+  const assistant = document.timeline.at(-1);
+  assert.equal(assistant.type, "assistant_message");
+  assert.equal(assistant.blocks[0].type, "assistant_text");
+  assert.equal(assistant.blocks[0].text, "Partial response");
+  assert.equal(assistant.status, "complete");
+  assert.equal(assistant.stop_reason, "length");
+  const updated = events.findLast(
+    (event) =>
+      event.type === "timeline_entry_updated" &&
+      event.payload.entry.entry_id === assistant.entry_id,
   );
-  assert.equal(messageFinished.payload.status, "error");
-  assert.equal(
-    messageFinished.payload.error_message,
-    "The model stopped because it reached its output limit.",
-  );
+  assert.equal(updated.payload.entry.stop_reason, "length");
   const error = events.findLast((event) => event.type === "error");
   assert.equal(error.payload.code, "agent_run_failed");
   assert.equal(
@@ -1417,22 +1760,20 @@ test("invalid tool transcripts terminate cleanly and do not brick the chat", asy
     async *stream(request) {
       requests.push(structuredClone(request));
       if (requests.length === 1) {
-        yield {
-          type: "tool_call",
+        yield* toolCallEvents({
           tool_call_id: "duplicate-call",
           tool_name: "read_file",
           arguments: { path: "/README.md" },
-        };
-        yield {
-          type: "tool_call",
+        }, 0);
+        yield* toolCallEvents({
           tool_call_id: "duplicate-call",
           tool_name: "list_files",
           arguments: { path: "/" },
-        };
+        }, 1);
         yield { type: "done", stop_reason: "tool_use" };
         return;
       }
-      yield { type: "text_delta", text_delta: "Recovered" };
+      yield* textEvents("Recovered");
       yield { type: "done", stop_reason: "stop" };
     },
   });
@@ -1448,12 +1789,22 @@ test("invalid tool transcripts terminate cleanly and do not brick the chat", asy
   );
 
   const afterFailure = (await store.load()).documents[0];
-  assert.equal(afterFailure.messages.at(-1).status, "error");
   assert.deepEqual(
-    afterFailure.agent_messages.map((message) => message.role),
-    ["user", "assistant"],
+    afterFailure.timeline.map((entry) => entry.type),
+    ["user_message", "assistant_message", "tool_result"],
   );
-  assert.equal(afterFailure.agent_messages.at(-1).stop_reason, "error");
+  const failedAssistant = afterFailure.timeline[1];
+  assert.equal(failedAssistant.status, "error");
+  assert.equal(failedAssistant.stop_reason, "error");
+  const retainedCalls = failedAssistant.blocks.filter(
+    (block) => block.type === "tool_call",
+  );
+  assert.equal(retainedCalls.length, 1);
+  const failedResult = afterFailure.timeline[2];
+  assert.equal(failedResult.tool_call_block_id, retainedCalls[0].block_id);
+  assert.equal(failedResult.tool_call_id, retainedCalls[0].tool_call_id);
+  assert.equal(failedResult.tool_name, retainedCalls[0].tool_name);
+  assert.equal(failedResult.is_error, true);
 
   const failedState = latestState(events);
   await core.handle(
@@ -1465,12 +1816,13 @@ test("invalid tool transcripts terminate cleanly and do not brick the chat", asy
   );
 
   assert.equal(requests.length, 2);
-  assert.deepEqual(
-    requests[1].messages.map((message) => message.role),
-    ["user", "user"],
+  assert.equal(requests[1].messages.at(-1).role, "user");
+  assert.equal(
+    requests[1].messages.at(-1).content,
+    "Continue after the provider error",
   );
   assert.equal(
-    (await store.load()).documents[0].messages.at(-1).status,
+    (await store.load()).documents[0].timeline.at(-1).status,
     "complete",
   );
 });
@@ -1555,7 +1907,7 @@ test("a failed first-session commit never starts transport or creates a session"
   assert.equal(events.at(-1).payload.code, "persistence_failed");
 });
 
-test("reload quarantines malformed persisted Pi transcripts", async () => {
+test("reload repairs an incomplete persisted tool transcript by block identity", async () => {
   const store = new MemoryProjectStore();
   const provider = createWorkspaceProvider();
   const events = [];
@@ -1570,19 +1922,36 @@ test("reload quarantines malformed persisted Pi transcripts", async () => {
     }),
   );
 
-  const corrupted = await store.load();
-  const sessionId = corrupted.active_session_id;
-  corrupted.documents.find(
-    (document) => document.session_id === sessionId,
-  ).agent_messages = [{ role: "custom", content: [] }];
-  const expectedRevision = corrupted.state_revision;
-  corrupted.state_revision += 1;
-  await store.save(corrupted, expectedRevision);
+  const interrupted = await store.load();
+  const sessionId = interrupted.active_session_id;
+  const document = interrupted.documents.find(
+    (candidate) => candidate.session_id === sessionId,
+  );
+  const assistant = document.timeline.at(-1);
+  assert.equal(assistant.type, "assistant_message");
+  assistant.stop_reason = "tool_use";
+  assistant.blocks = [
+    {
+      type: "tool_call",
+      block_id: "interrupted-tool-block",
+      tool_call_id: "interrupted-provider-id",
+      tool_name: "read_file",
+      arguments: { path: "/README.md" },
+    },
+  ];
+  const expectedRevision = interrupted.state_revision;
+  interrupted.state_revision += 1;
+  await store.save(interrupted, expectedRevision);
 
   const reloadedEvents = [];
   const reloaded = createCore(store, provider, reloadedEvents);
   await reloaded.handle(createCommand("bootstrap", {}));
-  assert.deepEqual((await store.load()).documents[0].agent_messages, []);
+  const repaired = (await store.load()).documents[0].timeline.at(-1);
+  assert.equal(repaired.type, "tool_result");
+  assert.equal(repaired.tool_call_block_id, "interrupted-tool-block");
+  assert.equal(repaired.tool_call_id, "interrupted-provider-id");
+  assert.equal(repaired.is_error, true);
+  assert.equal(repaired.summary, "Interrupted by reload");
   assert.equal(latestState(reloadedEvents).active_session_id, sessionId);
 });
 
@@ -1592,10 +1961,7 @@ function createCore(store, provider, events, modelTransport) {
     workspaceProvider: provider,
     modelTransport: modelTransport ?? {
       async *stream(request) {
-        yield {
-          type: "text_delta",
-          text_delta: `Echo: ${promptFromRequest(request)}`,
-        };
+        yield* textEvents(`Echo: ${promptFromRequest(request)}`);
         yield { type: "done" };
       },
     },
@@ -1618,6 +1984,72 @@ function promptFromRequest(request) {
     .find((candidate) => candidate.role === "user");
   assert.ok(message, "Expected the model request to contain a user message");
   return message.content;
+}
+
+function* textEvents(text, contentIndex = 0) {
+  yield { type: "text_start", content_index: contentIndex };
+  yield {
+    type: "text_delta",
+    content_index: contentIndex,
+    text_delta: text,
+  };
+  yield { type: "text_end", content_index: contentIndex };
+}
+
+function* reasoningEvents(text, contentIndex = 0) {
+  yield { type: "reasoning_start", content_index: contentIndex };
+  yield {
+    type: "reasoning_delta",
+    content_index: contentIndex,
+    reasoning_delta: text,
+  };
+  yield { type: "reasoning_end", content_index: contentIndex };
+}
+
+function* toolCallEvents(toolCall, contentIndex = 0) {
+  yield { type: "tool_call_start", content_index: contentIndex };
+  yield {
+    type: "tool_call_delta",
+    content_index: contentIndex,
+    tool_call_id_delta: toolCall.tool_call_id,
+    tool_name_delta: toolCall.tool_name,
+    arguments_delta: JSON.stringify(toolCall.arguments),
+  };
+  yield {
+    type: "tool_call_end",
+    content_index: contentIndex,
+    tool_call: structuredClone(toolCall),
+  };
+}
+
+function describeTimeline(timeline) {
+  return timeline.map((entry) => {
+    if (entry.type === "user_message") {
+      return { type: entry.type, content: entry.content };
+    }
+    if (entry.type === "tool_result") {
+      return {
+        type: entry.type,
+        tool_call_id: entry.tool_call_id,
+        tool_name: entry.tool_name,
+        is_error: entry.is_error,
+      };
+    }
+    return {
+      type: entry.type,
+      status: entry.status,
+      blocks: entry.blocks.map((block) => {
+        if (block.type === "tool_call") {
+          return {
+            type: block.type,
+            tool_call_id: block.tool_call_id,
+            tool_name: block.tool_name,
+          };
+        }
+        return { type: block.type, text: block.text };
+      }),
+    };
+  });
 }
 
 function createWorkspaceProvider() {

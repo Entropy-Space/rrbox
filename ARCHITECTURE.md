@@ -27,7 +27,7 @@ apps/web
                   └─ same-origin bridge → localhost:4141/v1
 ```
 
-The viewer and core worker exchange only protocol-v6 JSON values. A
+The viewer and core worker exchange only protocol-v7 JSON values. A
 `project_id` plus nullable `session_id` scopes the active composer: `null`
 identifies that project's single virtual new chat, while incremental run events
 always identify a durable session. Filesystem and draft acknowledgements use a
@@ -36,7 +36,7 @@ state revision. Workspace reads also carry a project-scoped
 `workspace_revision`; mutation events identify the changed path so the viewer
 can refresh its directory and selected file without accepting stale responses.
 Together these prevent late work from replacing a newer project, chat, draft,
-or file-navigation result. The core and LLM workers use a separate protocol-v3
+or file-navigation result. The core and LLM workers use a separate protocol-v4
 JSON contract so provider discovery, full conversation requests, provider I/O,
 cancellation, and future credentials stay outside the agent runtime. The viewer
 never imports Pi,
@@ -83,9 +83,11 @@ the trusted home of provider endpoints and request adapters.
 Catalog discovery and refresh are read-only and never require the workspace
 writer lock. Provider catalog snapshots carry their own monotonic
 `catalog_revision`, independent from persisted workspace `state_revision`. A
-model request contains the selected provider/model, system prompt, complete Pi
-text history, assistant tool calls, tool results, and tool schemas. OpenAI SSE
-tool call fragments are assembled in the LLM worker before compact model events
+model request contains the selected provider/model, system prompt, ordered
+assistant content blocks, tool results, tool schemas, and optional reasoning
+effort. The LLM worker normalizes provider output into validated text,
+reasoning, and tool-call lifecycle events with monotonically increasing content
+indices. OpenAI SSE fragments are assembled there before those ordered events
 are returned to the elected core. The viewer receives only validated
 provider/model summaries.
 
@@ -111,27 +113,30 @@ The elected browser core owns one IndexedDB database with `meta`, `projects`,
 Draft-only writes update one project or session document without rewriting the
 catalog; this relies on the origin-wide exclusive Web Lock that gives exactly
 one core write ownership. Session documents persist the existing-session input
-draft, viewer messages, tool activity, and a versioned snake-case codec of the
-canonical Pi transcript, including tool calls and results. Projects persist
-their virtual new-chat draft and model selection; durable sessions persist
-their own model selection.
+draft and one versioned, ordered timeline. Assistant entries own ordered text,
+reasoning, and tool-call blocks; tool results are separate entries linked by
+internal block identifiers. That timeline is the viewer state and maps
+back into the currently supported text-only user and tool-result Pi surface.
+Projects persist their virtual new-chat draft and model selection; durable
+sessions persist their own model selection.
 
 `write_file` and exact-match `replace_text` use compare-and-swap VFS writes.
 IndexedDB commits the file and an undo-ready before/after receipt in one
 transaction. The core checkpoints a mutation before execution and after its
-tool result; if a worker stops between those checkpoints, reload reconciliation
+tool result, correlating its receipt with the internal tool-call block
+identifier. If a worker stops between those checkpoints, reload reconciliation
 uses the durable receipt to record truthful success before the remaining stream
 is marked interrupted.
 
 A project owns one virtual filesystem and zero or more durable sessions.
 Switching a project restores its last selected session or its virtual new chat.
 Selecting New chat is idempotent and creates no session record. On first send,
-the core atomically stores the new session, cleared project draft, staged user
-and assistant messages, and canonical Pi user message before starting model
-transport. Deleting a project's final session returns it to virtual new-chat
-state. Deleting the final project creates a deterministic empty replacement so
-the viewer always has an active project, but an active session is intentionally
-optional.
+the core atomically stores the new session, cleared project draft, selected
+model, and staged user timeline entry before starting model transport. The
+streaming assistant entry is appended only when Pi starts it. Deleting a
+project's final session returns it to virtual new-chat state. Deleting the final
+project creates a deterministic empty replacement so the viewer always has an
+active project, but an active session is intentionally optional.
 
 ## Storage roadmap
 

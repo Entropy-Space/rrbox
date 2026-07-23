@@ -3,6 +3,7 @@ import {
   type ModelRequest,
   type ModelStreamEvent,
   type ModelConversationMessage,
+  type ModelToolCall,
 } from "@researchbox/model-transport";
 
 export async function handleMockModelRequest(
@@ -29,7 +30,13 @@ export async function handleMockModelRequest(
       try {
         for (const chunk of chunks) {
           if (canceled || request.signal.aborted) return;
-          await delay(chunk.type === "text_delta" ? 38 : 180);
+          await delay(
+            chunk.type === "text_delta" ||
+              chunk.type === "reasoning_delta" ||
+              chunk.type === "tool_call_delta"
+              ? 38
+              : 90,
+          );
           if (canceled || request.signal.aborted) return;
           controller.enqueue(encoder.encode(`${JSON.stringify(chunk)}\n`));
         }
@@ -55,8 +62,9 @@ function createMockResponse(request: ModelRequest): ModelStreamEvent[] {
   const lastUserIndex = request.messages.findLastIndex(
     (message) => message.role === "user",
   );
-  const prompt =
-    lastUserIndex < 0 ? "" : request.messages[lastUserIndex]?.content ?? "";
+  const lastUser =
+    lastUserIndex < 0 ? undefined : request.messages[lastUserIndex];
+  const prompt = lastUser?.role === "user" ? lastUser.content : "";
   const toolResults = request.messages
     .slice(lastUserIndex + 1)
     .filter(
@@ -74,42 +82,54 @@ function createMockResponse(request: ModelRequest): ModelStreamEvent[] {
   );
 
   if (shouldCreateNote && toolResults.length === 0) {
-    return [
-      {
-        type: "tool_call",
-        tool_call_id: crypto.randomUUID(),
-        tool_name: "write_file",
-        arguments: {
-          path: "/notes/agent-note.md",
-          content: [
-            "# Agent note",
-            "",
-            "Created by the ResearchBox mock agent.",
-            "",
-            "- The agent core runs in a Web Worker.",
-            "- Files live behind a portable virtual filesystem.",
-            "- Viewer and core communicate through versioned JSON.",
-            "",
-          ].join("\n"),
-        },
+    const toolCall: ModelToolCall = {
+      tool_call_id: crypto.randomUUID(),
+      tool_name: "write_file",
+      arguments: {
+        path: "/notes/agent-note.md",
+        content: [
+          "# Agent note",
+          "",
+          "Created by the ResearchBox mock agent.",
+          "",
+          "- The agent core runs in a Web Worker.",
+          "- Files live behind a portable virtual filesystem.",
+          "- Viewer and core communicate through versioned JSON.",
+          "",
+        ].join("\n"),
       },
+    };
+    return [
+      ...reasoningEvents(
+        "A concise workspace note will make the prototype state easy to inspect.",
+        0,
+      ),
+      ...textEvents("I’ll create a short workspace note now.", 1),
+      ...toolCallEvents(toolCall, 2),
       { type: "done", stop_reason: "tool_use" },
     ];
   }
 
   if (shouldInspectFiles && toolResults.length === 0) {
+    const toolCall: ModelToolCall = normalizedPrompt.includes("readme")
+      ? {
+          tool_call_id: crypto.randomUUID(),
+          tool_name: "read_file",
+          arguments: { path: "/README.md" },
+        }
+      : {
+          tool_call_id: crypto.randomUUID(),
+          tool_name: "list_files",
+          arguments: { path: "/" },
+        };
     return [
-      {
-        type: "tool_call",
-        tool_call_id: crypto.randomUUID(),
-        tool_name: normalizedPrompt.includes("readme")
-          ? "read_file"
-          : "list_files",
-        arguments: {
-          path: normalizedPrompt.includes("readme") ? "/README.md" : "/",
-        },
-      },
-      { type: "done" },
+      ...reasoningEvents(
+        "I should inspect the requested workspace context before answering.",
+        0,
+      ),
+      ...textEvents("I’ll inspect the workspace first.", 1),
+      ...toolCallEvents(toolCall, 2),
+      { type: "done", stop_reason: "tool_use" },
     ];
   }
 
@@ -118,13 +138,66 @@ function createMockResponse(request: ModelRequest): ModelStreamEvent[] {
     : "This prototype is running through a versioned JSON boundary. The viewer only renders events; the agent core owns the conversation and tools inside a Web Worker. That gives us a clean path from today’s mock model to Pi without coupling the interface to either one.";
 
   return [
-    ...splitForStreaming(response).map(
+    ...reasoningEvents(
+      toolResults.length > 0
+        ? "The workspace result is available, so I can summarize the outcome."
+        : "I can answer this directly from the current prototype context.",
+      0,
+    ),
+    ...textEvents(response, 1),
+    { type: "done" },
+  ];
+}
+
+function textEvents(text: string, contentIndex: number): ModelStreamEvent[] {
+  return [
+    { type: "text_start", content_index: contentIndex },
+    ...splitForStreaming(text).map(
       (textDelta): ModelStreamEvent => ({
         type: "text_delta",
+        content_index: contentIndex,
         text_delta: textDelta,
       }),
     ),
-    { type: "done" },
+    { type: "text_end", content_index: contentIndex },
+  ];
+}
+
+function reasoningEvents(
+  reasoning: string,
+  contentIndex: number,
+): ModelStreamEvent[] {
+  return [
+    { type: "reasoning_start", content_index: contentIndex },
+    ...splitForStreaming(reasoning).map(
+      (reasoningDelta): ModelStreamEvent => ({
+        type: "reasoning_delta",
+        content_index: contentIndex,
+        reasoning_delta: reasoningDelta,
+      }),
+    ),
+    { type: "reasoning_end", content_index: contentIndex },
+  ];
+}
+
+function toolCallEvents(
+  toolCall: ModelToolCall,
+  contentIndex: number,
+): ModelStreamEvent[] {
+  return [
+    { type: "tool_call_start", content_index: contentIndex },
+    {
+      type: "tool_call_delta",
+      content_index: contentIndex,
+      tool_call_id_delta: toolCall.tool_call_id,
+      tool_name_delta: toolCall.tool_name,
+      arguments_delta: JSON.stringify(toolCall.arguments),
+    },
+    {
+      type: "tool_call_end",
+      content_index: contentIndex,
+      tool_call: toolCall,
+    },
   ];
 }
 

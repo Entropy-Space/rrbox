@@ -11,7 +11,30 @@ const request = (prompt) => ({
   provider_id: "researchbox",
   model_id: "researchbox-mock",
   system_prompt: "Help with the workspace.",
-  messages: [{ role: "user", content: prompt }],
+  messages: [
+    { role: "user", content: "Inspect the workspace." },
+    {
+      role: "assistant",
+      content_blocks: [
+        { type: "reasoning", reasoning: "I should list the root." },
+        { type: "text", text: "I will inspect it." },
+        {
+          type: "tool_call",
+          tool_call_id: "prior-list",
+          tool_name: "list_files",
+          arguments: { path: "/" },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: "prior-list",
+      tool_name: "list_files",
+      content: "[]",
+      is_error: false,
+    },
+    { role: "user", content: prompt },
+  ],
   tools: [
     {
       name: "list_files",
@@ -30,9 +53,26 @@ test("multiplexes LLM worker streams without cross-talk", async () => {
   attachLlmWorkerHost(host, {
     async *stream(modelRequest) {
       const prompt = promptFromRequest(modelRequest);
-      yield { type: "text_delta", text_delta: `${prompt}:one` };
+      yield { type: "reasoning_start", content_index: 0 };
+      yield {
+        type: "reasoning_delta",
+        content_index: 0,
+        reasoning_delta: `${prompt}:thinking`,
+      };
+      yield { type: "reasoning_end", content_index: 0 };
+      yield { type: "text_start", content_index: 1 };
+      yield {
+        type: "text_delta",
+        content_index: 1,
+        text_delta: `${prompt}:one`,
+      };
       await Promise.resolve();
-      yield { type: "text_delta", text_delta: `${prompt}:two` };
+      yield {
+        type: "text_delta",
+        content_index: 1,
+        text_delta: `${prompt}:two`,
+      };
+      yield { type: "text_end", content_index: 1 };
       yield { type: "done" };
     },
   });
@@ -44,13 +84,31 @@ test("multiplexes LLM worker streams without cross-talk", async () => {
   ]);
 
   assert.deepEqual(alpha, [
-    { type: "text_delta", text_delta: "alpha:one" },
-    { type: "text_delta", text_delta: "alpha:two" },
+    { type: "reasoning_start", content_index: 0 },
+    {
+      type: "reasoning_delta",
+      content_index: 0,
+      reasoning_delta: "alpha:thinking",
+    },
+    { type: "reasoning_end", content_index: 0 },
+    { type: "text_start", content_index: 1 },
+    { type: "text_delta", content_index: 1, text_delta: "alpha:one" },
+    { type: "text_delta", content_index: 1, text_delta: "alpha:two" },
+    { type: "text_end", content_index: 1 },
     { type: "done" },
   ]);
   assert.deepEqual(beta, [
-    { type: "text_delta", text_delta: "beta:one" },
-    { type: "text_delta", text_delta: "beta:two" },
+    { type: "reasoning_start", content_index: 0 },
+    {
+      type: "reasoning_delta",
+      content_index: 0,
+      reasoning_delta: "beta:thinking",
+    },
+    { type: "reasoning_end", content_index: 0 },
+    { type: "text_start", content_index: 1 },
+    { type: "text_delta", content_index: 1, text_delta: "beta:one" },
+    { type: "text_delta", content_index: 1, text_delta: "beta:two" },
+    { type: "text_end", content_index: 1 },
     { type: "done" },
   ]);
   transport.close();
@@ -146,7 +204,12 @@ test("translates AbortSignal into one correlated abort command", async () => {
   });
   attachLlmWorkerHost(host, {
     async *stream(_modelRequest, signal) {
-      yield { type: "text_delta", text_delta: "started" };
+      yield { type: "text_start", content_index: 0 };
+      yield {
+        type: "text_delta",
+        content_index: 0,
+        text_delta: "started",
+      };
       await new Promise((resolve) => {
         if (signal.aborted) {
           resolve();
@@ -166,7 +229,15 @@ test("translates AbortSignal into one correlated abort command", async () => {
 
   assert.deepEqual(await iterator.next(), {
     done: false,
-    value: { type: "text_delta", text_delta: "started" },
+    value: { type: "text_start", content_index: 0 },
+  });
+  assert.deepEqual(await iterator.next(), {
+    done: false,
+    value: {
+      type: "text_delta",
+      content_index: 0,
+      text_delta: "started",
+    },
   });
   controller.abort();
   await assert.rejects(iterator.next(), { name: "AbortError" });
@@ -192,13 +263,24 @@ test("does not yield buffered events after cancellation", async () => {
   assert.ok(streamId);
 
   emitModelEvent(emitMessage, streamId, "event-1", {
-    type: "text_delta",
-    text_delta: "first",
+    type: "text_start",
+    content_index: 0,
   });
   emitModelEvent(emitMessage, streamId, "event-2", {
     type: "text_delta",
+    content_index: 0,
+    text_delta: "first",
+  });
+  emitModelEvent(emitMessage, streamId, "event-3", {
+    type: "text_delta",
+    content_index: 0,
     text_delta: "must-not-render",
   });
+  emitModelEvent(emitMessage, streamId, "event-4", {
+    type: "text_end",
+    content_index: 0,
+  });
+  emitModelEvent(emitMessage, streamId, "event-5", { type: "done" });
   await first;
   controller.abort();
 
@@ -210,7 +292,13 @@ test("rejects a remote transport that ends without done", async () => {
   const { host, worker } = createWorkerPair();
   attachLlmWorkerHost(host, {
     async *stream() {
-      yield { type: "text_delta", text_delta: "partial" };
+      yield { type: "text_start", content_index: 0 };
+      yield {
+        type: "text_delta",
+        content_index: 0,
+        text_delta: "partial",
+      };
+      yield { type: "text_end", content_index: 0 };
     },
   });
   const transport = new WorkerModelTransport(worker);
@@ -239,7 +327,7 @@ test("aborts unfinished work when a consumer stops iterating", async () => {
     stream_id: streamId,
     type: "stream_event",
     payload: {
-      model_event: { type: "text_delta", text_delta: "first" },
+      model_event: { type: "text_start", content_index: 0 },
     },
   });
   await next;
@@ -313,6 +401,52 @@ test("isolates a malformed correlated event to its stream", async () => {
   });
 
   await assert.rejects(alpha, /Invalid LLM worker event/);
+  assert.deepEqual(await beta, [{ type: "done" }]);
+  transport.close();
+});
+
+test("ignores a malformed late event from a completed stream", async () => {
+  const { worker, emitMessage, commands } = createDetachedWorker();
+  const transport = new WorkerModelTransport(worker);
+  const alpha = collect(transport, request("alpha"));
+  const beta = collect(transport, request("beta"));
+  await Promise.resolve();
+  const alphaId = commands.find(
+    (command) =>
+      promptFromRequest(command.payload?.model_request) === "alpha",
+  )?.stream_id;
+  const betaId = commands.find(
+    (command) => promptFromRequest(command.payload?.model_request) === "beta",
+  )?.stream_id;
+  assert.ok(alphaId);
+  assert.ok(betaId);
+
+  emitModelEvent(emitMessage, alphaId, "alpha-done", { type: "done" });
+  emitMessage({
+    protocol_version: LLM_WORKER_PROTOCOL_VERSION,
+    event_id: "alpha-finished",
+    stream_id: alphaId,
+    type: "stream_finished",
+    payload: { status: "complete" },
+  });
+  assert.deepEqual(await alpha, [{ type: "done" }]);
+
+  emitMessage({
+    protocol_version: LLM_WORKER_PROTOCOL_VERSION,
+    event_id: "alpha-late-invalid",
+    stream_id: alphaId,
+    type: "stream_event",
+    payload: { model_event: { type: "unknown" } },
+  });
+  emitModelEvent(emitMessage, betaId, "beta-done", { type: "done" });
+  emitMessage({
+    protocol_version: LLM_WORKER_PROTOCOL_VERSION,
+    event_id: "beta-finished",
+    stream_id: betaId,
+    type: "stream_finished",
+    payload: { status: "complete" },
+  });
+
   assert.deepEqual(await beta, [{ type: "done" }]);
   transport.close();
 });
@@ -447,6 +581,7 @@ function descriptor(providerId, modelId) {
     max_output_tokens: 4_096,
     supports_tools: true,
     supports_reasoning: false,
+    supports_reasoning_effort: false,
   };
 }
 

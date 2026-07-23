@@ -25,17 +25,25 @@ import {
   X,
 } from "lucide-react";
 import {
-  type ChatMessage,
+  type AssistantBlock,
+  type AssistantMessageEntry,
   type FileEntry,
-  type ToolActivity,
+  type ToolCallBlock,
+  type ToolResultEntry,
 } from "@researchbox/protocol";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
 import {
   isModalNavigationOpen,
   MOBILE_NAVIGATION_QUERY,
 } from "./navigation-state.ts";
 import { ModelSelector } from "./ModelSelector.tsx";
+import {
+  buildAssistantRunPresentation,
+  buildTimelineRows,
+  getToolResultCopy,
+  type AssistantTurnPresentation,
+} from "./timeline-rendering.ts";
 import { useAgentSession } from "./use-agent-session.ts";
 import { WorkspaceSidebar } from "./WorkspaceSidebar.tsx";
 
@@ -95,13 +103,20 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const conversationEndRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const timelineRows = useMemo(
+    () => buildTimelineRows(coreState.timeline),
+    [coreState.timeline],
+  );
+  const activeRunId = coreState.is_running
+    ? coreState.timeline.at(-1)?.run_id ?? null
+    : null;
 
   useEffect(() => {
     conversationEndRef.current?.scrollIntoView({
       behavior: coreState.is_running ? "smooth" : "auto",
       block: "end",
     });
-  }, [coreState.messages, coreState.activities, coreState.is_running]);
+  }, [coreState.timeline, coreState.is_running]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia(MOBILE_NAVIGATION_QUERY);
@@ -154,7 +169,7 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
     }
   }
 
-  const hasConversation = coreState.messages.length > 0;
+  const hasConversation = coreState.timeline.length > 0;
   const visibleError = transportError ?? coreState.error_message;
   const visibleCoreStatus =
     !coreState.is_ready &&
@@ -272,15 +287,20 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
               />
             ) : (
               <div className="message-list" aria-live="polite">
-                {coreState.messages.map((message) => (
-                  <MessageRow
-                    key={message.id}
-                    message={message}
-                    activities={coreState.activities.filter(
-                      (activity) => activity.message_id === message.id,
-                    )}
-                  />
-                ))}
+                {timelineRows.map((row) =>
+                  row.type === "user" ? (
+                    <UserMessageRow
+                      key={row.entry.entry_id}
+                      content={row.entry.content}
+                    />
+                  ) : (
+                    <AssistantRunRow
+                      key={`${row.run_id}:${row.entries[0]?.entry_id ?? "empty"}`}
+                      entries={row.entries}
+                      isRunActive={row.run_id === activeRunId}
+                    />
+                  ),
+                )}
                 <div ref={conversationEndRef} />
               </div>
             )}
@@ -409,98 +429,254 @@ function EmptyConversation({
   );
 }
 
-function MessageRow({
-  message,
-  activities,
+function UserMessageRow({ content }: { content: string }) {
+  return (
+    <article className="message-row user-row">
+      <div className="user-message">{content}</div>
+    </article>
+  );
+}
+
+function AssistantRunRow({
+  entries,
+  isRunActive,
 }: {
-  message: ChatMessage;
-  activities: ToolActivity[];
+  entries: Array<AssistantMessageEntry | ToolResultEntry>;
+  isRunActive: boolean;
 }) {
-  if (message.role === "user") {
-    return (
-      <article className="message-row user-row">
-        <div className="user-message">{message.content}</div>
-      </article>
-    );
-  }
+  const turns = buildAssistantRunPresentation(entries, isRunActive);
 
   return (
     <article className="message-row assistant-row">
       <div className="assistant-avatar">R</div>
       <div className="assistant-content">
-        {activities.length > 0 && (
-          <div className="tool-stack">
-            {activities.map((activity) => (
-              <div className="tool-card" key={activity.activity_id}>
-                <span className={`tool-icon ${activity.status}`}>
-                  {activity.status === "running" ? (
-                    <LoaderCircle size={15} className="spin" />
-                  ) : (
-                    <Check size={14} />
-                  )}
-                </span>
-                <span className="tool-copy">
-                  <strong>{activity.label}</strong>
-                  {activity.summary && <small>{activity.summary}</small>}
-                  {activity.file_change && (
-                    <span className="tool-file-change">
-                      <code title={activity.file_change.path}>
-                        {activity.file_change.path}
-                      </code>
-                      <span
-                        className="tool-change-stats"
-                        aria-label={`${activity.file_change.additions} additions and ${activity.file_change.deletions} deletions`}
-                      >
-                        <span className="tool-additions">
-                          +{activity.file_change.additions}
-                        </span>
-                        <span className="tool-deletions">
-                          −{activity.file_change.deletions}
-                        </span>
-                      </span>
-                    </span>
-                  )}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-        <div className="assistant-text">
-          {message.content || (message.status === "aborted" ? (
-            <span className="response-stopped">Response stopped.</span>
-          ) : message.status === "error" ? (
-            <span className="response-stopped">The response could not be completed.</span>
-          ) : (
-            <span className="thinking-dots" aria-label="Thinking">
-              <i />
-              <i />
-              <i />
-            </span>
-          ))}
-        </div>
-        {message.status === "complete" && message.content && (
-          <div className="message-actions">
-            <button
-              type="button"
-              aria-label="Copy response"
-              onClick={() => void navigator.clipboard.writeText(message.content)}
-            >
-              <Copy size={15} />
-            </button>
-            <button type="button" aria-label="Good response">
-              <ThumbsUp size={15} />
-            </button>
-            <button type="button" aria-label="Bad response">
-              <ThumbsDown size={15} />
-            </button>
-            <button type="button" aria-label="Regenerate response">
-              <RotateCcw size={15} />
-            </button>
-          </div>
-        )}
+        {turns.map((turn) => (
+          <AssistantTurn
+            key={turn.entry.entry_id}
+            turn={turn}
+            isRunActive={isRunActive}
+          />
+        ))}
       </div>
     </article>
   );
+}
+
+function AssistantTurn({
+  turn,
+  isRunActive,
+}: {
+  turn: AssistantTurnPresentation;
+  isRunActive: boolean;
+}) {
+  const { entry } = turn;
+
+  return (
+    <div className="assistant-turn">
+      {turn.blocks.map(({ block, is_latest_block, tool_result }) => (
+        <AssistantBlockView
+          key={block.block_id}
+          block={block}
+          entryStatus={entry.status}
+          isLatestBlock={is_latest_block}
+          isRunActive={isRunActive}
+          toolResult={tool_result}
+        />
+      ))}
+      {turn.waiting_state === "thinking" && <ThinkingDots />}
+      {turn.waiting_state === "interrupted" && (
+        <div className="response-stopped">Response interrupted.</div>
+      )}
+      {turn.terminal_message && (
+        <div className="response-stopped">
+          {turn.terminal_message}
+        </div>
+      )}
+      {turn.action_content !== null && (
+        <MessageActions content={turn.action_content} />
+      )}
+    </div>
+  );
+}
+
+function AssistantBlockView({
+  block,
+  entryStatus,
+  isLatestBlock,
+  isRunActive,
+  toolResult,
+}: {
+  block: AssistantBlock;
+  entryStatus: AssistantMessageEntry["status"];
+  isLatestBlock: boolean;
+  isRunActive: boolean;
+  toolResult?: ToolResultEntry;
+}) {
+  switch (block.type) {
+    case "assistant_text":
+      return block.text ? (
+        <div className="assistant-text">{block.text}</div>
+      ) : null;
+    case "reasoning":
+      if (block.redacted) {
+        return (
+          <div className="reasoning-redacted" role="note">
+            Reasoning redacted
+          </div>
+        );
+      }
+      return block.text ? (
+        <details className="reasoning-block">
+          <summary>
+            {entryStatus === "streaming" &&
+            isRunActive &&
+            isLatestBlock ? (
+              <LoaderCircle size={14} className="spin" />
+            ) : (
+              <Sparkles size={14} />
+            )}
+            <span>
+              {entryStatus === "streaming" &&
+              isRunActive &&
+              isLatestBlock
+                ? "Thinking"
+                : "Reasoned"}
+            </span>
+            <ChevronRight size={14} className="reasoning-chevron" />
+          </summary>
+          <div className="reasoning-text">{block.text}</div>
+        </details>
+      ) : null;
+    case "tool_call":
+      return (
+        <ToolCallCard
+          block={block}
+          result={toolResult}
+          isRunActive={isRunActive}
+        />
+      );
+  }
+}
+
+function ToolCallCard({
+  block,
+  result,
+  isRunActive,
+}: {
+  block: ToolCallBlock;
+  result?: ToolResultEntry;
+  isRunActive: boolean;
+}) {
+  const status = result
+    ? result.is_error
+      ? "error"
+      : "complete"
+    : isRunActive
+      ? "running"
+      : "error";
+  const resultCopy = getToolResultCopy(result);
+  const path =
+    typeof block.arguments.path === "string"
+      ? block.arguments.path
+      : null;
+  const statusLabel =
+    status === "running"
+      ? "Tool running"
+      : status === "complete"
+        ? "Tool completed"
+        : "Tool failed";
+  const label = block.label ?? formatToolName(block.tool_name);
+
+  return (
+    <div
+      className="tool-card"
+      role="status"
+      aria-live="polite"
+      aria-busy={status === "running"}
+    >
+      <span className="visually-hidden">
+        {statusLabel}: {label}
+      </span>
+      <span className={`tool-icon ${status}`} aria-hidden="true">
+        {status === "running" ? (
+          <LoaderCircle size={15} className="spin" />
+        ) : status === "complete" ? (
+          <Check size={14} />
+        ) : (
+          <X size={14} />
+        )}
+      </span>
+      <span className="tool-copy">
+        <strong>{label}</strong>
+        {!block.label && path && <small>{path}</small>}
+        {resultCopy.summary && <small>{resultCopy.summary}</small>}
+        {resultCopy.error_detail && (
+          <small className="tool-error-detail">
+            {resultCopy.error_detail}
+          </small>
+        )}
+        {!result && !isRunActive && (
+          <small>The tool did not return a result.</small>
+        )}
+        {result?.file_change && (
+          <span className="tool-file-change">
+            <code title={result.file_change.path}>
+              {result.file_change.path}
+            </code>
+            <span
+              className="tool-change-stats"
+              aria-label={`${result.file_change.additions} additions and ${result.file_change.deletions} deletions`}
+            >
+              <span className="tool-additions">
+                +{result.file_change.additions}
+              </span>
+              <span className="tool-deletions">
+                −{result.file_change.deletions}
+              </span>
+            </span>
+          </span>
+        )}
+      </span>
+    </div>
+  );
+}
+
+function MessageActions({ content }: { content: string }) {
+  return (
+    <div className="message-actions">
+      <button
+        type="button"
+        aria-label="Copy response"
+        onClick={() => void navigator.clipboard.writeText(content)}
+      >
+        <Copy size={15} />
+      </button>
+      <button type="button" aria-label="Good response">
+        <ThumbsUp size={15} />
+      </button>
+      <button type="button" aria-label="Bad response">
+        <ThumbsDown size={15} />
+      </button>
+      <button type="button" aria-label="Regenerate response">
+        <RotateCcw size={15} />
+      </button>
+    </div>
+  );
+}
+
+function ThinkingDots() {
+  return (
+    <span className="thinking-dots" aria-label="Thinking">
+      <i />
+      <i />
+      <i />
+    </span>
+  );
+}
+
+function formatToolName(toolName: string): string {
+  const label = toolName.replaceAll("_", " ");
+  return `${label.charAt(0).toUpperCase()}${label.slice(1)}`;
 }
 
 function WorkspacePanel({

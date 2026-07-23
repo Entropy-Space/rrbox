@@ -13,11 +13,19 @@ export type ProviderModelCatalog = {
   ): Promise<ModelDescriptor[]>;
 };
 
+export type ProviderCatalogModel = Model<string> & {
+  supports_reasoning_effort: boolean;
+};
+
+type ProviderModelInput = Model<string> & {
+  supports_reasoning_effort?: boolean;
+};
+
 export type ModelProviderDefinition = {
   provider_id: string;
   display_name: string;
   kind: ProviderSummary["kind"];
-  models?: Model<string>[];
+  models?: ProviderModelInput[];
   discover_models?: boolean;
 };
 
@@ -27,13 +35,13 @@ export type ProviderCatalogSnapshot = {
 };
 
 export type ProviderCatalogServiceOptions = {
-  model: Model<string>;
+  model: ProviderModelInput;
   providers?: ModelProviderDefinition[];
   modelCatalog?: ProviderModelCatalog;
 };
 
 type RegisteredModel = {
-  model: Model<string>;
+  model: ProviderCatalogModel;
   availability: ModelSummary["availability"];
   status_message?: string;
   is_persisted_placeholder: boolean;
@@ -160,7 +168,7 @@ export class ProviderCatalogService {
     );
   }
 
-  getModel(selection: ModelSelection): Model<string> | undefined {
+  getModel(selection: ModelSelection): ProviderCatalogModel | undefined {
     return this.providers
       .get(selection.provider_id)
       ?.models.get(selection.model_id)?.model;
@@ -199,7 +207,7 @@ export class ProviderCatalogService {
   }
 
   private initializeProviders(
-    defaultModel: Model<string>,
+    defaultModel: ProviderModelInput,
     definitions: ModelProviderDefinition[] | undefined,
   ): void {
     const configured =
@@ -219,7 +227,8 @@ export class ProviderCatalogService {
         throw new Error(`Duplicate model provider: ${definition.provider_id}`);
       }
       const models = new Map<string, RegisteredModel>();
-      for (const model of definition.models ?? []) {
+      for (const candidate of definition.models ?? []) {
+        const model = toProviderCatalogModel(candidate);
         if (model.provider !== definition.provider_id) {
           throw new Error(
             `Model ${model.id} does not belong to provider ${definition.provider_id}.`,
@@ -261,8 +270,9 @@ export class ProviderCatalogService {
       };
       this.providers.set(defaultProvider.provider_id, defaultProvider);
     }
-    defaultProvider.models.set(defaultModel.id, {
-      model: defaultModel,
+    const normalizedDefaultModel = toProviderCatalogModel(defaultModel);
+    defaultProvider.models.set(normalizedDefaultModel.id, {
+      model: normalizedDefaultModel,
       availability: "ready",
       is_persisted_placeholder: false,
     });
@@ -415,7 +425,9 @@ function modelsFromDescriptors(
   return models;
 }
 
-function modelFromDescriptor(descriptor: ModelDescriptor): Model<string> {
+function modelFromDescriptor(
+  descriptor: ModelDescriptor,
+): ProviderCatalogModel {
   return {
     id: descriptor.model_id,
     name: descriptor.display_name,
@@ -423,6 +435,8 @@ function modelFromDescriptor(descriptor: ModelDescriptor): Model<string> {
     provider: descriptor.provider_id,
     baseUrl: "",
     reasoning: descriptor.supports_reasoning,
+    supports_reasoning_effort:
+      descriptor.supports_reasoning_effort === true,
     input: ["text"],
     cost: {
       input: 0,
@@ -435,7 +449,7 @@ function modelFromDescriptor(descriptor: ModelDescriptor): Model<string> {
   };
 }
 
-function unavailableModel(selection: ModelSelection): Model<string> {
+function unavailableModel(selection: ModelSelection): ProviderCatalogModel {
   return {
     id: selection.model_id,
     name: selection.model_id,
@@ -443,6 +457,7 @@ function unavailableModel(selection: ModelSelection): Model<string> {
     provider: selection.provider_id,
     baseUrl: "",
     reasoning: false,
+    supports_reasoning_effort: false,
     input: ["text"],
     cost: {
       input: 0,
@@ -452,6 +467,15 @@ function unavailableModel(selection: ModelSelection): Model<string> {
     },
     contextWindow: 128_000,
     maxTokens: 8_192,
+  };
+}
+
+function toProviderCatalogModel(
+  model: ProviderModelInput,
+): ProviderCatalogModel {
+  return {
+    ...model,
+    supports_reasoning_effort: model.supports_reasoning_effort === true,
   };
 }
 

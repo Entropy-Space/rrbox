@@ -11,9 +11,11 @@ const modelRequest = {
     { role: "user", content: "Inspect README." },
     {
       role: "assistant",
-      content: "I will inspect it.",
-      tool_calls: [
+      content_blocks: [
+        { type: "reasoning", reasoning: "The README is relevant. " },
+        { type: "text", text: "I will inspect it." },
         {
+          type: "tool_call",
           tool_call_id: "previous-call",
           tool_name: "read_file",
           arguments: { path: "/README.md" },
@@ -63,7 +65,11 @@ test("discovers and normalizes OpenAI-compatible models", async () => {
             id: "gpt-test",
             x_tokn_router: {
               name: "GPT Test",
-              capabilities: { toolcall: true, reasoning: true },
+              capabilities: {
+                toolcall: true,
+                reasoning: true,
+                reasoning_effort: true,
+              },
               limit: { context: 200_000, output: 32_000 },
             },
           },
@@ -82,6 +88,7 @@ test("discovers and normalizes OpenAI-compatible models", async () => {
       max_output_tokens: 32_000,
       supports_tools: true,
       supports_reasoning: true,
+      supports_reasoning_effort: true,
     },
     {
       provider_id: "local-openai",
@@ -92,6 +99,7 @@ test("discovers and normalizes OpenAI-compatible models", async () => {
       max_output_tokens: null,
       supports_tools: true,
       supports_reasoning: false,
+      supports_reasoning_effort: false,
     },
   ]);
   assert.equal(callCount, 1);
@@ -109,12 +117,22 @@ test("serializes the complete conversation and tool schemas", async () => {
     ]);
   });
 
-  assert.deepEqual(await collect(transport), [
-    { type: "text_delta", text_delta: "Done" },
+  assert.deepEqual(
+    await collect(
+      transport,
+      new AbortController().signal,
+      { ...modelRequest, reasoning_effort: "medium" },
+    ),
+    [
+    { type: "text_start", content_index: 0 },
+    { type: "text_delta", content_index: 0, text_delta: "Done" },
+    { type: "text_end", content_index: 0 },
     { type: "done", stop_reason: "stop" },
-  ]);
+    ],
+  );
   assert.deepEqual(sentBody, {
     model: "gpt-test",
+    reasoning_effort: "medium",
     messages: [
       { role: "system", content: "Work carefully." },
       { role: "user", content: "Inspect README." },
@@ -157,6 +175,193 @@ test("serializes the complete conversation and tool schemas", async () => {
   });
 });
 
+test("only projects canonical reasoning when explicitly enabled", async () => {
+  let sentBody;
+  const transport = createTransport(
+    async (_input, init) => {
+      sentBody = JSON.parse(init.body);
+      return sseResponse(["data: [DONE]\n\n"]);
+    },
+    { send_reasoning_content: true },
+  );
+
+  await collect(transport);
+
+  assert.equal(
+    sentBody.messages[2].reasoning_content,
+    "The README is relevant. ",
+  );
+});
+
+test("serializes text, tool, result, and next-turn reasoning in turn order", async () => {
+  let sentBody;
+  const transport = createTransport(
+    async (_input, init) => {
+      sentBody = JSON.parse(init.body);
+      return sseResponse(["data: [DONE]\n\n"]);
+    },
+    { send_reasoning_content: true },
+  );
+  const request = {
+    ...modelRequest,
+    messages: [
+      { role: "user", content: "Inspect README." },
+      {
+        role: "assistant",
+        content_blocks: [
+          { type: "text", text: "I will inspect it." },
+          {
+            type: "tool_call",
+            tool_call_id: "read-1",
+            tool_name: "read_file",
+            arguments: { path: "/README.md" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: "read-1",
+        tool_name: "read_file",
+        content: "# ResearchBox",
+        is_error: false,
+      },
+      {
+        role: "assistant",
+        content_blocks: [
+          { type: "reasoning", reasoning: "The title is decisive." },
+          { type: "text", text: "This is ResearchBox." },
+        ],
+      },
+      { role: "user", content: "Continue." },
+    ],
+  };
+
+  await collect(transport, new AbortController().signal, request);
+
+  assert.deepEqual(sentBody.messages.slice(1), [
+    { role: "user", content: "Inspect README." },
+    {
+      role: "assistant",
+      content: "I will inspect it.",
+      tool_calls: [
+        {
+          id: "read-1",
+          type: "function",
+          function: {
+            name: "read_file",
+            arguments: '{"path":"/README.md"}',
+          },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: "read-1",
+      content: "# ResearchBox",
+    },
+    {
+      role: "assistant",
+      content: "This is ResearchBox.",
+      reasoning_content: "The title is decisive.",
+    },
+    { role: "user", content: "Continue." },
+  ]);
+});
+
+test("normalizes provider-visible reasoning in deterministic block order", async () => {
+  const transport = createTransport(async () =>
+    sseResponse([
+      'data: {"choices":[{"index":0,"delta":{"reasoning_content":"plan ","content":"answer ","tool_calls":[{"index":0,"id":"call-1","function":{"name":"read_file","arguments":"{\\"path\\":\\"/README.md\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+      "data: [DONE]\n\n",
+    ]),
+  );
+
+  assert.deepEqual(await collect(transport), [
+    { type: "reasoning_start", content_index: 0 },
+    {
+      type: "reasoning_delta",
+      content_index: 0,
+      reasoning_delta: "plan ",
+    },
+    { type: "reasoning_end", content_index: 0 },
+    { type: "text_start", content_index: 1 },
+    {
+      type: "text_delta",
+      content_index: 1,
+      text_delta: "answer ",
+    },
+    { type: "text_end", content_index: 1 },
+    { type: "tool_call_start", content_index: 2 },
+    {
+      type: "tool_call_delta",
+      content_index: 2,
+      tool_call_id_delta: "call-1",
+      tool_name_delta: "read_file",
+      arguments_delta: '{"path":"/README.md"}',
+    },
+    {
+      type: "tool_call_end",
+      content_index: 2,
+      tool_call: {
+        tool_call_id: "call-1",
+        tool_name: "read_file",
+        arguments: { path: "/README.md" },
+      },
+    },
+    { type: "done", stop_reason: "tool_use" },
+  ]);
+});
+
+test("assigns new indices when text and reasoning blocks repeat", async () => {
+  const transport = createTransport(async () =>
+    sseResponse([
+      'data: {"choices":[{"index":0,"delta":{"reasoning":"first"}}]}\n\n',
+      'data: {"choices":[{"index":0,"delta":{"content":"second"}}]}\n\n',
+      'data: {"choices":[{"index":0,"delta":{"thinking":"third"}}]}\n\n',
+      'data: {"choices":[{"index":0,"delta":{"content":"fourth"}}]}\n\n',
+      "data: [DONE]\n\n",
+    ]),
+  );
+
+  assert.deepEqual(await collect(transport), [
+    { type: "reasoning_start", content_index: 0 },
+    {
+      type: "reasoning_delta",
+      content_index: 0,
+      reasoning_delta: "first",
+    },
+    { type: "reasoning_end", content_index: 0 },
+    { type: "text_start", content_index: 1 },
+    { type: "text_delta", content_index: 1, text_delta: "second" },
+    { type: "text_end", content_index: 1 },
+    { type: "reasoning_start", content_index: 2 },
+    {
+      type: "reasoning_delta",
+      content_index: 2,
+      reasoning_delta: "third",
+    },
+    { type: "reasoning_end", content_index: 2 },
+    { type: "text_start", content_index: 3 },
+    { type: "text_delta", content_index: 3, text_delta: "fourth" },
+    { type: "text_end", content_index: 3 },
+    { type: "done", stop_reason: "stop" },
+  ]);
+});
+
+test("rejects conflicting reasoning aliases", async () => {
+  const transport = createTransport(async () =>
+    sseResponse([
+      'data: {"choices":[{"index":0,"delta":{"reasoning_content":"one","thinking":"two"}}]}\n\n',
+      "data: [DONE]\n\n",
+    ]),
+  );
+
+  await assert.rejects(
+    collect(transport),
+    /conflicting reasoning deltas/,
+  );
+});
+
 test("serializes prior mutation calls without truncating multiline arguments", async () => {
   let sentBody;
   const transport = createTransport(async (_input, init) => {
@@ -178,14 +383,15 @@ test("serializes prior mutation calls without truncating multiline arguments", a
       { role: "user", content: "Update notes." },
       {
         role: "assistant",
-        content: "",
-        tool_calls: [
+        content_blocks: [
           {
+            type: "tool_call",
             tool_call_id: "write-1",
             tool_name: "write_file",
             arguments: writeArguments,
           },
           {
+            type: "tool_call",
             tool_call_id: "replace-1",
             tool_name: "replace_text",
             arguments: replaceArguments,
@@ -246,18 +452,49 @@ test("assembles fragmented and multiple streamed tool calls", async () => {
   );
 
   assert.deepEqual(await collect(transport), [
-    { type: "text_delta", text_delta: "Checking" },
+    { type: "text_start", content_index: 0 },
+    { type: "text_delta", content_index: 0, text_delta: "Checking" },
+    { type: "text_end", content_index: 0 },
+    { type: "tool_call_start", content_index: 1 },
     {
-      type: "tool_call",
-      tool_call_id: "call_1",
-      tool_name: "read_file",
-      arguments: { path: "/README.md" },
+      type: "tool_call_delta",
+      content_index: 1,
+      tool_call_id_delta: "call_",
+      tool_name_delta: "read_",
+      arguments_delta: '{"pa',
+    },
+    { type: "tool_call_start", content_index: 2 },
+    {
+      type: "tool_call_delta",
+      content_index: 2,
+      tool_call_id_delta: "call_2",
+      tool_name_delta: "list_files",
+      arguments_delta: '{"path":"/"}',
     },
     {
-      type: "tool_call",
-      tool_call_id: "call_2",
-      tool_name: "list_files",
-      arguments: { path: "/" },
+      type: "tool_call_delta",
+      content_index: 1,
+      tool_call_id_delta: "1",
+      tool_name_delta: "file",
+      arguments_delta: 'th":"/README.md"}',
+    },
+    {
+      type: "tool_call_end",
+      content_index: 1,
+      tool_call: {
+        tool_call_id: "call_1",
+        tool_name: "read_file",
+        arguments: { path: "/README.md" },
+      },
+    },
+    {
+      type: "tool_call_end",
+      content_index: 2,
+      tool_call: {
+        tool_call_id: "call_2",
+        tool_name: "list_files",
+        arguments: { path: "/" },
+      },
     },
     { type: "done", stop_reason: "tool_use" },
   ]);
@@ -333,17 +570,49 @@ test("preserves fragmented multiline mutation arguments exactly", async () => {
   );
 
   assert.deepEqual(await collect(transport), [
+    { type: "tool_call_start", content_index: 0 },
     {
-      type: "tool_call",
-      tool_call_id: "write-1",
-      tool_name: "write_file",
-      arguments: JSON.parse(writeArguments),
+      type: "tool_call_delta",
+      content_index: 0,
+      tool_call_id_delta: "write-1",
+      tool_name_delta: "write_file",
+      arguments_delta: writeArguments.slice(0, writeSplit),
+    },
+    { type: "tool_call_start", content_index: 1 },
+    {
+      type: "tool_call_delta",
+      content_index: 1,
+      tool_call_id_delta: "replace-1",
+      tool_name_delta: "replace_text",
+      arguments_delta: replaceArguments.slice(0, replaceSplit),
     },
     {
-      type: "tool_call",
-      tool_call_id: "replace-1",
-      tool_name: "replace_text",
-      arguments: JSON.parse(replaceArguments),
+      type: "tool_call_delta",
+      content_index: 0,
+      arguments_delta: writeArguments.slice(writeSplit),
+    },
+    {
+      type: "tool_call_delta",
+      content_index: 1,
+      arguments_delta: replaceArguments.slice(replaceSplit),
+    },
+    {
+      type: "tool_call_end",
+      content_index: 0,
+      tool_call: {
+        tool_call_id: "write-1",
+        tool_name: "write_file",
+        arguments: JSON.parse(writeArguments),
+      },
+    },
+    {
+      type: "tool_call_end",
+      content_index: 1,
+      tool_call: {
+        tool_call_id: "replace-1",
+        tool_name: "replace_text",
+        arguments: JSON.parse(replaceArguments),
+      },
     },
     { type: "done", stop_reason: "tool_use" },
   ]);
@@ -357,7 +626,9 @@ test("preserves length stops and rejects truncated tool calls", async () => {
     ]),
   );
   assert.deepEqual(await collect(lengthTransport), [
-    { type: "text_delta", text_delta: "partial" },
+    { type: "text_start", content_index: 0 },
+    { type: "text_delta", content_index: 0, text_delta: "partial" },
+    { type: "text_end", content_index: 0 },
     { type: "done", stop_reason: "length" },
   ]);
 
@@ -461,7 +732,7 @@ test("honors abort while buffered events remain", async () => {
 
   assert.deepEqual(await iterator.next(), {
     done: false,
-    value: { type: "text_delta", text_delta: "one" },
+    value: { type: "text_start", content_index: 0 },
   });
   const abortReason = new Error("cancel requested");
   controller.abort(abortReason);
@@ -481,7 +752,7 @@ test("does not consume events after [DONE]", async () => {
   ]);
 });
 
-function createTransport(fetchRequest) {
+function createTransport(fetchRequest, options = {}) {
   return new OpenAiCompatibleModelTransport({
     provider_id: "local-openai",
     provider_display_name: "Local OpenAI",
@@ -489,6 +760,7 @@ function createTransport(fetchRequest) {
     chat_completions_endpoint:
       "/api/providers/local-openai/chat/completions",
     fetch_request: fetchRequest,
+    ...options,
   });
 }
 

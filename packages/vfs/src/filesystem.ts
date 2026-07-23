@@ -15,14 +15,19 @@ export type VfsErrorCode =
 export type WorkspaceChangeMetadata = {
   change_id: string;
   session_id: string;
-  message_id: string;
+  tool_call_block_id: string;
   assistant_message_index: number;
   tool_call_id: string;
   tool_name: "write_file" | "replace_text";
   created_at: string;
 };
 
-export type WorkspaceChangeRecord = WorkspaceChangeMetadata & {
+export type WorkspaceChangeRecord = Omit<
+  WorkspaceChangeMetadata,
+  "tool_call_block_id"
+> & {
+  tool_call_block_id: string | null;
+  legacy_message_id?: string;
   path: string;
   change_kind: "created" | "updated";
   before_content: string | null;

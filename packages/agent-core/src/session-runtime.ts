@@ -7,15 +7,17 @@ import {
   Type,
   type AssistantMessage,
   type Model,
-  type UserMessage,
+  type ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import type { ModelTransport } from "@researchbox/model-transport";
 import type { SessionDocument } from "@researchbox/project-store";
 import {
   PROTOCOL_VERSION,
-  type ChatMessage,
+  type AssistantBlock,
+  type AssistantMessageEntry,
   type CoreEvent,
-  type ToolActivity,
+  type ToolCallBlock,
+  type UserMessageEntry,
   type WorkspaceChangeSummary,
 } from "@researchbox/protocol";
 import type {
@@ -23,7 +25,12 @@ import type {
   WorkspaceChangeRecord,
 } from "@researchbox/vfs";
 import { createModelStreamFn } from "./pi-stream.ts";
-import { decodeAgentMessages, encodeAgentMessages } from "./session-codec.ts";
+import {
+  createStreamingAssistantEntry,
+  createToolResultEntry,
+  finalizeAssistantEntry,
+  timelineToAgentMessages,
+} from "./session-codec.ts";
 import { repairUnansweredToolCalls } from "./tool-transcript.ts";
 import { WorkspaceController } from "./workspace-controller.ts";
 
@@ -53,14 +60,18 @@ type MutationToolName = "write_file" | "replace_text";
 
 type ActiveRun = {
   request_id: string;
-  assistant_message: ChatMessage;
+  run_id: string;
+  user_entry_index: number;
   abort_requested: boolean;
   transcript_boundary: number;
+  assistant_entry_id: string | null;
+  block_ids_by_content_index: Map<number, string>;
+  unresolved_tool_blocks: Map<string, string>;
 };
 
 export type StagedPrompt = {
-  user_message: ChatMessage;
-  assistant_message: ChatMessage;
+  user_entry: UserMessageEntry;
+  run_id: string;
 };
 
 export class SessionRuntime {
@@ -72,8 +83,6 @@ export class SessionRuntime {
   private readonly checkpoint: SessionRuntimeOptions["checkpoint"];
   private readonly agent: Agent;
   private readonly unsubscribe: () => void;
-  private readonly toolLabels = new Map<string, string>();
-  private readonly toolActivityIds = new Map<string, string>();
   private activeRun: ActiveRun | null = null;
   private runPromise: Promise<void> | null = null;
 
@@ -88,9 +97,9 @@ export class SessionRuntime {
       initialState: {
         systemPrompt: options.system_prompt,
         model: options.model,
-        thinkingLevel: "off",
+        thinkingLevel: options.model.reasoning ? "medium" : "off",
         tools: this.createTools(),
-        messages: decodeAgentMessages(options.document.agent_messages),
+        messages: timelineToAgentMessages(options.document.timeline),
       },
       sessionId: options.session_id,
       streamFn: createModelStreamFn(options.model_transport),
@@ -117,28 +126,27 @@ export class SessionRuntime {
   }
 
   continueStagedPrompt(
-    assistantMessageId: string,
+    runId: string,
     requestId: string,
   ): Promise<void> {
     return this.trackRun(async () => {
-      const assistantMessage = this.document.messages.find(
-        (message) => message.id === assistantMessageId,
+      const userEntryIndex = this.document.timeline.findIndex(
+        (entry) => entry.type === "user_message" && entry.run_id === runId,
       );
-      if (
-        !assistantMessage ||
-        assistantMessage.role !== "assistant" ||
-        assistantMessage.status !== "streaming"
-      ) {
-        throw new Error("The staged assistant message is not available.");
+      if (userEntryIndex === -1) {
+        throw new Error("The staged user message is not available.");
       }
-      this.activeRun = {
-        request_id: requestId,
-        assistant_message: assistantMessage,
-        abort_requested: false,
-        transcript_boundary: this.agent.state.messages.length,
-      };
+      this.agent.state.messages = timelineToAgentMessages(
+        this.document.timeline,
+      );
+      this.activeRun = createActiveRun(
+        requestId,
+        runId,
+        userEntryIndex,
+        this.agent.state.messages.length,
+      );
       this.emit("run_state", { is_running: true }, requestId);
-      await this.completePrompt(requestId, assistantMessage);
+      await this.completePrompt(requestId);
     });
   }
 
@@ -165,46 +173,41 @@ export class SessionRuntime {
   }
 
   private async executePrompt(text: string, requestId: string): Promise<void> {
-    const messageCount = this.document.messages.length;
+    const timelineLength = this.document.timeline.length;
     const previousInputDraft = this.document.input_draft;
     const previousAgentMessages = [...this.agent.state.messages];
     const staged = stagePrompt(this.document, text);
-    this.agent.state.messages = decodeAgentMessages(
-      this.document.agent_messages,
+    this.agent.state.messages = timelineToAgentMessages(
+      this.document.timeline,
     );
-    this.activeRun = {
-      request_id: requestId,
-      assistant_message: staged.assistant_message,
-      abort_requested: false,
-      transcript_boundary: this.agent.state.messages.length,
-    };
+    this.activeRun = createActiveRun(
+      requestId,
+      staged.run_id,
+      timelineLength,
+      this.agent.state.messages.length,
+    );
 
     try {
       await this.checkpoint("staged", requestId);
     } catch (error) {
-      this.document.messages.splice(messageCount);
+      this.document.timeline.splice(timelineLength);
       this.document.input_draft = previousInputDraft;
       this.agent.state.messages = previousAgentMessages;
-      this.document.agent_messages = encodeAgentMessages(previousAgentMessages);
       this.activeRun = null;
       this.emitPersistenceError(error, requestId);
       return;
     }
 
-    this.emit("message_added", { message: staged.user_message }, requestId);
     this.emit(
-      "message_added",
-      { message: staged.assistant_message },
+      "timeline_entry_appended",
+      { entry: structuredClone(staged.user_entry) },
       requestId,
     );
     this.emit("run_state", { is_running: true }, requestId);
-    await this.completePrompt(requestId, staged.assistant_message);
+    await this.completePrompt(requestId);
   }
 
-  private async completePrompt(
-    requestId: string,
-    assistantMessage: ChatMessage,
-  ): Promise<void> {
+  private async completePrompt(requestId: string): Promise<void> {
     let status: "complete" | "aborted" | "error" = "complete";
     let errorMessage: string | undefined;
     try {
@@ -253,41 +256,54 @@ export class SessionRuntime {
         0,
         this.activeRun?.transcript_boundary ?? 0,
       );
+      this.discardActiveRunOutput();
     }
-    assistantMessage.status = status;
+    if (this.hasAbandonedStreamingAssistant()) {
+      if (status === "complete") {
+        status = "error";
+        errorMessage =
+          "The agent run ended before its assistant message was finalized.";
+      }
+      this.finalizeAbandonedStreamingAssistant(
+        status,
+        errorMessage,
+        requestId,
+      );
+    }
+    try {
+      this.synchronizeMissingToolResults(
+        status === "aborted"
+          ? "Tool execution was stopped"
+          : "Tool execution did not complete",
+        requestId,
+      );
+    } catch (error) {
+      status = "error";
+      errorMessage = toErrorMessage(
+        error,
+        "The model returned an invalid tool transcript.",
+      );
+      this.agent.state.messages = this.agent.state.messages.slice(
+        0,
+        this.activeRun?.transcript_boundary ?? 0,
+      );
+      this.discardActiveRunOutput();
+    }
     if (this.agent.state.messages.at(-1)?.role === "user") {
-      this.agent.state.messages = [
-        ...this.agent.state.messages,
-        createTerminalAgentMessage(this.agent, status, errorMessage),
-      ];
+      const terminal = createTerminalAgentMessage(
+        this.agent,
+        status,
+        errorMessage,
+      );
+      this.agent.state.messages = [...this.agent.state.messages, terminal];
+      this.appendTerminalAssistant(terminal, requestId);
     }
-    this.finishRunningActivities(
-      assistantMessage.id,
-      status === "aborted"
-        ? "Tool execution was stopped"
-        : "Tool execution did not complete",
-      requestId,
-    );
-    this.toolLabels.clear();
-    this.toolActivityIds.clear();
-    this.document.agent_messages = encodeAgentMessages(this.agent.state.messages);
     try {
       await this.checkpoint("finished", requestId);
     } catch (error) {
       this.emitPersistenceError(error, requestId);
     }
 
-    this.emit(
-      "message_finished",
-      {
-        message_id: assistantMessage.id,
-        status,
-        ...(status === "error" && errorMessage
-          ? { error_message: errorMessage }
-          : {}),
-      },
-      requestId,
-    );
     if (status === "error") {
       this.emitError(
         "agent_run_failed",
@@ -314,59 +330,97 @@ export class SessionRuntime {
     const run = this.activeRun;
     if (!run) return;
 
-    if (
-      event.type === "message_end" &&
-      event.message.role === "toolResult" &&
-      isMutationToolName(event.message.toolName)
-    ) {
-      this.document.agent_messages = encodeAgentMessages(
-        this.agent.state.messages,
-      );
-      try {
-        await this.checkpoint("tool_finished", run.request_id);
-      } catch (error) {
-        this.emitPersistenceError(error, run.request_id);
-        throw error;
+    if (event.type === "message_start") {
+      if (event.message.role === "assistant") {
+        this.appendMissingToolResultsBeforeAssistant(
+          event.message,
+          run.request_id,
+        );
+        const entry = createStreamingAssistantEntry(
+          event.message,
+          run.run_id,
+        );
+        run.assistant_entry_id = entry.entry_id;
+        run.block_ids_by_content_index.clear();
+        this.appendTimelineEntry(entry, run.request_id);
+      } else if (event.message.role === "toolResult") {
+        this.appendToolResult(event.message, run.request_id);
       }
       return;
     }
 
-    if (
-      event.type === "message_update" &&
-      event.assistantMessageEvent.type === "text_delta"
-    ) {
-      const textDelta = event.assistantMessageEvent.delta;
-      run.assistant_message.content += textDelta;
-      this.emit(
-        "message_delta",
-        {
-          message_id: run.assistant_message.id,
-          text_delta: textDelta,
-        },
+    if (event.type === "message_update") {
+      this.handleAssistantMessageUpdate(
+        event.assistantMessageEvent,
         run.request_id,
       );
       return;
     }
 
-    if (event.type === "tool_execution_start") {
-      const label = toolLabel(event.toolName, event.args);
-      const activityId = crypto.randomUUID();
-      this.toolLabels.set(event.toolCallId, label);
-      this.toolActivityIds.set(event.toolCallId, activityId);
-      const activity: ToolActivity = {
-        activity_id: activityId,
-        tool_call_id: event.toolCallId,
-        message_id: run.assistant_message.id,
-        tool_name: event.toolName,
-        label,
-        status: "running",
-      };
-      this.upsertActivity(activity);
-      this.emit("tool_activity", { activity }, run.request_id);
-      if (isMutationToolName(event.toolName)) {
-        this.document.agent_messages = encodeAgentMessages(
-          this.agent.state.messages,
+    if (event.type === "message_end") {
+      if (event.message.role === "assistant") {
+        const entry = this.requireActiveAssistantEntry();
+        const finalized = finalizeAssistantEntry(entry, event.message);
+        this.replaceTimelineEntry(finalized);
+        for (const block of finalized.blocks) {
+          if (
+            block.type === "tool_call" &&
+            !this.hasToolResult(block.block_id)
+          ) {
+            const existing = run.unresolved_tool_blocks.get(
+              block.tool_call_id,
+            );
+            if (existing && existing !== block.block_id) {
+              throw new Error(
+                `Duplicate unresolved tool call id: ${block.tool_call_id}`,
+              );
+            }
+            run.unresolved_tool_blocks.set(
+              block.tool_call_id,
+              block.block_id,
+            );
+          }
+        }
+        this.emit(
+          "timeline_entry_updated",
+          { entry: structuredClone(finalized) },
+          run.request_id,
         );
+        run.assistant_entry_id = null;
+        run.block_ids_by_content_index.clear();
+      } else if (
+        event.message.role === "toolResult" &&
+        isMutationToolName(event.message.toolName)
+      ) {
+        try {
+          await this.checkpoint("tool_finished", run.request_id);
+        } catch (error) {
+          this.emitPersistenceError(error, run.request_id);
+          throw error;
+        }
+      }
+      return;
+    }
+
+    if (event.type === "tool_execution_start") {
+      const block = this.requireUnresolvedToolCall(
+        event.toolCallId,
+        event.toolName,
+      );
+      const updated: ToolCallBlock = {
+        ...block,
+        label: toolLabel(event.toolName, event.args),
+      };
+      this.replaceAssistantBlock(updated);
+      this.emit(
+        "assistant_block_updated",
+        {
+          entry_id: this.requireAssistantEntryIdForBlock(updated.block_id),
+          block: structuredClone(updated),
+        },
+        run.request_id,
+      );
+      if (isMutationToolName(event.toolName)) {
         try {
           await this.checkpoint("tool_started", run.request_id);
         } catch (error) {
@@ -376,39 +430,133 @@ export class SessionRuntime {
       }
       return;
     }
+  }
 
-    if (event.type === "tool_execution_end") {
-      const activityId = this.toolActivityIds.get(event.toolCallId);
-      if (!activityId) {
-        throw new Error(
-          `Tool call ${event.toolCallId} is missing its activity identity.`,
-        );
+  private handleAssistantMessageUpdate(
+    event: Extract<
+      AgentEvent,
+      { type: "message_update" }
+    >["assistantMessageEvent"],
+    requestId: string,
+  ): void {
+    const run = this.requireActiveRun();
+    const entry = this.requireActiveAssistantEntry();
+
+    switch (event.type) {
+      case "text_start": {
+        const block: AssistantBlock = {
+          type: "assistant_text",
+          block_id: this.reserveContentBlockId(event.contentIndex),
+          text: "",
+        };
+        this.appendAssistantBlock(entry.entry_id, block, requestId);
+        return;
       }
-      const details = isRecord(event.result?.details)
-        ? event.result.details
-        : undefined;
-      const fileChange = parseWorkspaceChangeSummary(details?.file_change);
-      const activity: ToolActivity = {
-        activity_id: activityId,
-        tool_call_id: event.toolCallId,
-        message_id: run.assistant_message.id,
-        tool_name: event.toolName,
-        label:
-          this.toolLabels.get(event.toolCallId) ??
-          toolLabel(event.toolName, undefined),
-        status: event.isError ? "error" : "complete",
-        summary:
-          typeof details?.summary === "string"
-            ? details.summary
-            : event.isError
-              ? "Tool failed"
-              : "Complete",
-        ...(fileChange ? { file_change: fileChange } : {}),
-      };
-      this.toolLabels.delete(event.toolCallId);
-      this.toolActivityIds.delete(event.toolCallId);
-      this.upsertActivity(activity);
-      this.emit("tool_activity", { activity }, run.request_id);
+      case "thinking_start": {
+        const block: AssistantBlock = {
+          type: "reasoning",
+          block_id: this.reserveContentBlockId(event.contentIndex),
+          text: "",
+        };
+        this.appendAssistantBlock(entry.entry_id, block, requestId);
+        return;
+      }
+      case "text_delta":
+      case "thinking_delta": {
+        const blockId = this.requireContentBlockId(event.contentIndex);
+        const block = this.requireAssistantBlock(blockId);
+        const expectedType =
+          event.type === "text_delta" ? "assistant_text" : "reasoning";
+        if (block.type !== expectedType) {
+          throw new Error(
+            `Assistant content index ${event.contentIndex} changed type.`,
+          );
+        }
+        block.text += event.delta;
+        this.emit(
+          "assistant_block_delta",
+          {
+            entry_id: entry.entry_id,
+            block_id: block.block_id,
+            block_type: block.type,
+            text_delta: event.delta,
+          },
+          requestId,
+        );
+        return;
+      }
+      case "text_end":
+      case "thinking_end": {
+        const blockId = this.requireContentBlockId(event.contentIndex);
+        const block = this.requireAssistantBlock(blockId);
+        const partial = event.partial.content[event.contentIndex];
+        if (event.type === "text_end") {
+          if (block.type !== "assistant_text" || partial?.type !== "text") {
+            throw new Error("Assistant text block ended with invalid state.");
+          }
+          block.text = event.content;
+          if (partial.textSignature !== undefined) {
+            block.text_signature = partial.textSignature;
+          }
+        } else {
+          if (block.type !== "reasoning" || partial?.type !== "thinking") {
+            throw new Error(
+              "Assistant reasoning block ended with invalid state.",
+            );
+          }
+          block.text = event.content;
+          if (partial.thinkingSignature !== undefined) {
+            block.thinking_signature = partial.thinkingSignature;
+          }
+          if (partial.redacted !== undefined) {
+            block.redacted = partial.redacted;
+          }
+        }
+        this.emit(
+          "assistant_block_updated",
+          {
+            entry_id: entry.entry_id,
+            block: structuredClone(block),
+          },
+          requestId,
+        );
+        return;
+      }
+      case "toolcall_start":
+        this.reserveContentBlockId(event.contentIndex);
+        return;
+      case "toolcall_delta":
+        this.requireContentBlockId(event.contentIndex);
+        return;
+      case "toolcall_end": {
+        const toolCall = event.toolCall;
+        const block: ToolCallBlock = {
+          type: "tool_call",
+          block_id: this.requireContentBlockId(event.contentIndex),
+          tool_call_id: toolCall.id,
+          tool_name: toolCall.name,
+          arguments: structuredClone(toolCall.arguments),
+          ...(toolCall.thoughtSignature === undefined
+            ? {}
+            : { thought_signature: toolCall.thoughtSignature }),
+          label: toolLabel(toolCall.name, toolCall.arguments),
+        };
+        if (run.unresolved_tool_blocks.has(toolCall.id)) {
+          throw new Error(`Duplicate unresolved tool call id: ${toolCall.id}`);
+        }
+        this.insertAssistantBlockByContentIndex(
+          entry.entry_id,
+          event.contentIndex,
+          block,
+          requestId,
+        );
+        run.unresolved_tool_blocks.set(toolCall.id, block.block_id);
+        return;
+      }
+      case "start":
+      case "done":
+      case "error":
+        return;
     }
   }
 
@@ -524,12 +672,338 @@ export class SessionRuntime {
     return [listFiles, readFile, writeFile, replaceText];
   }
 
-  private upsertActivity(activity: ToolActivity): void {
-    const index = this.document.activities.findIndex(
-      (candidate) => candidate.activity_id === activity.activity_id,
+  private appendTimelineEntry(
+    entry: SessionDocument["timeline"][number],
+    requestId: string,
+  ): void {
+    this.document.timeline.push(entry);
+    this.emit(
+      "timeline_entry_appended",
+      { entry: structuredClone(entry) },
+      requestId,
     );
-    if (index === -1) this.document.activities.push(activity);
-    else this.document.activities[index] = activity;
+  }
+
+  private appendAssistantBlock(
+    entryId: string,
+    block: AssistantBlock,
+    requestId: string,
+  ): void {
+    const entry = this.requireAssistantEntry(entryId);
+    if (entry.blocks.some((candidate) => candidate.block_id === block.block_id)) {
+      throw new Error(`Duplicate assistant block id: ${block.block_id}`);
+    }
+    entry.blocks.push(block);
+    this.emit(
+      "assistant_block_appended",
+      {
+        entry_id: entryId,
+        block: structuredClone(block),
+      },
+      requestId,
+    );
+  }
+
+  private insertAssistantBlockByContentIndex(
+    entryId: string,
+    contentIndex: number,
+    block: AssistantBlock,
+    requestId: string,
+  ): void {
+    const entry = this.requireAssistantEntry(entryId);
+    if (entry.blocks.some((candidate) => candidate.block_id === block.block_id)) {
+      throw new Error(`Duplicate assistant block id: ${block.block_id}`);
+    }
+    const insertionIndex = entry.blocks.findIndex(
+      (candidate) =>
+        this.requireContentIndexForBlockId(candidate.block_id) > contentIndex,
+    );
+    if (insertionIndex === -1) {
+      this.appendAssistantBlock(entryId, block, requestId);
+      return;
+    }
+    entry.blocks.splice(insertionIndex, 0, block);
+    this.emit(
+      "timeline_entry_updated",
+      { entry: structuredClone(entry) },
+      requestId,
+    );
+  }
+
+  private appendToolResult(
+    message: ToolResultMessage,
+    requestId: string,
+    fallbackSummary?: string,
+  ): void {
+    const run = this.requireActiveRun();
+    const block = this.requireUnresolvedToolCall(
+      message.toolCallId,
+      message.toolName,
+    );
+    const result = createToolResultEntry(
+      message,
+      run.run_id,
+      block.block_id,
+    );
+    if (result.summary === undefined) {
+      result.summary =
+        fallbackSummary ??
+        (result.is_error ? "Tool failed" : "Complete");
+    }
+    this.appendTimelineEntry(result, requestId);
+    run.unresolved_tool_blocks.delete(message.toolCallId);
+  }
+
+  private appendTerminalAssistant(
+    message: AssistantMessage,
+    requestId: string,
+  ): void {
+    const run = this.requireActiveRun();
+    const streaming = createStreamingAssistantEntry(message, run.run_id);
+    const finalized = finalizeAssistantEntry(streaming, message);
+    this.appendTimelineEntry(finalized, requestId);
+  }
+
+  private appendMissingToolResultsBeforeAssistant(
+    message: AssistantMessage,
+    requestId: string,
+  ): void {
+    const run = this.requireActiveRun();
+    if (run.unresolved_tool_blocks.size === 0) return;
+
+    const wasAborted =
+      run.abort_requested || message.stopReason === "aborted";
+    const content = wasAborted
+      ? "Tool execution was skipped because the run was aborted."
+      : "Tool execution did not complete.";
+    const summary = wasAborted
+      ? "Tool execution was stopped"
+      : "Tool execution did not complete";
+
+    for (const [toolCallId, blockId] of [
+      ...run.unresolved_tool_blocks.entries(),
+    ]) {
+      const block = this.requireAssistantBlock(blockId);
+      if (block.type !== "tool_call") {
+        throw new Error(
+          `Assistant block ${blockId} is not a tool call.`,
+        );
+      }
+      this.appendToolResult(
+        {
+          role: "toolResult",
+          toolCallId,
+          toolName: block.tool_name,
+          content: [{ type: "text", text: content }],
+          isError: true,
+          timestamp: Date.now(),
+        },
+        requestId,
+        summary,
+      );
+    }
+  }
+
+  private hasAbandonedStreamingAssistant(): boolean {
+    const runId = this.requireActiveRun().run_id;
+    return this.document.timeline.some(
+      (entry) =>
+        entry.type === "assistant_message" &&
+        entry.run_id === runId &&
+        entry.status === "streaming",
+    );
+  }
+
+  private finalizeAbandonedStreamingAssistant(
+    status: "complete" | "aborted" | "error",
+    errorMessage: string | undefined,
+    requestId: string,
+  ): void {
+    const run = this.requireActiveRun();
+    const terminalStatus = status === "aborted" ? "aborted" : "error";
+    for (const entry of this.document.timeline) {
+      if (
+        entry.type !== "assistant_message" ||
+        entry.run_id !== run.run_id ||
+        entry.status !== "streaming"
+      ) {
+        continue;
+      }
+      entry.status = terminalStatus;
+      entry.stop_reason = terminalStatus;
+      if (terminalStatus === "error" && errorMessage !== undefined) {
+        entry.error_message = errorMessage;
+      }
+      this.emit(
+        "timeline_entry_updated",
+        { entry: structuredClone(entry) },
+        requestId,
+      );
+    }
+    run.assistant_entry_id = null;
+    run.block_ids_by_content_index.clear();
+  }
+
+  private synchronizeMissingToolResults(
+    summary: string,
+    requestId: string,
+  ): void {
+    const run = this.requireActiveRun();
+    for (const message of this.agent.state.messages) {
+      if (
+        message.role !== "toolResult" ||
+        !run.unresolved_tool_blocks.has(message.toolCallId)
+      ) {
+        continue;
+      }
+      this.appendToolResult(message, requestId, summary);
+    }
+    if (run.unresolved_tool_blocks.size > 0) {
+      throw new Error(
+        "The repaired agent transcript still has unanswered tool calls.",
+      );
+    }
+  }
+
+  private replaceTimelineEntry(
+    entry: SessionDocument["timeline"][number],
+  ): void {
+    const index = this.document.timeline.findIndex(
+      (candidate) => candidate.entry_id === entry.entry_id,
+    );
+    if (index === -1) {
+      throw new Error(`Timeline entry does not exist: ${entry.entry_id}`);
+    }
+    this.document.timeline[index] = entry;
+  }
+
+  private discardActiveRunOutput(): void {
+    const run = this.requireActiveRun();
+    this.document.timeline.splice(run.user_entry_index + 1);
+    run.assistant_entry_id = null;
+    run.block_ids_by_content_index.clear();
+    run.unresolved_tool_blocks.clear();
+  }
+
+  private replaceAssistantBlock(block: AssistantBlock): void {
+    for (const entry of this.document.timeline) {
+      if (entry.type !== "assistant_message") continue;
+      const index = entry.blocks.findIndex(
+        (candidate) => candidate.block_id === block.block_id,
+      );
+      if (index === -1) continue;
+      entry.blocks[index] = block;
+      return;
+    }
+    throw new Error(`Assistant block does not exist: ${block.block_id}`);
+  }
+
+  private requireActiveRun(): ActiveRun {
+    if (!this.activeRun) {
+      throw new Error("No active agent run is available.");
+    }
+    return this.activeRun;
+  }
+
+  private requireActiveAssistantEntry(): AssistantMessageEntry {
+    const entryId = this.requireActiveRun().assistant_entry_id;
+    if (!entryId) {
+      throw new Error("No assistant message is currently streaming.");
+    }
+    return this.requireAssistantEntry(entryId);
+  }
+
+  private requireAssistantEntry(entryId: string): AssistantMessageEntry {
+    const entry = this.document.timeline.find(
+      (candidate) => candidate.entry_id === entryId,
+    );
+    if (!entry || entry.type !== "assistant_message") {
+      throw new Error(`Assistant timeline entry does not exist: ${entryId}`);
+    }
+    return entry;
+  }
+
+  private requireAssistantBlock(blockId: string): AssistantBlock {
+    for (const entry of this.document.timeline) {
+      if (entry.type !== "assistant_message") continue;
+      const block = entry.blocks.find(
+        (candidate) => candidate.block_id === blockId,
+      );
+      if (block) return block;
+    }
+    throw new Error(`Assistant block does not exist: ${blockId}`);
+  }
+
+  private requireAssistantEntryIdForBlock(blockId: string): string {
+    for (const entry of this.document.timeline) {
+      if (
+        entry.type === "assistant_message" &&
+        entry.blocks.some((block) => block.block_id === blockId)
+      ) {
+        return entry.entry_id;
+      }
+    }
+    throw new Error(`Assistant block does not exist: ${blockId}`);
+  }
+
+  private requireContentBlockId(contentIndex: number): string {
+    const blockId =
+      this.requireActiveRun().block_ids_by_content_index.get(contentIndex);
+    if (!blockId) {
+      throw new Error(
+        `Assistant content index ${contentIndex} has not started.`,
+      );
+    }
+    return blockId;
+  }
+
+  private reserveContentBlockId(contentIndex: number): string {
+    const blockIds = this.requireActiveRun().block_ids_by_content_index;
+    if (blockIds.has(contentIndex)) {
+      throw new Error(
+        `Assistant content index ${contentIndex} has already started.`,
+      );
+    }
+    const blockId = crypto.randomUUID();
+    blockIds.set(contentIndex, blockId);
+    return blockId;
+  }
+
+  private requireContentIndexForBlockId(blockId: string): number {
+    for (const [
+      contentIndex,
+      candidateBlockId,
+    ] of this.requireActiveRun().block_ids_by_content_index) {
+      if (candidateBlockId === blockId) return contentIndex;
+    }
+    throw new Error(`Assistant block ${blockId} has no content index.`);
+  }
+
+  private requireUnresolvedToolCall(
+    toolCallId: string,
+    toolName: string,
+  ): ToolCallBlock {
+    const blockId =
+      this.requireActiveRun().unresolved_tool_blocks.get(toolCallId);
+    const block = blockId ? this.requireAssistantBlock(blockId) : undefined;
+    if (
+      !block ||
+      block.type !== "tool_call" ||
+      block.tool_name !== toolName
+    ) {
+      throw new Error(
+        `Tool call ${toolCallId} is missing its timeline identity.`,
+      );
+    }
+    return block;
+  }
+
+  private hasToolResult(blockId: string): boolean {
+    return this.document.timeline.some(
+      (entry) =>
+        entry.type === "tool_result" &&
+        entry.tool_call_block_id === blockId,
+    );
   }
 
   private activeRequestId(): string {
@@ -547,7 +1021,10 @@ export class SessionRuntime {
     return {
       change_id: crypto.randomUUID(),
       session_id: this.session_id,
-      message_id: run.assistant_message.id,
+      tool_call_block_id: this.requireUnresolvedToolCall(
+        toolCallId,
+        toolName,
+      ).block_id,
       assistant_message_index: this.findAssistantMessageIndex(
         toolCallId,
         toolName,
@@ -631,21 +1108,6 @@ export class SessionRuntime {
         file_change: fileChange,
       },
     };
-  }
-
-  private finishRunningActivities(
-    messageId: string,
-    summary: string,
-    requestId: string,
-  ): void {
-    for (const activity of this.document.activities) {
-      if (activity.message_id !== messageId || activity.status !== "running") {
-        continue;
-      }
-      activity.status = "error";
-      activity.summary = summary;
-      this.emit("tool_activity", { activity: { ...activity } }, requestId);
-    }
   }
 
   private emit<T extends CoreEvent["type"]>(
@@ -733,41 +1195,41 @@ function createTerminalAgentMessage(
   };
 }
 
-function createChatMessage(
-  role: ChatMessage["role"],
-  content: string,
-  status: ChatMessage["status"],
-): ChatMessage {
-  return {
-    id: crypto.randomUUID(),
-    role,
-    content,
-    created_at: new Date().toISOString(),
-    status,
-  };
-}
-
 export function stagePrompt(
   document: SessionDocument,
   text: string,
 ): StagedPrompt {
-  const userMessage = createChatMessage("user", text, "complete");
-  const assistantMessage = createChatMessage("assistant", "", "streaming");
-  const stagedUserMessage: UserMessage = {
-    role: "user",
+  const runId = crypto.randomUUID();
+  const userEntry: UserMessageEntry = {
+    type: "user_message",
+    entry_id: crypto.randomUUID(),
+    run_id: runId,
     content: text,
-    timestamp: Date.parse(userMessage.created_at),
+    created_at: new Date().toISOString(),
   };
-  const agentMessages = decodeAgentMessages(document.agent_messages);
   document.input_draft = "";
-  document.messages.push(userMessage, assistantMessage);
-  document.agent_messages = encodeAgentMessages([
-    ...agentMessages,
-    stagedUserMessage,
-  ]);
+  document.timeline.push(userEntry);
   return {
-    user_message: userMessage,
-    assistant_message: assistantMessage,
+    user_entry: userEntry,
+    run_id: runId,
+  };
+}
+
+function createActiveRun(
+  requestId: string,
+  runId: string,
+  userEntryIndex: number,
+  transcriptBoundary: number,
+): ActiveRun {
+  return {
+    request_id: requestId,
+    run_id: runId,
+    user_entry_index: userEntryIndex,
+    abort_requested: false,
+    transcript_boundary: transcriptBoundary,
+    assistant_entry_id: null,
+    block_ids_by_content_index: new Map(),
+    unresolved_tool_blocks: new Map(),
   };
 }
 
@@ -815,39 +1277,9 @@ function workspaceChangeSummary(
   };
 }
 
-function parseWorkspaceChangeSummary(
-  value: unknown,
-): WorkspaceChangeSummary | undefined {
-  if (!isRecord(value)) return undefined;
-  if (
-    typeof value.change_id !== "string" ||
-    typeof value.tool_call_id !== "string" ||
-    typeof value.path !== "string" ||
-    (value.change_kind !== "created" && value.change_kind !== "updated") ||
-    !isNonNegativeInteger(value.additions) ||
-    !isNonNegativeInteger(value.deletions) ||
-    !isNonNegativeInteger(value.byte_size)
-  ) {
-    return undefined;
-  }
-  return {
-    change_id: value.change_id,
-    tool_call_id: value.tool_call_id,
-    path: value.path,
-    change_kind: value.change_kind,
-    additions: value.additions,
-    deletions: value.deletions,
-    byte_size: value.byte_size,
-  };
-}
-
 function changeSummary(change: WorkspaceChangeSummary): string {
   const verb = change.change_kind === "created" ? "Created" : "Updated";
   return `${verb} · +${change.additions} −${change.deletions}`;
-}
-
-function isNonNegativeInteger(value: unknown): value is number {
-  return Number.isInteger(value) && Number(value) >= 0;
 }
 
 function isAbortError(error: unknown): boolean {

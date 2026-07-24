@@ -34,6 +34,11 @@ test("server-renders the ResearchBox application shell", async () => {
   assert.match(html, /Message ResearchBox/);
   assert.match(html, /Virtual filesystem/);
   assert.match(html, /Search the workspace/);
+  assert.match(html, /Search chats/);
+  assert.match(html, /role="combobox"/);
+  assert.match(html, /aria-label="Search saved chats"/);
+  assert.match(html, /role="listbox"/);
+  assert.match(html, /aria-keyshortcuts="Control\+K Meta\+K"/);
   assert.match(html, /og\.png/);
   assert.doesNotMatch(html, /Researchb[o]x/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);

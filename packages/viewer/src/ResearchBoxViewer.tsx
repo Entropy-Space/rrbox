@@ -42,6 +42,8 @@ import {
   useState,
 } from "react";
 import type { FormEvent, KeyboardEvent, RefObject } from "react";
+import { ChatSearchDialog } from "./ChatSearchDialog.tsx";
+import { shouldFocusComposerAfterChatSearch } from "./chat-search.ts";
 import {
   isModalNavigationOpen,
   MOBILE_NAVIGATION_QUERY,
@@ -127,10 +129,12 @@ export function ResearchBoxViewer({
     navigateToParent,
   } = useAgentSession(createWorker);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const [isMobileViewport, setMobileViewport] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const conversationEndRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const focusComposerAfterSearchRef = useRef(false);
   const workspaceHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const {
     view: workspaceChangeReview,
@@ -237,6 +241,35 @@ export function ResearchBoxViewer({
     coreState.is_running ||
     coreState.pending_prompt !== null ||
     isWorkspaceTransferPending;
+  const openChatSearch = useCallback(() => {
+    if (!isSidebarPending) setChatSearchOpen(true);
+  }, [isSidebarPending]);
+  const closeChatSearch = useCallback(() => {
+    setChatSearchOpen(false);
+  }, []);
+  const selectChatSearchResult = useCallback(
+    (projectId: string, sessionId: string) => {
+      focusComposerAfterSearchRef.current = true;
+      setChatSearchOpen(false);
+      setSidebarOpen(false);
+      selectSession(projectId, sessionId);
+    },
+    [selectSession],
+  );
+  useEffect(() => {
+    if (
+      !shouldFocusComposerAfterChatSearch(
+        focusComposerAfterSearchRef.current,
+        chatSearchOpen,
+        isManagementPending,
+        coreState.is_ready,
+      )
+    ) {
+      return;
+    }
+    focusComposerAfterSearchRef.current = false;
+    composerRef.current?.focus();
+  }, [chatSearchOpen, coreState.is_ready, isManagementPending]);
   const isWorkspaceChangeRevertDisabled =
     !coreState.is_ready ||
     isManagementPending ||
@@ -253,6 +286,27 @@ export function ResearchBoxViewer({
     coreState.active_session_id,
     coreState.is_ready,
   ]);
+
+  useEffect(() => {
+    const openWithKeyboard = (event: globalThis.KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.altKey ||
+        event.shiftKey ||
+        (!event.ctrlKey && !event.metaKey) ||
+        event.key.toLowerCase() !== "k" ||
+        isSidebarPending ||
+        document.querySelector("dialog[open]")
+      ) {
+        return;
+      }
+      event.preventDefault();
+      setChatSearchOpen(true);
+    };
+    document.addEventListener("keydown", openWithKeyboard);
+    return () => document.removeEventListener("keydown", openWithKeyboard);
+  }, [isSidebarPending]);
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -329,9 +383,19 @@ export function ResearchBoxViewer({
           workspaceTransferAdapter ? cancelWorkspaceTransfer : undefined
         }
         onSelectNewChat={selectNewChatAndFocus}
+        onOpenChatSearch={openChatSearch}
         onRenameSession={renameSession}
         onDeleteSession={deleteSession}
         onSelectSession={selectSession}
+      />
+
+      <ChatSearchDialog
+        isOpen={chatSearchOpen}
+        isPending={isSidebarPending}
+        projects={coreState.projects}
+        sessions={coreState.sessions}
+        onClose={closeChatSearch}
+        onSelectSession={selectChatSearchResult}
       />
 
       <section

@@ -6,6 +6,7 @@ import {
   MessageSquareText,
   MoreHorizontal,
   Plus,
+  Search,
   SquarePen,
   Upload,
 } from "lucide-react";
@@ -36,6 +37,7 @@ export function WorkspaceSidebar({
   workspaceTransferNotice,
   onCancelWorkspaceTransfer,
   onSelectNewChat,
+  onOpenChatSearch,
   onRenameSession,
   onDeleteSession,
   onSelectSession,
@@ -57,6 +59,7 @@ export function WorkspaceSidebar({
   workspaceTransferNotice: WorkspaceTransferNotice | null;
   onCancelWorkspaceTransfer?: () => void;
   onSelectNewChat: (projectId?: string) => void;
+  onOpenChatSearch: () => void;
   onRenameSession: (projectId: string, sessionId: string, title: string) => void;
   onDeleteSession: (projectId: string, sessionId: string) => void;
   onSelectSession: (projectId: string, sessionId: string) => void;
@@ -271,6 +274,20 @@ export function WorkspaceSidebar({
           >
             <SquarePen size={18} />
             <span>New chat</span>
+          </button>
+          <button
+            type="button"
+            title="Search chats (Ctrl or Command + K)"
+            aria-keyshortcuts="Control+K Meta+K"
+            disabled={isPending}
+            onClick={() => {
+              setOpenMenu(null);
+              onOpenChatSearch();
+            }}
+          >
+            <Search size={18} />
+            <span>Search chats</span>
+            <kbd aria-hidden={true}>⌘ K</kbd>
           </button>
         </nav>
 

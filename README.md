@@ -10,6 +10,7 @@ remote hosts.
 - ChatGPT-style responsive conversation viewer
 - Persistent projects, submitted chats, and project/session input drafts
 - One virtual new-chat state per project; a session is created on first send
+- Keyboard-accessible search across saved chats in every project
 - Real `@earendil-works/pi-agent-core` loop inside a Web Worker
 - Dedicated LLM Web Worker for multiplexed model requests and cancellation
 - Chat-scoped provider/model picker with a built-in mock and dynamic

@@ -7,7 +7,9 @@ import {
   normalizeFilePath,
   normalizePath,
   normalizeWorkspaceChangeTimestamp,
+  normalizeVfsInitialFiles,
   normalizeVfsSeedFiles,
+  snapshotWorkspaceCreateOptions,
   VfsError,
   WorkspaceBackendError,
   type VfsEntry,
@@ -16,6 +18,7 @@ import {
   type VfsWriteOptions,
   type Workspace,
   type WorkspaceBackend,
+  type WorkspaceCreateOptions,
   type WorkspaceChangeRecord,
   type WorkspaceChangesResult,
   type WorkspaceListResult,
@@ -131,7 +134,11 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
     this.runExclusive = runExclusive;
   }
 
-  create(projectId: string): Promise<Workspace> {
+  create(
+    projectId: string,
+    options?: WorkspaceCreateOptions,
+  ): Promise<Workspace> {
+    const createOptions = snapshotWorkspaceCreateOptions(options);
     return this.enqueue(async () => {
       const existing = await this.loadAndRepairMarker(projectId);
       if (existing?.lifecycle_status === "active") {
@@ -140,6 +147,10 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
           `Project filesystem already exists: ${projectId}`,
         );
       }
+      const initialFiles =
+        createOptions?.initial_files === undefined
+          ? this.seedFiles
+          : normalizeVfsInitialFiles(createOptions.initial_files);
 
       const incarnationId = crypto.randomUUID();
       const storageId = crypto.randomUUID();
@@ -147,25 +158,11 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
         storageId,
         null,
       );
-      const objectWriteResults = await Promise.allSettled(
-        this.seedFiles.map(async ({ path, content }) => ({
-          path,
-          content,
-          object: await this.objects.write(storageId, content),
-        })),
+      const objectWrites = await writeInitialObjects(
+        this.objects,
+        storageId,
+        initialFiles,
       );
-      const failedObjectWrite = objectWriteResults.find(
-        (result) => result.status === "rejected",
-      );
-      if (failedObjectWrite?.status === "rejected") {
-        throw failedObjectWrite.reason;
-      }
-      const objectWrites = objectWriteResults.map((result) => {
-        if (result.status !== "fulfilled") {
-          throw new Error("Unreachable rejected OPFS object write.");
-        }
-        return result.value;
-      });
 
       try {
         const database = await this.database.open();
@@ -1720,6 +1717,36 @@ function sameCreationBaseline(
     expected.incarnation_id === current.incarnation_id &&
     expected.workspace_revision === current.workspace_revision
   );
+}
+
+async function writeInitialObjects(
+  objects: WorkspaceObjectStore,
+  storageId: string,
+  initialFiles: readonly VfsSeedFile[],
+): Promise<
+  Array<{
+    path: string;
+    content: string;
+    object: WorkspaceObjectWriteResult;
+  }>
+> {
+  const objectsByContent = new Map<string, WorkspaceObjectWriteResult>();
+  const writes: Array<{
+    path: string;
+    content: string;
+    object: WorkspaceObjectWriteResult;
+  }> = [];
+
+  for (const { path, content } of initialFiles) {
+    let object = objectsByContent.get(content);
+    if (object === undefined) {
+      object = await objects.write(storageId, content);
+      assertObjectWriteResult(object, content);
+      objectsByContent.set(content, object);
+    }
+    writes.push({ path, content, object });
+  }
+  return writes;
 }
 
 function sameOpfsFile(

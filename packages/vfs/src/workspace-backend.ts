@@ -1,7 +1,9 @@
 import {
   incrementWorkspaceRevision,
+  normalizeVfsInitialFiles,
   offsetWorkspaceRevision,
   VfsError,
+  type VfsSeedFile,
   type Workspace,
 } from "./filesystem.ts";
 
@@ -17,6 +19,39 @@ export class WorkspaceBackendError extends Error {
     this.name = "WorkspaceBackendError";
     this.code = code;
   }
+}
+
+/**
+ * Files supplied by an import or another caller when creating a workspace.
+ *
+ * Omitting `initial_files` preserves the backend's configured default seed.
+ * Providing it, including an empty array, replaces that seed. Initial files
+ * belong to the new incarnation's baseline: they do not increment its revision
+ * and do not create workspace change records.
+ */
+export type WorkspaceCreateOptions = {
+  initial_files?: readonly Readonly<VfsSeedFile>[];
+};
+
+/**
+ * Captures caller-owned options without validating them. Backends can therefore
+ * preserve `already_exists` precedence while preventing queued work from
+ * observing later array or file-object mutations.
+ */
+export function snapshotWorkspaceCreateOptions(
+  options?: WorkspaceCreateOptions,
+): WorkspaceCreateOptions | undefined {
+  if (options?.initial_files === undefined) return undefined;
+  const initialFiles = options.initial_files;
+  return {
+    initial_files: Array.isArray(initialFiles)
+      ? initialFiles.map((file) =>
+          typeof file === "object" && file !== null
+            ? { path: file.path, content: file.content }
+            : file,
+        )
+      : initialFiles,
+  };
 }
 
 /**
@@ -38,7 +73,10 @@ export class WorkspaceBackendError extends Error {
  * instead of runtime flags in the agent core.
  */
 export interface WorkspaceBackend {
-  create(projectId: string): Promise<Workspace>;
+  create(
+    projectId: string,
+    options?: WorkspaceCreateOptions,
+  ): Promise<Workspace>;
   open(projectId: string): Promise<Workspace>;
   delete(projectId: string): Promise<void>;
 }
@@ -52,17 +90,29 @@ type MemoryWorkspaceRecord = {
 export class MemoryWorkspaceBackend implements WorkspaceBackend {
   private readonly workspaces = new Map<string, MemoryWorkspaceRecord>();
   private readonly tombstoneRevisions = new Map<string, number>();
-  private readonly createWorkspace: () => Workspace;
+  private readonly createWorkspace: (
+    initialFiles?: readonly VfsSeedFile[],
+  ) => Workspace;
   private operationTail: Promise<void> = Promise.resolve();
 
   /**
    * The factory must return a distinct revision-zero workspace on every call.
+   * When initial files are provided, it must use them instead of its configured
+   * default seed.
    */
-  constructor(createWorkspace: () => Workspace) {
+  constructor(
+    createWorkspace: (
+      initialFiles?: readonly VfsSeedFile[],
+    ) => Workspace,
+  ) {
     this.createWorkspace = createWorkspace;
   }
 
-  create(projectId: string): Promise<Workspace> {
+  create(
+    projectId: string,
+    options?: WorkspaceCreateOptions,
+  ): Promise<Workspace> {
+    const createOptions = snapshotWorkspaceCreateOptions(options);
     return this.enqueue(async () => {
       if (this.workspaces.has(projectId)) {
         throw new WorkspaceBackendError(
@@ -70,8 +120,12 @@ export class MemoryWorkspaceBackend implements WorkspaceBackend {
           `Project workspace already exists: ${projectId}`,
         );
       }
+      const initialFiles =
+        createOptions?.initial_files === undefined
+          ? undefined
+          : normalizeVfsInitialFiles(createOptions.initial_files);
       const record = {
-        workspace: this.createWorkspace(),
+        workspace: this.createWorkspace(initialFiles),
         revisionOffset: this.tombstoneRevisions.get(projectId) ?? 0,
         localRevision: 0,
       } satisfies MemoryWorkspaceRecord;

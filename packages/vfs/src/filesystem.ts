@@ -59,6 +59,10 @@ export type VfsSeedFile = {
   content: string;
 };
 
+export type VfsSeedSource =
+  | Readonly<Record<string, string>>
+  | readonly Readonly<VfsSeedFile>[];
+
 export type WorkspaceListResult = {
   workspace_revision: number;
   entries: VfsEntry[];
@@ -272,37 +276,66 @@ export function assertVfsWriteExpectation(
 export function normalizeVfsSeedFiles(
   seed: Readonly<Record<string, string>>,
 ): VfsSeedFile[] {
+  return normalizeVfsInitialFiles(
+    Object.entries(seed).map(([path, content]) => ({ path, content })),
+  );
+}
+
+export function normalizeVfsInitialFiles(
+  files: readonly Readonly<VfsSeedFile>[],
+): VfsSeedFile[] {
+  if (!Array.isArray(files)) {
+    throw new VfsError(
+      "invalid_path",
+      "Initial files must be an array.",
+    );
+  }
   const normalizedFiles = new Map<string, string>();
-  for (const [path, content] of Object.entries(seed)) {
+  const impliedDirectories = new Set<string>();
+  for (const file of files) {
+    if (
+      typeof file !== "object" ||
+      file === null ||
+      typeof file.path !== "string" ||
+      typeof file.content !== "string"
+    ) {
+      throw new VfsError(
+        "invalid_path",
+        "Initial files must contain string paths and content.",
+      );
+    }
+    const { path, content } = file;
     const normalizedPath = normalizeFilePath(path);
     if (normalizedFiles.has(normalizedPath)) {
       throw new VfsError(
         "conflict",
-        `Seed file resolves to a duplicate path: ${normalizedPath}`,
+        `Initial file resolves to a duplicate path: ${normalizedPath}`,
       );
     }
-    if (
-      [...normalizedFiles.keys()].some((candidate) =>
-        candidate.startsWith(`${normalizedPath}/`),
-      )
-    ) {
+    if (impliedDirectories.has(normalizedPath)) {
       throw new VfsError(
         "is_directory",
-        `Cannot replace a seed directory with a file: ${normalizedPath}`,
+        `Cannot replace an initial directory with a file: ${normalizedPath}`,
       );
     }
 
     const segments = normalizedPath.split("/").filter(Boolean);
+    const ancestors: string[] = [];
+    let ancestor = "";
     for (let index = 1; index < segments.length; index += 1) {
-      const ancestor = `/${segments.slice(0, index).join("/")}`;
+      ancestor += `/${segments[index - 1]}`;
       if (normalizedFiles.has(ancestor)) {
         throw new VfsError(
           "not_directory",
-          `Cannot create a seed file beneath another file: ${ancestor}`,
+          `Cannot create an initial file beneath another file: ${ancestor}`,
         );
       }
+      ancestors.push(ancestor);
     }
     normalizedFiles.set(normalizedPath, content);
+    for (const directory of ancestors) {
+      impliedDirectories.add(directory);
+    }
   }
 
   return [...normalizedFiles].map(([path, content]) => ({ path, content }));

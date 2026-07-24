@@ -7,7 +7,9 @@ import {
   normalizeFilePath,
   normalizePath,
   normalizeWorkspaceChangeTimestamp,
+  normalizeVfsInitialFiles,
   normalizeVfsSeedFiles,
+  snapshotWorkspaceCreateOptions,
   VfsError,
   WorkspaceBackendError,
   type VfsEntry,
@@ -16,6 +18,7 @@ import {
   type VfsWriteOptions,
   type Workspace,
   type WorkspaceBackend,
+  type WorkspaceCreateOptions,
   type WorkspaceChangeRecord,
   type WorkspaceChangesResult,
   type WorkspaceListResult,
@@ -62,7 +65,11 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
     this.seedFiles = normalizeVfsSeedFiles(seedFiles);
   }
 
-  async create(projectId: string): Promise<Workspace> {
+  async create(
+    projectId: string,
+    options?: WorkspaceCreateOptions,
+  ): Promise<Workspace> {
+    const createOptions = snapshotWorkspaceCreateOptions(options);
     const incarnationId = crypto.randomUUID();
     const database = await this.database.open();
     const transaction = database.transaction(
@@ -108,6 +115,10 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
           `Project filesystem already exists: ${projectId}`,
         );
       }
+      const initialFiles =
+        createOptions?.initial_files === undefined
+          ? this.seedFiles
+          : normalizeVfsInitialFiles(createOptions.initial_files);
       const workspaceRevision = existing?.workspace_revision ?? 0;
       const fileStore = transaction.objectStore(databaseStores.files);
       const changeStore = transaction.objectStore(databaseStores.file_changes);
@@ -132,7 +143,7 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
         opfs_storage_id: null,
         opfs_migration: null,
       } satisfies ProjectFileSystemRecord);
-      for (const { path, content } of this.seedFiles) {
+      for (const { path, content } of initialFiles) {
         fileStore.put({
           project_id: projectId,
           path,

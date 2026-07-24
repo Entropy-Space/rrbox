@@ -12,7 +12,8 @@ defineWorkspaceBackendConformance({
   async create_backend({ seed_files }) {
     return {
       backend: new MemoryWorkspaceBackend(
-        () => new MemoryWorkspace(seed_files),
+        (initialFiles) =>
+          new MemoryWorkspace(initialFiles ?? seed_files),
       ),
     };
   },

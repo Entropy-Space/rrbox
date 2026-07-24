@@ -1,6 +1,8 @@
-import type {
-  Workspace,
-  WorkspaceBackend,
+import {
+  snapshotWorkspaceCreateOptions,
+  type Workspace,
+  type WorkspaceBackend,
+  type WorkspaceCreateOptions,
 } from "@researchbox/vfs";
 import {
   OpfsWorkspaceObjectStore,
@@ -48,8 +50,12 @@ export class BrowserWorkspaceBackend implements WorkspaceBackend {
     this.createObjectStore = createObjectStore;
   }
 
-  async create(projectId: string): Promise<Workspace> {
-    return (await this.getBackend()).create(projectId);
+  async create(
+    projectId: string,
+    options?: WorkspaceCreateOptions,
+  ): Promise<Workspace> {
+    const createOptions = snapshotWorkspaceCreateOptions(options);
+    return (await this.getBackend()).create(projectId, createOptions);
   }
 
   async open(projectId: string): Promise<Workspace> {

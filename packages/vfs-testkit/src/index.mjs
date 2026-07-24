@@ -84,6 +84,180 @@ export function defineWorkspaceBackendConformance({
     );
   });
 
+  test(`${name}: explicit initial files replace the configured seed`, async (context) => {
+    const { backend } = await createHarness(context, create_backend, {
+      "/README.md": "configured seed",
+    });
+
+    const empty = await backend.create("empty-project", {
+      initial_files: [],
+    });
+    assert.deepEqual(await empty.list("/"), {
+      workspace_revision: 0,
+      entries: [],
+    });
+    assert.deepEqual(await empty.listChanges(), {
+      workspace_revision: 0,
+      changes: [],
+    });
+
+    const imported = await backend.create("imported-project", {
+      initial_files: [
+        {
+          path: "notes\\drafts\\..\\today.md",
+          content: "today",
+        },
+        {
+          path: "/src/index.ts",
+          content: "export {};",
+        },
+      ],
+    });
+    assert.deepEqual(await imported.read("/notes/today.md"), {
+      workspace_revision: 0,
+      content: "today",
+    });
+    assert.deepEqual(await imported.read("/src/index.ts"), {
+      workspace_revision: 0,
+      content: "export {};",
+    });
+    assert.deepEqual(await imported.listChanges(), {
+      workspace_revision: 0,
+      changes: [],
+    });
+    await assert.rejects(
+      imported.read("/README.md"),
+      hasVfsCode("not_found"),
+    );
+
+    const seeded = await backend.create("seeded-project");
+    assert.deepEqual(await seeded.read("/README.md"), {
+      workspace_revision: 0,
+      content: "configured seed",
+    });
+    const explicitlyUndefined = await backend.create("undefined-project", {
+      initial_files: undefined,
+    });
+    assert.deepEqual(await explicitlyUndefined.read("/README.md"), {
+      workspace_revision: 0,
+      content: "configured seed",
+    });
+
+    const mutableInitialFiles = [
+      { path: "/original.txt", content: "original" },
+    ];
+    const snapshotCreation = backend.create("snapshot-project", {
+      initial_files: mutableInitialFiles,
+    });
+    mutableInitialFiles[0].path = "/mutated.txt";
+    mutableInitialFiles[0].content = "mutated";
+    mutableInitialFiles.push({
+      path: "/added.txt",
+      content: "added",
+    });
+    const snapshot = await snapshotCreation;
+    assert.deepEqual(await snapshot.read("/original.txt"), {
+      workspace_revision: 0,
+      content: "original",
+    });
+    await assert.rejects(
+      snapshot.read("/mutated.txt"),
+      hasVfsCode("not_found"),
+    );
+    await assert.rejects(
+      snapshot.read("/added.txt"),
+      hasVfsCode("not_found"),
+    );
+  });
+
+  test(`${name}: invalid initial files do not partially create a workspace`, async (context) => {
+    const { backend } = await createHarness(context, create_backend, {
+      "/README.md": "configured seed",
+    });
+
+    const existing = await backend.create("existing-project");
+    await assert.rejects(
+      backend.create("existing-project", {
+        initial_files: [
+          { path: "notes.txt", content: "first" },
+          { path: "/notes.txt", content: "second" },
+        ],
+      }),
+      hasBackendCode("already_exists"),
+    );
+    assert.deepEqual(await existing.read("/README.md"), {
+      workspace_revision: 0,
+      content: "configured seed",
+    });
+
+    await assert.rejects(
+      backend.create("duplicate-project", {
+        initial_files: [
+          { path: "notes.txt", content: "first" },
+          { path: "/notes.txt", content: "second" },
+        ],
+      }),
+      hasVfsCode("conflict"),
+    );
+    await assert.rejects(
+      backend.open("duplicate-project"),
+      hasBackendCode("not_found"),
+    );
+
+    await assert.rejects(
+      backend.create("collision-project", {
+        initial_files: [
+          { path: "/folder/child.txt", content: "child" },
+          { path: "/folder", content: "file" },
+        ],
+      }),
+      hasVfsCode("is_directory"),
+    );
+    await assert.rejects(
+      backend.open("collision-project"),
+      hasBackendCode("not_found"),
+    );
+
+    await assert.rejects(
+      backend.create("ancestor-project", {
+        initial_files: [
+          { path: "/folder", content: "file" },
+          { path: "/folder/child.txt", content: "child" },
+        ],
+      }),
+      hasVfsCode("not_directory"),
+    );
+    await assert.rejects(
+      backend.open("ancestor-project"),
+      hasBackendCode("not_found"),
+    );
+
+    await assert.rejects(
+      backend.create("malformed-project", {
+        initial_files: [
+          { path: "/invalid.txt", content: new Uint8Array() },
+        ],
+      }),
+      hasVfsCode("invalid_path"),
+    );
+    await assert.rejects(
+      backend.open("malformed-project"),
+      hasBackendCode("not_found"),
+    );
+
+    const recovered = await backend.create("duplicate-project", {
+      initial_files: [{ path: "/valid.txt", content: "valid" }],
+    });
+    assert.deepEqual(await recovered.read("/valid.txt"), {
+      workspace_revision: 0,
+      content: "valid",
+    });
+    await assert.rejects(
+      recovered.read("/README.md"),
+      hasVfsCode("not_found"),
+    );
+  });
+
   test(`${name}: paths, ordering, and UTF-8 sizes are portable`, async (context) => {
     const { backend } = await createHarness(context, create_backend, {
       "/zeta.txt": "z",
@@ -463,6 +637,42 @@ export function defineDurableWorkspaceBackendConformance({
         (change) => change.change_id,
       ),
       ["persistent-change"],
+    );
+  });
+
+  test(`${name}: initial files survive reopening at revision zero`, async (context) => {
+    const harness = await createHarness(context, create_backend, {
+      "/README.md": "configured seed",
+    });
+    assert.equal(
+      typeof harness.reopen,
+      "function",
+      "A durable backend harness must provide reopen().",
+    );
+    await harness.backend.create("project", {
+      initial_files: [
+        { path: "/imported.txt", content: "imported" },
+        { path: "nested\\file.txt", content: "nested" },
+      ],
+    });
+
+    const reopenedBackend = await harness.reopen();
+    const reopened = await reopenedBackend.open("project");
+    assert.deepEqual(await reopened.read("/imported.txt"), {
+      workspace_revision: 0,
+      content: "imported",
+    });
+    assert.deepEqual(await reopened.read("/nested/file.txt"), {
+      workspace_revision: 0,
+      content: "nested",
+    });
+    assert.deepEqual(await reopened.listChanges(), {
+      workspace_revision: 0,
+      changes: [],
+    });
+    await assert.rejects(
+      reopened.read("/README.md"),
+      hasVfsCode("not_found"),
     );
   });
 

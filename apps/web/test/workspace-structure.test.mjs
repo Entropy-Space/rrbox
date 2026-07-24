@@ -17,6 +17,7 @@ test("keeps the proposed workspace surfaces present", async () => {
     "packages/project-store",
     "packages/runtime-browser",
     "packages/vfs",
+    "packages/workspace-archive",
     "platforms/ios",
     "platforms/desktop",
   ];
@@ -34,6 +35,7 @@ test("keeps framework dependencies out of portable packages", async () => {
     "runtime-browser",
     "project-store",
     "vfs",
+    "workspace-archive",
   ];
   const forbiddenDependencies = new Set([
     "next",

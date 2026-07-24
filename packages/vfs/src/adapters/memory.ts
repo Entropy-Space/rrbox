@@ -7,10 +7,12 @@ import {
   normalizeFilePath,
   normalizePath,
   normalizeWorkspaceChangeTimestamp,
+  normalizeVfsInitialFiles,
   normalizeVfsSeedFiles,
   VfsError,
   type VfsEntry,
   type VfsRemoveOptions,
+  type VfsSeedSource,
   type VfsWriteOptions,
   type Workspace,
   type WorkspaceChangeRecord,
@@ -27,8 +29,11 @@ export class MemoryWorkspace implements Workspace {
   private workspaceRevision = 0;
   private lastChangeAt: string | null = null;
 
-  constructor(seed: Record<string, string> = {}) {
-    for (const { path, content } of normalizeVfsSeedFiles(seed)) {
+  constructor(seed: VfsSeedSource = {}) {
+    const files = Array.isArray(seed)
+      ? normalizeVfsInitialFiles(seed)
+      : normalizeVfsSeedFiles(seed as Readonly<Record<string, string>>);
+    for (const { path, content } of files) {
       this.files.set(path, content);
     }
   }

@@ -57,7 +57,7 @@ test("browser storage selects OPFS after one successful root probe", async () =>
   let probes = 0;
   const backend = new BrowserWorkspaceBackend(
     database,
-    {},
+    { "/README.md": "configured seed" },
     async () => {
       probes += 1;
       return createWritableProbeRoot();
@@ -65,7 +65,23 @@ test("browser storage selects OPFS after one successful root probe", async () =>
     () => objects,
   );
 
-  const workspace = await backend.create("project-1");
+  const initialFiles = [
+    { path: "imported\\file.txt", content: "imported" },
+  ];
+  const workspaceCreation = backend.create("project-1", {
+    initial_files: initialFiles,
+  });
+  initialFiles[0].path = "/mutated.txt";
+  initialFiles[0].content = "mutated";
+  const workspace = await workspaceCreation;
+  assert.deepEqual(await workspace.read("/imported/file.txt"), {
+    workspace_revision: 0,
+    content: "imported",
+  });
+  await assert.rejects(
+    workspace.read("/README.md"),
+    (error) => error?.code === "not_found",
+  );
   await workspace.write("/opfs.txt", "selected");
   assert.equal(
     (await (await backend.open("project-1")).read("/opfs.txt")).content,
@@ -77,6 +93,102 @@ test("browser storage selects OPFS after one successful root probe", async () =>
       .marker.content_storage,
     "opfs",
   );
+  database.close();
+});
+
+test("OPFS creation serializes and coalesces duplicate initial objects", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-opfs-initial-batch-${crypto.randomUUID()}`,
+  );
+  const objects = new StrictInitialWriteObjectStore();
+  const backend = new OpfsWorkspaceBackend(database, objects, {});
+
+  const workspace = await backend.create("project-1", {
+    initial_files: [
+      { path: "/first.txt", content: "shared" },
+      { path: "/second.txt", content: "shared" },
+      { path: "/empty-a.txt", content: "" },
+      { path: "/empty-b.txt", content: "" },
+    ],
+  });
+
+  assert.equal(objects.write_attempts, 2);
+  assert.equal(objects.max_concurrent_writes, 1);
+  assert.equal((await workspace.read("/first.txt")).content, "shared");
+  assert.equal((await workspace.read("/second.txt")).content, "shared");
+  assert.equal((await workspace.read("/empty-a.txt")).content, "");
+  assert.equal((await workspace.read("/empty-b.txt")).content, "");
+
+  const state = await readWorkspaceStorageState(database, "project-1");
+  assert.equal(state.opfs_files.length, 4);
+  assert.equal(
+    new Set(state.opfs_files.map((file) => file.content_id)).size,
+    2,
+  );
+  database.close();
+});
+
+test("a failed OPFS initial batch is unpublished, cleaned, and retryable", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-opfs-initial-failure-${crypto.randomUUID()}`,
+  );
+  const objects = new MemoryWorkspaceObjectStore();
+  objects.fail_before_write_attempt = 2;
+  const backend = new OpfsWorkspaceBackend(database, objects, {});
+  const initialFiles = [
+    { path: "/first.txt", content: "first" },
+    { path: "/second.txt", content: "second" },
+    { path: "/third.txt", content: "third" },
+  ];
+
+  await assert.rejects(
+    backend.create("project-1", {
+      initial_files: initialFiles,
+    }),
+    /injected object write failure/,
+  );
+
+  const failedState = await readWorkspaceStorageState(
+    database,
+    "project-1",
+  );
+  assert.equal(failedState.marker, undefined);
+  assert.equal(failedState.inline_files.length, 0);
+  assert.equal(failedState.opfs_files.length, 0);
+  assert.equal(objects.write_attempts, 2);
+  assert.equal(objects.storages.size, 1);
+  const [failedStorageId] = objects.storages.keys();
+  assert.ok(failedStorageId);
+  assert.deepEqual(
+    (await readOpfsCleanupRecords(database)).map((record) => ({
+      storage_id: record.storage_id,
+      content_id: record.content_id,
+    })),
+    [{ storage_id: failedStorageId, content_id: null }],
+  );
+
+  objects.fail_before_write_attempt = null;
+  const retried = await backend.create("project-1", {
+    initial_files: initialFiles,
+  });
+  assert.equal((await retried.read("/first.txt")).content, "first");
+  assert.equal((await retried.read("/second.txt")).content, "second");
+  assert.equal((await retried.read("/third.txt")).content, "third");
+
+  const retriedState = await readWorkspaceStorageState(
+    database,
+    "project-1",
+  );
+  assert.equal(retriedState.marker.content_storage, "opfs");
+  assert.equal(retriedState.opfs_files.length, 3);
+  assert.notEqual(retriedState.marker.opfs_storage_id, failedStorageId);
+  assert.equal(objects.storages.has(failedStorageId), false);
+  assert.equal(objects.storages.size, 1);
+  assert.deepEqual(await readOpfsCleanupRecords(database), []);
   database.close();
 });
 
@@ -595,6 +707,36 @@ class UppercaseContentIdObjectStore extends MemoryWorkspaceObjectStore {
   }
 }
 
+class StrictInitialWriteObjectStore extends MemoryWorkspaceObjectStore {
+  active_writes = 0;
+  max_concurrent_writes = 0;
+  written_objects = new Set();
+
+  async write(storageId, content) {
+    const objectKey = JSON.stringify([storageId, content]);
+    if (this.active_writes > 0) {
+      throw new Error("overlapping object writes are not supported");
+    }
+    if (this.written_objects.has(objectKey)) {
+      throw new Error("duplicate object writes are not supported");
+    }
+
+    this.active_writes += 1;
+    this.max_concurrent_writes = Math.max(
+      this.max_concurrent_writes,
+      this.active_writes,
+    );
+    try {
+      await Promise.resolve();
+      const result = await super.write(storageId, content);
+      this.written_objects.add(objectKey);
+      return result;
+    } finally {
+      this.active_writes -= 1;
+    }
+  }
+}
+
 function createWritableProbeRoot() {
   return {
     async getFileHandle() {
@@ -648,6 +790,22 @@ async function readWorkspaceStorageState(database, projectId) {
     inline_files: inlineFiles,
     opfs_files: opfsFiles,
   };
+}
+
+async function readOpfsCleanupRecords(database) {
+  const connection = await database.open();
+  const transaction = connection.transaction(
+    databaseStores.meta,
+    "readonly",
+  );
+  const completion = transactionComplete(transaction);
+  const records = await requestValue(
+    transaction.objectStore(databaseStores.meta).getAll(),
+  );
+  await completion;
+  return records.filter(
+    (record) => record.record_type === "opfs_cleanup",
+  );
 }
 
 function requestValue(request) {

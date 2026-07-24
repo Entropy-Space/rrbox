@@ -60,7 +60,9 @@ against same-origin code. Server-held credentials must remain on the server.
 5. `packages/runtime-browser` hosts compatible core and LLM handlers; it does
    not construct ResearchBox, select providers, or import Pi.
 6. `packages/model-transport`, `packages/protocol`, `packages/project-store`,
-   and `packages/vfs` have no application or framework dependencies.
+   `packages/vfs`, and `packages/workspace-archive` have no application or
+   framework dependencies. The archive codec depends on VFS reader and seed
+   types, not on a concrete backend.
 7. Platform implementations compose these packages; packages never import a
    platform.
 
@@ -169,7 +171,7 @@ durable backend must fail closed instead of resetting that project sequence.
 - OPFS: implemented immutable content backend with resumable IndexedDB migration
 - native folder: planned desktop backend
 - iOS application storage: planned native mobile backend
-- ZIP: planned deterministic import/export codec, not a live backend
+- ZIP: implemented deterministic content-transfer codec, not a live backend
 
 The current workspace format contains UTF-8 text files and infers directories
 from paths; empty directories and binary files are intentionally not yet part
@@ -188,6 +190,31 @@ each OPFS candidate is copied and recorded; a final IndexedDB transaction
 rechecks the incarnation, source revision, and exact path coverage before
 flipping ownership. Cleanup of stale inline rows and unreachable OPFS objects
 is idempotent and resumes from durable `meta` records.
+
+## Workspace archive boundary
+
+`packages/workspace-archive` captures a stable `WorkspaceReader` snapshot and
+encodes portable file content. Format v1 has one root manifest,
+`researchbox-workspace.json`, followed by payload entries below `workspace/`.
+Logical paths determine a stable entry order. The encoder uses ZIP STORE only
+and fixed metadata, so the same snapshot produces byte-identical bytes.
+
+The decoder accepts only the exact manifest-declared layout and applies bounded
+archive, manifest, file-count, per-file, aggregate-content, path-length, and
+path-depth limits before returning content. It rejects unsafe, duplicate, or
+colliding paths and unsupported ZIP structures, and verifies ZIP CRC-32,
+manifest SHA-256 values, byte sizes, and UTF-8 validity. Archives deliberately
+exclude the captured source revision, change receipts, workspace history,
+projects, and sessions. Export reports the coherent source revision to its
+caller separately, but does not serialize it.
+
+Decoded files are intended for import as a new workspace:
+`backend.create(new_project_id, { initial_files: decoded.files })`. Explicit
+`initial_files`, including an empty array, replace a backend's configured seed
+and form a revision-zero baseline without change receipts. Omitting the field
+retains the configured seed. Import never resumes the source revision or
+history. The package foundation is implemented; browser import/export controls
+are not yet wired.
 
 The browser probes an actual temporary OPFS writable stream before selecting
 the hybrid backend, so engines that expose an OPFS root without writable

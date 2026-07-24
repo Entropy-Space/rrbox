@@ -123,8 +123,9 @@ request for automatic promotion.
 
 The elected browser core owns one IndexedDB database with `meta`, `projects`,
 `sessions`, `session_documents`, `project_filesystems`, `files`,
-`file_changes`, and `opfs_files` stores. Catalog writes use a monotonic
-`state_revision` guard. Draft-only writes update one project or session
+`file_changes`, `file_change_quarantines`, and `opfs_files` stores. Catalog
+writes use a monotonic `state_revision` guard. Draft-only writes update one
+project or session
 document without rewriting the catalog; this relies on the origin-wide
 exclusive Web Lock that gives exactly one core write ownership. Session
 documents persist the existing-session input draft and one versioned, ordered
@@ -227,7 +228,7 @@ Deleted workspace markers retain only the next project-scoped revision so
 reusing an identifier cannot move the viewer's cache backwards; file content
 and change receipts are still removed.
 
-Browser storage version 6 gives each active workspace an explicit
+Browser storage version 8 gives each active workspace an explicit
 `indexeddb` or `opfs` content owner. Migration never performs filesystem I/O in
 an IndexedDB upgrade transaction. Inline content remains authoritative while
 each OPFS candidate is copied and recorded; a final IndexedDB transaction

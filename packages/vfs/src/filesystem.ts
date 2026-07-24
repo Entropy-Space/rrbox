@@ -24,10 +24,20 @@ export type WorkspaceChangeMetadata = {
 
 export type WorkspaceChangeRecord = Omit<
   WorkspaceChangeMetadata,
-  "tool_call_block_id"
+  "assistant_message_index" | "tool_call_block_id"
 > & {
   tool_call_block_id: string | null;
   legacy_message_id?: string;
+  /**
+   * The originating assistant message index.
+   *
+   * Durable adapters may canonicalize an unavailable or malformed historical
+   * position to `null` only when a stable `tool_call_block_id` or
+   * `legacy_message_id` is present. Stable identity always takes precedence
+   * over this non-authoritative ordinal. Newly authored receipts use
+   * `WorkspaceChangeMetadata` and always provide a valid index.
+   */
+  assistant_message_index: number | null;
   /**
    * The workspace revision that committed this receipt's file contents.
    *
@@ -108,6 +118,17 @@ export type WorkspaceRemoveResult = {
 export type WorkspaceChangesResult = {
   workspace_revision: number;
   changes: WorkspaceChangeRecord[];
+  /**
+   * Present when a durable backend isolated malformed historical receipts.
+   *
+   * Quarantined receipts remain outside the readable/revertible journal.
+   * `pending_receipt_count` identifies markers that could not yet be persisted
+   * and will be retried by a later journal scan.
+   */
+  quarantine_status?: {
+    quarantined_receipt_count: number;
+    pending_receipt_count: number;
+  };
 };
 
 export type WorkspaceChangeResult = {
@@ -428,19 +449,21 @@ export function assertValidWorkspaceChangeRecord(
       "has an invalid legacy_message_id",
     );
   }
+  const hasStableAssistantMessageIdentity =
+    typeof change.tool_call_block_id === "string" ||
+    typeof change.legacy_message_id === "string";
   if (
-    change.tool_call_block_id === null &&
-    change.legacy_message_id === undefined &&
-    (!Number.isSafeInteger(change.assistant_message_index) ||
-      (change.assistant_message_index as number) < 0)
+    change.assistant_message_index === null &&
+    !hasStableAssistantMessageIdentity
   ) {
     throw invalidWorkspaceChangeRecord(
       "has no stable assistant message identity",
     );
   }
   if (
-    !Number.isSafeInteger(change.assistant_message_index) ||
-    (change.assistant_message_index as number) < 0
+    change.assistant_message_index !== null &&
+    (!Number.isSafeInteger(change.assistant_message_index) ||
+      (change.assistant_message_index as number) < 0)
   ) {
     throw invalidWorkspaceChangeRecord(
       "has an invalid assistant_message_index",

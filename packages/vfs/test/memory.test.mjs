@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { defineWorkspaceBackendConformance } from "@researchbox/vfs-testkit";
 import {
+  assertValidWorkspaceChangeRecord,
   MemoryWorkspace,
   MemoryWorkspaceBackend,
   VfsError,
@@ -305,6 +306,61 @@ test("memory reverts reject malformed receipts without mutation", async (t) => {
       );
     });
   }
+});
+
+test("legacy receipts may omit a positional assistant identity", async (t) => {
+  const filesystem = new MemoryWorkspace();
+  await filesystem.write("/notes.txt", "after", {
+    change: changeMetadata("change-1", "write_file"),
+  });
+  const [persistedChange] = (await filesystem.listChanges()).changes;
+
+  await t.test("with a stable tool-call block identity", () => {
+    assert.doesNotThrow(() =>
+      assertValidWorkspaceChangeRecord({
+        ...persistedChange,
+        assistant_message_index: null,
+      }),
+    );
+  });
+
+  await t.test("with a stable legacy message identity", () => {
+    assert.doesNotThrow(() =>
+      assertValidWorkspaceChangeRecord({
+        ...persistedChange,
+        tool_call_block_id: null,
+        legacy_message_id: "legacy-message-1",
+        assistant_message_index: null,
+      }),
+    );
+  });
+
+  await t.test("without a stable identity", () => {
+    assert.throws(
+      () =>
+        assertValidWorkspaceChangeRecord({
+          ...persistedChange,
+          tool_call_block_id: null,
+          assistant_message_index: null,
+        }),
+      (error) =>
+        error instanceof WorkspaceCorruptionError &&
+        error.message.includes("has no stable assistant message identity"),
+    );
+  });
+
+  await t.test("with a malformed non-null index", () => {
+    assert.throws(
+      () =>
+        assertValidWorkspaceChangeRecord({
+          ...persistedChange,
+          assistant_message_index: -1,
+        }),
+      (error) =>
+        error instanceof WorkspaceCorruptionError &&
+        error.message.includes("has an invalid assistant_message_index"),
+    );
+  });
 });
 
 test("guarded removal cannot delete a changed file or a directory", async () => {

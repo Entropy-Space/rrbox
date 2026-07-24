@@ -434,6 +434,15 @@ export function ResearchBoxViewer({
                   {visibleCoreStatus}
                 </div>
               )}
+              {coreState.workspace_recovery_notice && (
+                <div
+                  className="recovery-banner"
+                  role="status"
+                  aria-live="polite"
+                >
+                  {coreState.workspace_recovery_notice.message}
+                </div>
+              )}
               {visibleError && <div className="error-banner">{visibleError}</div>}
               <form className="composer" onSubmit={handleSubmit}>
                 <textarea

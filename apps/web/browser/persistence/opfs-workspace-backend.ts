@@ -51,6 +51,10 @@ import type {
 import {
   assertValidStoredPathRevision,
   assertValidStoredWorkspaceChangeRecord,
+  deleteQuarantinedWorkspaceChanges,
+  persistWorkspaceChangeQuarantines,
+  readAccessibleStoredWorkspaceChange,
+  readStoredWorkspaceChanges,
   type WorkspaceChangeStorageRecord,
 } from "./workspace-change-storage.ts";
 
@@ -180,6 +184,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
             databaseStores.project_filesystems,
             databaseStores.files,
             databaseStores.file_changes,
+            databaseStores.file_change_quarantines,
             databaseStores.opfs_files,
             databaseStores.meta,
           ],
@@ -234,6 +239,10 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
           for (const key of inlineKeys) inlineStore.delete(key);
           for (const key of changeKeys) changeStore.delete(key);
           for (const key of opfsKeys) opfsStore.delete(key);
+          await deleteQuarantinedWorkspaceChanges(
+            transaction,
+            projectId,
+          );
 
           const workspaceRevision = existing?.workspace_revision ?? 0;
           workspaceStore.put({
@@ -311,6 +320,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
         databaseStores.project_filesystems,
         databaseStores.files,
         databaseStores.file_changes,
+        databaseStores.file_change_quarantines,
         databaseStores.opfs_files,
         databaseStores.meta,
       ],
@@ -378,6 +388,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
       for (const change of changes) {
         changeStore.delete([projectId, change.change_id]);
       }
+      await deleteQuarantinedWorkspaceChanges(transaction, projectId);
       for (const file of opfsFiles) {
         opfsStore.delete([projectId, file.path]);
       }
@@ -937,7 +948,11 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
   ): Promise<WorkspaceChangesResult> {
     const database = await this.database.open();
     const transaction = database.transaction(
-      [databaseStores.project_filesystems, databaseStores.file_changes],
+      [
+        databaseStores.project_filesystems,
+        databaseStores.file_changes,
+        databaseStores.file_change_quarantines,
+      ],
       "readonly",
     );
     const completion = transactionDone(transaction);
@@ -947,26 +962,32 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
         projectId,
         incarnationId,
       );
-      const changes = (await requestResult(
-        transaction
-          .objectStore(databaseStores.file_changes)
-          .index("by_project")
-          .getAll(projectId),
-      )) as WorkspaceChangeStorageRecord[];
+      const stored = await readStoredWorkspaceChanges(transaction, {
+        project_id: projectId,
+        incarnation_id: marker.incarnation_id,
+        incarnation_baseline_revision:
+          marker.incarnation_baseline_revision,
+        workspace_revision: marker.workspace_revision,
+        content_storage: "opfs",
+      });
       await completion;
+      const pendingReceiptCount =
+        await persistWorkspaceChangeQuarantines(
+          this.database,
+          stored.pending_quarantines,
+        );
       return {
         workspace_revision: marker.workspace_revision,
-        changes: changes
-          .map((change) =>
-            assertValidStoredWorkspaceChangeRecord(change, {
-              project_id: projectId,
-              change_id: change.change_id,
-              incarnation_baseline_revision:
-                marker.incarnation_baseline_revision,
-              workspace_revision: marker.workspace_revision,
+        changes: stored.changes.sort(compareWorkspaceChanges),
+        ...(stored.quarantined_receipt_count === 0
+          ? {}
+          : {
+              quarantine_status: {
+                quarantined_receipt_count:
+                  stored.quarantined_receipt_count,
+                pending_receipt_count: pendingReceiptCount,
+              },
             }),
-          )
-          .sort(compareWorkspaceChanges),
       };
     } catch (error) {
       return abortTransaction(transaction, completion, error);
@@ -980,7 +1001,11 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
   ): Promise<WorkspaceChangeResult> {
     const database = await this.database.open();
     const transaction = database.transaction(
-      [databaseStores.project_filesystems, databaseStores.file_changes],
+      [
+        databaseStores.project_filesystems,
+        databaseStores.file_changes,
+        databaseStores.file_change_quarantines,
+      ],
       "readonly",
     );
     const completion = transactionDone(transaction);
@@ -995,19 +1020,25 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
           .objectStore(databaseStores.file_changes)
           .get([projectId, changeId]),
       )) as WorkspaceChangeStorageRecord | undefined;
-      await completion;
-      return {
-        workspace_revision: marker.workspace_revision,
-        change:
-          change === undefined
-            ? null
-            : assertValidStoredWorkspaceChangeRecord(change, {
+      const accessibleChange =
+        change === undefined
+          ? null
+          : await readAccessibleStoredWorkspaceChange(
+              transaction,
+              change,
+              {
                 project_id: projectId,
                 change_id: changeId,
+                incarnation_id: marker.incarnation_id,
                 incarnation_baseline_revision:
                   marker.incarnation_baseline_revision,
                 workspace_revision: marker.workspace_revision,
-              }),
+              },
+            );
+      await completion;
+      return {
+        workspace_revision: marker.workspace_revision,
+        change: accessibleChange,
       };
     } catch (error) {
       return abortTransaction(transaction, completion, error);
@@ -1154,6 +1185,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
         databaseStores.project_filesystems,
         databaseStores.opfs_files,
         databaseStores.file_changes,
+        databaseStores.file_change_quarantines,
         databaseStores.meta,
       ],
       "readwrite",
@@ -1180,11 +1212,13 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
           `Workspace change not found: ${snapshot.change.change_id}`,
         );
       }
-      const change = assertValidStoredWorkspaceChangeRecord(
+      const change = await readAccessibleStoredWorkspaceChange(
+        transaction,
         storedChange,
         {
           project_id: snapshot.marker.project_id,
           change_id: snapshot.change.change_id,
+          incarnation_id: marker.incarnation_id,
           incarnation_baseline_revision:
             marker.incarnation_baseline_revision,
           workspace_revision: marker.workspace_revision,
@@ -1325,6 +1359,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
         databaseStores.project_filesystems,
         databaseStores.opfs_files,
         databaseStores.file_changes,
+        databaseStores.file_change_quarantines,
       ],
       "readonly",
     );
@@ -1355,6 +1390,18 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
         );
       }
       assertOpfsFileSet(marker, files);
+      const change = await readAccessibleStoredWorkspaceChange(
+        transaction,
+        storedChange,
+        {
+          project_id: projectId,
+          change_id: changeId,
+          incarnation_id: marker.incarnation_id,
+          incarnation_baseline_revision:
+            marker.incarnation_baseline_revision,
+          workspace_revision: marker.workspace_revision,
+        },
+      );
       await completion;
       return {
         marker,
@@ -1365,16 +1412,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
               ? 1
               : 0,
         ),
-        change: assertValidStoredWorkspaceChangeRecord(
-          storedChange,
-          {
-            project_id: projectId,
-            change_id: changeId,
-            incarnation_baseline_revision:
-              marker.incarnation_baseline_revision,
-            workspace_revision: marker.workspace_revision,
-          },
-        ),
+        change,
       };
     } catch (error) {
       return abortTransaction(transaction, completion, error);

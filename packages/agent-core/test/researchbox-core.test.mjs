@@ -81,6 +81,83 @@ test("reconciles crash-orphaned workspaces before opening persisted projects", a
   );
 });
 
+test("bootstrap reports isolated workspace receipts after becoming ready", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const firstEvents = [];
+  await createCore(store, provider, firstEvents).handle(
+    createCommand("bootstrap", {}),
+  );
+  const quarantinedProjectId =
+    latestState(firstEvents).active_project_id;
+
+  const originalOpen = provider.open.bind(provider);
+  provider.open = async (projectId) => {
+    const workspace = await originalOpen(projectId);
+    if (projectId !== quarantinedProjectId) return workspace;
+    const originalListChanges = workspace.listChanges.bind(workspace);
+    workspace.listChanges = async () => ({
+      ...(await originalListChanges()),
+      quarantine_status: {
+        quarantined_receipt_count: 2,
+        pending_receipt_count: 1,
+      },
+    });
+    return workspace;
+  };
+
+  const events = [];
+  const reloaded = createCore(store, provider, events);
+  await reloaded.handle(createCommand("bootstrap", {}));
+
+  const readyIndex = events.findIndex((event) => event.type === "ready");
+  const noticeIndex = events.findIndex(
+    (event) =>
+      event.type === "workspace_recovery_notice" &&
+      event.payload.code === "workspace_change_quarantine",
+  );
+  assert.ok(readyIndex >= 0);
+  assert.ok(noticeIndex > readyIndex);
+  assert.equal(events[noticeIndex].request_id, undefined);
+  assert.match(events[noticeIndex].payload.message, /2 malformed/);
+  assert.doesNotMatch(events[noticeIndex].payload.message, /legacy/i);
+  assert.match(events[noticeIndex].payload.message, /No files, projects, or chats were removed/);
+  assert.match(events[noticeIndex].payload.message, /1 isolation marker/);
+
+  await reloaded.handle(createCommand("bootstrap", {}));
+  assert.equal(
+    events.filter(
+      (event) =>
+        event.type === "workspace_recovery_notice" &&
+        event.payload.code === "workspace_change_quarantine",
+    ).length,
+    1,
+  );
+
+  await reloaded.handle(
+    createCommand("project_create", { name: "Replacement" }),
+  );
+  await reloaded.handle(
+    createCommand("project_delete", {
+      project_id: quarantinedProjectId,
+    }),
+  );
+  assert.equal(
+    events.filter(
+      (event) => event.type === "workspace_recovery_cleared",
+    ).length,
+    1,
+  );
+
+  await reloaded.handle(createCommand("bootstrap", {}));
+  assert.equal(
+    events.filter(
+      (event) => event.type === "workspace_recovery_cleared",
+    ).length,
+    1,
+  );
+});
+
 test("keeps new chat virtual and persists the first prompt before transport", async () => {
   const store = new MemoryProjectStore();
   const provider = createWorkspaceProvider();
@@ -3193,7 +3270,8 @@ test("reload repairs an incomplete persisted tool transcript by block identity",
   assert.equal(repaired.tool_call_block_id, "interrupted-tool-block");
   assert.equal(repaired.tool_call_id, "interrupted-provider-id");
   assert.equal(repaired.is_error, true);
-  assert.equal(repaired.summary, "Interrupted by reload");
+  assert.equal(repaired.summary, "Result unavailable after reload");
+  assert.match(repaired.content, /operation may have completed/i);
   assert.equal(latestState(reloadedEvents).active_session_id, sessionId);
 });
 

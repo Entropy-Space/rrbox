@@ -79,6 +79,16 @@ export type ResearchBoxCoreOptions = {
 
 export type AgentCoreOptions = ResearchBoxCoreOptions;
 
+type WorkspaceChangeQuarantineSummary = {
+  quarantined_receipt_count: number;
+  pending_receipt_count: number;
+  affected_project_count: number;
+};
+
+type WorkspaceChangeReconciliation = WorkspaceChangeQuarantineSummary & {
+  state_changed: boolean;
+};
+
 export class ResearchBoxCore {
   private readonly projectStore: ProjectStore;
   private readonly workspaceBackend: WorkspaceBackend;
@@ -99,6 +109,11 @@ export class ResearchBoxCore {
     string,
     AbortController
   >();
+  private workspaceChangeQuarantine:
+    | WorkspaceChangeQuarantineSummary
+    | null = null;
+  private hasEmittedWorkspaceChangeQuarantineStatus = false;
+  private emittedWorkspaceChangeQuarantineSignature: string | null = null;
   private providerRefreshObserverStarted = false;
 
   constructor(options: ResearchBoxCoreOptions) {
@@ -162,6 +177,7 @@ export class ResearchBoxCore {
       case "bootstrap":
         await this.mutationTail;
         this.emit("ready", { state: await this.createCoreState() }, command.request_id);
+        this.emitWorkspaceChangeQuarantineStatus();
         this.startProviderRefreshes();
         return;
       case "provider_refresh":
@@ -216,13 +232,22 @@ export class ResearchBoxCore {
     );
     if (loaded) {
       this.state = loaded;
-      const reconciledChanges = await reconcileWorkspaceChanges(
-        loaded,
-        this.workspaceBackend,
-      );
+      const workspaceChangeReconciliation =
+        await reconcileWorkspaceChanges(
+          loaded,
+          this.workspaceBackend,
+        );
+      this.workspaceChangeQuarantine =
+        workspaceChangeQuarantineFromReconciliation(
+          workspaceChangeReconciliation,
+        );
       const repairedTranscripts = repairInvalidTranscripts(loaded);
       const repairedRuns = repairInterruptedSessions(loaded);
-      if (reconciledChanges || repairedTranscripts || repairedRuns) {
+      if (
+        workspaceChangeReconciliation.state_changed ||
+        repairedTranscripts ||
+        repairedRuns
+      ) {
         await this.persistCurrentState();
       }
     } else {
@@ -608,6 +633,19 @@ export class ResearchBoxCore {
       this.emitError(
         "workspace_cleanup_failed",
         toErrorMessage(error, "The deleted project workspace could not be cleaned up."),
+        requestId,
+      );
+      return;
+    }
+    try {
+      await this.refreshWorkspaceChangeQuarantine();
+    } catch (error) {
+      this.emitError(
+        "workspace_recovery_refresh_failed",
+        toErrorMessage(
+          error,
+          "Workspace receipt recovery status could not be refreshed.",
+        ),
         requestId,
       );
     }
@@ -1696,6 +1734,74 @@ export class ResearchBoxCore {
       requestId,
     );
   }
+
+  private async refreshWorkspaceChangeQuarantine(): Promise<void> {
+    const reconciliation = await reconcileWorkspaceChanges(
+      this.requireState(),
+      this.workspaceBackend,
+    );
+    if (reconciliation.state_changed) {
+      await this.persistCurrentState();
+      await this.emitStateSnapshot();
+    }
+    this.workspaceChangeQuarantine =
+      workspaceChangeQuarantineFromReconciliation(reconciliation);
+    this.emitWorkspaceChangeQuarantineStatus();
+  }
+
+  private emitWorkspaceChangeQuarantineStatus(): void {
+    const quarantine = this.workspaceChangeQuarantine;
+    const signature =
+      quarantine === null
+        ? null
+        : [
+            quarantine.quarantined_receipt_count,
+            quarantine.pending_receipt_count,
+            quarantine.affected_project_count,
+          ].join(":");
+    if (
+      this.hasEmittedWorkspaceChangeQuarantineStatus &&
+      this.emittedWorkspaceChangeQuarantineSignature === signature
+    ) {
+      return;
+    }
+    if (quarantine === null) {
+      if (!this.hasEmittedWorkspaceChangeQuarantineStatus) return;
+      this.hasEmittedWorkspaceChangeQuarantineStatus = true;
+      this.emittedWorkspaceChangeQuarantineSignature = null;
+      this.emit("workspace_recovery_cleared", {});
+      return;
+    }
+    this.hasEmittedWorkspaceChangeQuarantineStatus = true;
+    this.emittedWorkspaceChangeQuarantineSignature = signature;
+    const receiptLabel =
+      quarantine.quarantined_receipt_count === 1
+        ? "receipt was"
+        : "receipts were";
+    const projectLabel =
+      quarantine.affected_project_count === 1
+        ? "workspace"
+        : "workspaces";
+    const pendingMessage =
+      quarantine.pending_receipt_count === 0
+        ? ""
+        : ` ${quarantine.pending_receipt_count} isolation ${
+            quarantine.pending_receipt_count === 1
+              ? "marker"
+              : "markers"
+          } could not yet be saved and will be retried the next time the workspace is checked.`;
+    this.emit("workspace_recovery_notice", {
+      code: "workspace_change_quarantine",
+      message:
+        `${quarantine.quarantined_receipt_count} malformed stored workspace change ${receiptLabel} isolated across ` +
+        `${quarantine.affected_project_count} ${projectLabel}. No files, projects, or chats were removed. ` +
+        `Those receipts cannot be reviewed or reverted.${pendingMessage}`,
+      quarantined_receipt_count:
+        quarantine.quarantined_receipt_count,
+      pending_receipt_count: quarantine.pending_receipt_count,
+      affected_project_count: quarantine.affected_project_count,
+    });
+  }
 }
 
 export { ResearchBoxCore as AgentCore };
@@ -1763,12 +1869,25 @@ function createSessionRecord(
 async function reconcileWorkspaceChanges(
   state: ProjectStoreState,
   workspaceBackend: WorkspaceBackend,
-): Promise<boolean> {
+): Promise<WorkspaceChangeReconciliation> {
   const changesByProject = new Map<string, WorkspaceChangeRecord[]>();
+  let quarantinedReceiptCount = 0;
+  let pendingReceiptCount = 0;
+  let affectedProjectCount = 0;
   for (const project of state.projects) {
     const workspace = await workspaceBackend.open(project.project_id);
     const journal = await workspace.listChanges();
     changesByProject.set(project.project_id, journal.changes);
+    const quarantine = journal.quarantine_status;
+    if (
+      quarantine !== undefined &&
+      quarantine.quarantined_receipt_count > 0
+    ) {
+      quarantinedReceiptCount +=
+        quarantine.quarantined_receipt_count;
+      pendingReceiptCount += quarantine.pending_receipt_count;
+      affectedProjectCount += 1;
+    }
   }
 
   let reconciled = false;
@@ -1801,7 +1920,24 @@ async function reconcileWorkspaceChanges(
       reconciled = true;
     }
   }
-  return reconciled;
+  return {
+    state_changed: reconciled,
+    quarantined_receipt_count: quarantinedReceiptCount,
+    pending_receipt_count: pendingReceiptCount,
+    affected_project_count: affectedProjectCount,
+  };
+}
+
+function workspaceChangeQuarantineFromReconciliation(
+  reconciliation: WorkspaceChangeReconciliation,
+): WorkspaceChangeQuarantineSummary | null {
+  if (reconciliation.quarantined_receipt_count === 0) return null;
+  return {
+    quarantined_receipt_count:
+      reconciliation.quarantined_receipt_count,
+    pending_receipt_count: reconciliation.pending_receipt_count,
+    affected_project_count: reconciliation.affected_project_count,
+  };
 }
 
 async function reconcileOrphanedWorkspaces(
@@ -2169,9 +2305,10 @@ function repairInvalidTranscript(document: SessionDocument): boolean {
       tool_call_block_id: call.block.block_id,
       tool_call_id: call.block.tool_call_id,
       tool_name: call.block.tool_name,
-      content: "Tool execution was interrupted before it produced a result.",
+      content:
+        "No tool result was recovered after reload. The operation may have completed; inspect the workspace before retrying.",
       is_error: true,
-      summary: "Interrupted by reload",
+      summary: "Result unavailable after reload",
     });
   }
   return true;
@@ -2234,6 +2371,7 @@ function matchesWorkspaceChangeIdentity(
     );
   }
   return (
+    record.assistant_message_index !== null &&
     record.assistant_message_index === pending.assistant_message_index
   );
 }

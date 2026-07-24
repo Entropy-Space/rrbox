@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 9 as const;
+export const PROTOCOL_VERSION = 10 as const;
 
 export type FileEntry = {
   name: string;
@@ -176,6 +176,14 @@ export type CoreLifecyclePhase =
   | "ready"
   | "failed";
 
+export type WorkspaceRecoveryNotice = {
+  code: "workspace_change_quarantine";
+  message: string;
+  quarantined_receipt_count: number;
+  pending_receipt_count: number;
+  affected_project_count: number;
+};
+
 export type CoreStateSnapshot = {
   state_revision: number;
   catalog_revision: number;
@@ -283,6 +291,11 @@ export type CoreEvent =
       "core_lifecycle",
       { phase: CoreLifecyclePhase; status_message?: string }
     >
+  | EventEnvelope<
+      "workspace_recovery_notice",
+      WorkspaceRecoveryNotice
+    >
+  | EventEnvelope<"workspace_recovery_cleared", Record<string, never>>
   | EventEnvelope<
       "provider_catalog_snapshot",
       { catalog_revision: number; providers: ProviderSummary[] }
@@ -562,6 +575,69 @@ export function parseCoreEvent(value: unknown): CoreEvent {
             ? {}
             : { status_message: statusMessage }),
         },
+        requestId,
+      );
+    }
+    case "workspace_recovery_notice": {
+      assertExactKeys(
+        payload,
+        [
+          "code",
+          "message",
+          "quarantined_receipt_count",
+          "pending_receipt_count",
+          "affected_project_count",
+        ],
+        "workspace_recovery_notice payload",
+      );
+      if (payload.code !== "workspace_change_quarantine") {
+        throw new Error("Invalid workspace recovery notice code.");
+      }
+      const quarantinedReceiptCount = requireNonNegativeInteger(
+        payload,
+        "quarantined_receipt_count",
+      );
+      const pendingReceiptCount = requireNonNegativeInteger(
+        payload,
+        "pending_receipt_count",
+      );
+      const affectedProjectCount = requireNonNegativeInteger(
+        payload,
+        "affected_project_count",
+      );
+      if (
+        quarantinedReceiptCount < 1 ||
+        pendingReceiptCount > quarantinedReceiptCount ||
+        affectedProjectCount < 1 ||
+        affectedProjectCount > quarantinedReceiptCount
+      ) {
+        throw new Error(
+          "Workspace recovery notice counts are inconsistent.",
+        );
+      }
+      return eventEnvelope(
+        "workspace_recovery_notice",
+        eventId,
+        {
+          code: payload.code,
+          message: requireString(payload, "message"),
+          quarantined_receipt_count: quarantinedReceiptCount,
+          pending_receipt_count: pendingReceiptCount,
+          affected_project_count: affectedProjectCount,
+        },
+        requestId,
+      );
+    }
+    case "workspace_recovery_cleared": {
+      assertExactKeys(
+        payload,
+        [],
+        "workspace_recovery_cleared payload",
+      );
+      return eventEnvelope(
+        "workspace_recovery_cleared",
+        eventId,
+        {},
         requestId,
       );
     }

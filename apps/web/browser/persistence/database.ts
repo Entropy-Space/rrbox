@@ -1,4 +1,4 @@
-export const RESEARCHBOX_DATABASE_VERSION = 6;
+export const RESEARCHBOX_DATABASE_VERSION = 8;
 
 export const databaseStores = {
   meta: "meta",
@@ -8,6 +8,7 @@ export const databaseStores = {
   project_filesystems: "project_filesystems",
   files: "files",
   file_changes: "file_changes",
+  file_change_quarantines: "file_change_quarantines",
   opfs_files: "opfs_files",
 } as const;
 
@@ -226,6 +227,33 @@ function createSchema(
       { keyPath: ["project_id", "change_id"] },
     );
     fileChanges.createIndex("by_project", "project_id", { unique: false });
+  }
+  if (
+    !database.objectStoreNames.contains(
+      databaseStores.file_change_quarantines,
+    )
+  ) {
+    const quarantine = database.createObjectStore(
+      databaseStores.file_change_quarantines,
+      {
+        keyPath: [
+          "project_id",
+          "incarnation_id",
+          "quarantine_id",
+        ],
+      },
+    );
+    quarantine.createIndex("by_project", "project_id", { unique: false });
+    quarantine.createIndex(
+      "by_workspace",
+      ["project_id", "incarnation_id"],
+      { unique: false },
+    );
+    quarantine.createIndex(
+      "by_change",
+      ["project_id", "incarnation_id", "source_change_id"],
+      { unique: false },
+    );
   }
   if (!database.objectStoreNames.contains(databaseStores.opfs_files)) {
     const opfsFiles = database.createObjectStore(databaseStores.opfs_files, {

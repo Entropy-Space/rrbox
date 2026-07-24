@@ -109,6 +109,44 @@ test("catalog and lifecycle events stay independent from workspace state", () =>
   assert.equal(state.input_draft, "keep draft");
 });
 
+test("workspace recovery notices survive snapshots and clear explicitly", () => {
+  let state = coreReducer(
+    initialAgentSessionState,
+    event("ready", { state: snapshot("p1", "s1", 1) }),
+  );
+  const notice = {
+    code: "workspace_change_quarantine",
+    message: "One malformed workspace change receipt was isolated.",
+    quarantined_receipt_count: 1,
+    pending_receipt_count: 0,
+    affected_project_count: 1,
+  };
+  state = coreReducer(
+    state,
+    event("workspace_recovery_notice", notice),
+  );
+  assert.deepEqual(state.workspace_recovery_notice, notice);
+  assert.equal(state.error_message, null);
+  assert.equal(state.is_ready, true);
+
+  const refreshed = snapshot("p1", "s1", 2);
+  state = coreReducer(
+    state,
+    event("state_snapshot", { state: refreshed }),
+  );
+  assert.deepEqual(state.workspace_recovery_notice, notice);
+  assert.equal(state.error_message, null);
+  assert.equal(state.is_ready, true);
+
+  state = coreReducer(
+    state,
+    event("workspace_recovery_cleared", {}),
+  );
+  assert.equal(state.workspace_recovery_notice, null);
+  assert.equal(state.error_message, null);
+  assert.equal(state.is_ready, true);
+});
+
 test("transport failure disables a previously ready core", () => {
   let state = coreReducer(
     initialAgentSessionState,

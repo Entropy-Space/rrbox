@@ -12,6 +12,7 @@ import {
   type SessionSummary,
   type TimelineEntry,
   type ViewerCommand,
+  type WorkspaceRecoveryNotice,
   type WorkspaceTransferFile,
 } from "@researchbox/protocol";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
@@ -48,6 +49,7 @@ export type AgentSessionState = {
   selected_file: { path: string; content: string } | null;
   core_lifecycle: CoreLifecyclePhase;
   core_status_message: string | null;
+  workspace_recovery_notice: WorkspaceRecoveryNotice | null;
   is_ready: boolean;
   is_running: boolean;
   error_message: string | null;
@@ -82,6 +84,7 @@ export const initialAgentSessionState: AgentSessionState = {
   selected_file: null,
   core_lifecycle: "electing",
   core_status_message: null,
+  workspace_recovery_notice: null,
   is_ready: false,
   is_running: false,
   error_message: null,
@@ -1026,6 +1029,16 @@ export function coreReducer(
         ...state,
         core_lifecycle: event.payload.phase,
         core_status_message: event.payload.status_message ?? null,
+      };
+    case "workspace_recovery_notice":
+      return {
+        ...state,
+        workspace_recovery_notice: { ...event.payload },
+      };
+    case "workspace_recovery_cleared":
+      return {
+        ...state,
+        workspace_recovery_notice: null,
       };
     case "provider_catalog_snapshot":
       if (event.payload.catalog_revision < state.catalog_revision) return state;

@@ -100,6 +100,131 @@ test("independent OPFS backends atomically consume one revert receipt", async ()
   database.close();
 });
 
+test("OPFS preserves a receipt with a redundant malformed assistant index", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-opfs-legacy-index-${crypto.randomUUID()}`,
+  );
+  const objects = new MemoryWorkspaceObjectStore();
+  const backend = new OpfsWorkspaceBackend(
+    database,
+    objects,
+    { "/notes.txt": "before" },
+  );
+  const workspace = await backend.create("project-1");
+  await workspace.write("/notes.txt", "after", {
+    change: changeMetadata(
+      "legacy-index",
+      "2026-07-24T00:00:00.000Z",
+    ),
+  });
+
+  const connection = await database.open();
+  const damage = connection.transaction("file_changes", "readwrite");
+  const damageComplete = transactionComplete(damage);
+  const store = damage.objectStore("file_changes");
+  const stored = await requestValue(
+    store.get(["project-1", "legacy-index"]),
+  );
+  stored.assistant_message_index = "legacy";
+  store.put(stored);
+  await damageComplete;
+
+  const journal = await workspace.listChanges();
+  assert.equal(journal.quarantine_status, undefined);
+  assert.equal(journal.changes[0].assistant_message_index, null);
+  assert.equal(
+    (await workspace.getChange("legacy-index")).change
+      .assistant_message_index,
+    null,
+  );
+  assert.equal(
+    (await workspace.revertChange("legacy-index")).revert_outcome,
+    "applied",
+  );
+  assert.equal((await workspace.read("/notes.txt")).content, "before");
+
+  const verification = connection.transaction(
+    ["file_changes", "file_change_quarantines"],
+    "readonly",
+  );
+  const verificationComplete = transactionComplete(verification);
+  const [persisted, quarantines] = await Promise.all([
+    requestValue(
+      verification
+        .objectStore("file_changes")
+        .get(["project-1", "legacy-index"]),
+    ),
+    requestValue(
+      verification
+        .objectStore("file_change_quarantines")
+        .index("by_project")
+        .getAll("project-1"),
+    ),
+  ]);
+  await verificationComplete;
+  assert.equal(persisted.assistant_message_index, "legacy");
+  assert.equal(quarantines.length, 0);
+  database.close();
+});
+
+test("OPFS project replacement clears receipt quarantine markers", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-opfs-quarantine-lifecycle-${crypto.randomUUID()}`,
+  );
+  const objects = new MemoryWorkspaceObjectStore();
+  const backend = new OpfsWorkspaceBackend(database, objects, {});
+  const workspace = await backend.create("project-1");
+  await workspace.write("/invalid.txt", "after", {
+    change: changeMetadata(
+      "invalid-identity",
+      "2026-07-24T00:00:00.000Z",
+    ),
+  });
+
+  const connection = await database.open();
+  const damage = connection.transaction("file_changes", "readwrite");
+  const damageComplete = transactionComplete(damage);
+  const store = damage.objectStore("file_changes");
+  const stored = await requestValue(
+    store.get(["project-1", "invalid-identity"]),
+  );
+  delete stored.tool_call_block_id;
+  stored.assistant_message_index = -1;
+  store.put(stored);
+  await damageComplete;
+
+  assert.equal(
+    (await workspace.listChanges()).quarantine_status
+      .quarantined_receipt_count,
+    1,
+  );
+  await backend.delete("project-1");
+  const recreated = await backend.create("project-1");
+  assert.deepEqual(await recreated.listChanges(), {
+    workspace_revision: 2,
+    changes: [],
+  });
+
+  const verification = connection.transaction(
+    "file_change_quarantines",
+    "readonly",
+  );
+  const verificationComplete = transactionComplete(verification);
+  const quarantines = await requestValue(
+    verification
+      .objectStore("file_change_quarantines")
+      .index("by_project")
+      .getAll("project-1"),
+  );
+  await verificationComplete;
+  assert.deepEqual(quarantines, []);
+  database.close();
+});
+
 test("OPFS reverts fail before staging corrupt persisted state", async (t) => {
   const cases = [
     {
@@ -193,10 +318,22 @@ test("OPFS reverts fail before staging corrupt persisted state", async (t) => {
           workspace.getChange("corrupt-revert"),
           (error) => error instanceof WorkspaceCorruptionError,
         );
-        await assert.rejects(
-          workspace.listChanges(),
-          (error) => error instanceof WorkspaceCorruptionError,
-        );
+        assert.deepEqual(await workspace.listChanges(), {
+          workspace_revision: 1,
+          changes: [],
+          quarantine_status: {
+            quarantined_receipt_count: 1,
+            pending_receipt_count: 0,
+          },
+        });
+        assert.deepEqual(await workspace.listChanges(), {
+          workspace_revision: 1,
+          changes: [],
+          quarantine_status: {
+            quarantined_receipt_count: 1,
+            pending_receipt_count: 0,
+          },
+        });
       }
       await assert.rejects(
         workspace.revertChange("corrupt-revert"),
@@ -205,11 +342,16 @@ test("OPFS reverts fail before staging corrupt persisted state", async (t) => {
       assert.equal(objects.write_attempts, writeAttempts);
 
       const verification = connection.transaction(
-        ["project_filesystems", "opfs_files", "file_changes"],
+        [
+          "project_filesystems",
+          "opfs_files",
+          "file_changes",
+          "file_change_quarantines",
+        ],
         "readonly",
       );
       const verificationComplete = transactionComplete(verification);
-      const [currentMarker, currentFile, currentChange] =
+      const [currentMarker, currentFile, currentChange, quarantines] =
         await Promise.all([
           requestValue(
             verification
@@ -226,11 +368,21 @@ test("OPFS reverts fail before staging corrupt persisted state", async (t) => {
               .objectStore("file_changes")
               .get(["project-1", "corrupt-revert"]),
           ),
+          requestValue(
+            verification
+              .objectStore("file_change_quarantines")
+              .index("by_project")
+              .getAll("project-1"),
+          ),
         ]);
       await verificationComplete;
       assert.equal(currentMarker.workspace_revision, 1);
       assert.equal(currentFile.content_id, contentId);
       assert.equal(currentChange.reverted_at_workspace_revision, null);
+      assert.equal(
+        quarantines.length,
+        testCase.corrupts_receipt ? 1 : 0,
+      );
       assert.equal(
         await objects.read(
           currentFile.storage_id,
@@ -926,6 +1078,126 @@ test("core bootstrap migrates and reopens an inline project through OPFS", async
   database.close();
 });
 
+test("core bootstrap isolates a malformed OPFS receipt without denying its committed mutation", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-opfs-core-quarantine-${crypto.randomUUID()}`,
+  );
+  const objects = new MemoryWorkspaceObjectStore();
+  const backend = new OpfsWorkspaceBackend(database, objects, {});
+  const projectStore = new IndexedDbProjectStore(database);
+  const initialEvents = [];
+  await createTestCore(projectStore, backend, initialEvents).handle(
+    createCommand("bootstrap", {}),
+  );
+  const initial = await projectStore.load();
+  assert.ok(initial);
+  const projectId = initial.active_project_id;
+  const timestamp = "2026-07-24T02:00:00.000Z";
+  const runId = "run-quarantined-change";
+  initial.state_revision += 1;
+  initial.active_session_id = "session-1";
+  initial.projects[0].last_session_id = "session-1";
+  initial.sessions.push({
+    session_id: "session-1",
+    project_id: projectId,
+    title: "Recovered mutation",
+    title_is_custom: false,
+    created_at: timestamp,
+    updated_at: timestamp,
+    selected_model: {
+      provider_id: testModel.provider,
+      model_id: testModel.id,
+    },
+  });
+  initial.documents.push({
+    format_version: 3,
+    session_id: "session-1",
+    project_id: projectId,
+    input_draft: "",
+    timeline: [
+      {
+        type: "user_message",
+        entry_id: "user-quarantined-change",
+        run_id: runId,
+        created_at: timestamp,
+        content: "Write the note",
+      },
+      {
+        type: "assistant_message",
+        entry_id: "assistant-quarantined-change",
+        run_id: runId,
+        created_at: timestamp,
+        status: "complete",
+        api: testModel.api,
+        provider: testModel.provider,
+        model: testModel.id,
+        usage: emptyUsage(),
+        stop_reason: "tool_use",
+        blocks: [
+          {
+            type: "tool_call",
+            block_id: "block-quarantined-change",
+            tool_call_id: "tool-quarantined-change",
+            tool_name: "write_file",
+            arguments: {
+              path: "/note.txt",
+              content: "committed",
+            },
+          },
+        ],
+      },
+    ],
+  });
+  await projectStore.save(initial, initial.state_revision - 1);
+
+  const workspace = await backend.open(projectId);
+  await workspace.write("/note.txt", "committed", {
+    change: changeMetadata(
+      "quarantined-change",
+      "2026-07-24T02:00:00.001Z",
+    ),
+  });
+  const connection = await database.open();
+  const damage = connection.transaction("file_changes", "readwrite");
+  const damageComplete = transactionComplete(damage);
+  const changeStore = damage.objectStore("file_changes");
+  const receipt = await requestValue(
+    changeStore.get([projectId, "quarantined-change"]),
+  );
+  receipt.after_content = 42;
+  changeStore.put(receipt);
+  await damageComplete;
+
+  const events = [];
+  await createTestCore(projectStore, backend, events).handle(
+    createCommand("bootstrap", {}),
+  );
+  const ready = events.find((event) => event.type === "ready");
+  const notice = events.find(
+    (event) => event.type === "workspace_recovery_notice",
+  );
+  assert.ok(ready);
+  assert.ok(notice);
+  assert.equal(notice.payload.quarantined_receipt_count, 1);
+  assert.equal(notice.payload.pending_receipt_count, 0);
+  const recoveredResult = ready.payload.state.timeline.at(-1);
+  assert.equal(recoveredResult.type, "tool_result");
+  assert.equal(recoveredResult.is_error, true);
+  assert.match(recoveredResult.content, /operation may have completed/i);
+  assert.doesNotMatch(
+    recoveredResult.content,
+    /before it produced a result/i,
+  );
+  assert.deepEqual(await workspace.read("/note.txt"), {
+    workspace_revision: 1,
+    path_revision: 1,
+    content: "committed",
+  });
+  database.close();
+});
+
 test("an interrupted OPFS copy resumes from its durable candidates", async () => {
   const factory = new IDBFactory();
   const databaseName = `researchbox-opfs-resume-${crypto.randomUUID()}`;
@@ -1335,6 +1607,23 @@ const testModel = {
   contextWindow: 32_000,
   maxTokens: 4_096,
 };
+
+function emptyUsage() {
+  return {
+    input: 0,
+    output: 0,
+    cache_read: 0,
+    cache_write: 0,
+    total_tokens: 0,
+    cost: {
+      input: 0,
+      output: 0,
+      cache_read: 0,
+      cache_write: 0,
+      total: 0,
+    },
+  };
+}
 
 function createTestCore(projectStore, workspaceBackend, events) {
   return new ResearchBoxCore({

@@ -332,6 +332,314 @@ test("IndexedDB atomically persists file writes and workspace change receipts", 
   reopenedDatabase.close();
 });
 
+test("IndexedDB preserves receipts with redundant malformed assistant indexes", async (t) => {
+  const invalidIndexes = [
+    { name: "missing", value: undefined, removes_field: true },
+    { name: "null", value: null },
+    { name: "string", value: "1" },
+    { name: "negative", value: -1 },
+    { name: "fractional", value: 1.5 },
+    { name: "unsafe", value: Number.MAX_SAFE_INTEGER + 1 },
+    { name: "NaN", value: Number.NaN },
+    { name: "infinity", value: Number.POSITIVE_INFINITY },
+  ];
+
+  for (const testCase of invalidIndexes) {
+    await t.test(testCase.name, async () => {
+      const factory = new IDBFactory();
+      const database = new ResearchBoxDatabase(
+        factory,
+        `researchbox-legacy-index-${crypto.randomUUID()}`,
+      );
+      const backend = new IndexedDbWorkspaceBackend(database, {
+        "/notes.txt": "before",
+      });
+      const workspace = await backend.create("project-1");
+      const changeId = `legacy-index-${testCase.name}`;
+      await workspace.write("/notes.txt", "after", {
+        change: workspaceChangeMetadata(changeId, "write_file"),
+      });
+
+      const connection = await database.open();
+      const damage = connection.transaction("file_changes", "readwrite");
+      const damageComplete = transactionComplete(damage);
+      const store = damage.objectStore("file_changes");
+      const stored = await requestValue(
+        store.get(["project-1", changeId]),
+      );
+      if (testCase.removes_field) {
+        delete stored.assistant_message_index;
+      } else {
+        stored.assistant_message_index = testCase.value;
+      }
+      store.put(stored);
+      await damageComplete;
+
+      const journal = await workspace.listChanges();
+      assert.equal(journal.quarantine_status, undefined);
+      assert.equal(journal.changes.length, 1);
+      assert.equal(journal.changes[0].assistant_message_index, null);
+      assert.equal(
+        (await workspace.getChange(changeId)).change
+          .assistant_message_index,
+        null,
+      );
+      assert.equal(
+        (await workspace.revertChange(changeId)).revert_outcome,
+        "applied",
+      );
+      assert.equal((await workspace.read("/notes.txt")).content, "before");
+
+      const verification = connection.transaction(
+        ["file_changes", "file_change_quarantines"],
+        "readonly",
+      );
+      const verificationComplete = transactionComplete(verification);
+      const [persisted, quarantines] = await Promise.all([
+        requestValue(
+          verification
+            .objectStore("file_changes")
+            .get(["project-1", changeId]),
+        ),
+        requestValue(
+          verification
+            .objectStore("file_change_quarantines")
+            .index("by_project")
+            .getAll("project-1"),
+        ),
+      ]);
+      await verificationComplete;
+      assert.equal(quarantines.length, 0);
+      if (testCase.removes_field) {
+        assert.equal(
+          Object.hasOwn(persisted, "assistant_message_index"),
+          false,
+        );
+      } else {
+        assert.equal(
+          Object.is(
+            persisted.assistant_message_index,
+            testCase.value,
+          ),
+          true,
+        );
+      }
+      database.close();
+    });
+  }
+});
+
+test("IndexedDB recovers a legacy message identity without an assistant index", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-legacy-message-index-${crypto.randomUUID()}`,
+  );
+  const backend = new IndexedDbWorkspaceBackend(database, {});
+  const workspace = await backend.create("project-1");
+  await workspace.write("/legacy.txt", "after", {
+    change: workspaceChangeMetadata("legacy-message", "write_file"),
+  });
+
+  const connection = await database.open();
+  const damage = connection.transaction("file_changes", "readwrite");
+  const damageComplete = transactionComplete(damage);
+  const store = damage.objectStore("file_changes");
+  const stored = await requestValue(
+    store.get(["project-1", "legacy-message"]),
+  );
+  delete stored.tool_call_block_id;
+  delete stored.assistant_message_index;
+  stored.message_id = "legacy-assistant-message";
+  store.put(stored);
+  await damageComplete;
+
+  const listed = await workspace.listChanges();
+  assert.equal(listed.quarantine_status, undefined);
+  assert.equal(listed.changes[0].tool_call_block_id, null);
+  assert.equal(
+    listed.changes[0].legacy_message_id,
+    "legacy-assistant-message",
+  );
+  assert.equal(listed.changes[0].assistant_message_index, null);
+  database.close();
+});
+
+test("IndexedDB project replacement clears receipt quarantine markers", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-quarantine-lifecycle-${crypto.randomUUID()}`,
+  );
+  const backend = new IndexedDbWorkspaceBackend(database, {});
+  const workspace = await backend.create("project-1");
+  await workspace.write("/invalid.txt", "after", {
+    change: workspaceChangeMetadata("invalid-identity", "write_file"),
+  });
+
+  const connection = await database.open();
+  const damage = connection.transaction("file_changes", "readwrite");
+  const damageComplete = transactionComplete(damage);
+  const changeStore = damage.objectStore("file_changes");
+  const stored = await requestValue(
+    changeStore.get(["project-1", "invalid-identity"]),
+  );
+  delete stored.tool_call_block_id;
+  stored.assistant_message_index = -1;
+  changeStore.put(stored);
+  await damageComplete;
+
+  assert.equal(
+    (await workspace.listChanges()).quarantine_status
+      .quarantined_receipt_count,
+    1,
+  );
+  await backend.delete("project-1");
+  const recreated = await backend.create("project-1");
+  assert.deepEqual(await recreated.listChanges(), {
+    workspace_revision: 2,
+    changes: [],
+  });
+
+  const verification = connection.transaction(
+    "file_change_quarantines",
+    "readonly",
+  );
+  const verificationComplete = transactionComplete(verification);
+  const quarantines = await requestValue(
+    verification
+      .objectStore("file_change_quarantines")
+      .index("by_project")
+      .getAll("project-1"),
+  );
+  await verificationComplete;
+  assert.deepEqual(quarantines, []);
+  database.close();
+});
+
+test("IndexedDB keeps malformed receipts isolated when a quarantine marker cannot be saved", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-pending-quarantine-${crypto.randomUUID()}`,
+  );
+  const backend = new IndexedDbWorkspaceBackend(database, {});
+  const workspace = await backend.create("project-1");
+  await workspace.write("/invalid.txt", "after", {
+    change: workspaceChangeMetadata("pending-quarantine", "write_file"),
+  });
+
+  const connection = await database.open();
+  const damage = connection.transaction("file_changes", "readwrite");
+  const damageComplete = transactionComplete(damage);
+  const store = damage.objectStore("file_changes");
+  const stored = await requestValue(
+    store.get(["project-1", "pending-quarantine"]),
+  );
+  delete stored.tool_call_block_id;
+  stored.assistant_message_index = -1;
+  store.put(stored);
+  await damageComplete;
+
+  const originalOpen = database.open.bind(database);
+  database.open = async () => {
+    const current = await originalOpen();
+    return new Proxy(current, {
+      get(target, property) {
+        if (property !== "transaction") {
+          return Reflect.get(target, property, target);
+        }
+        return (storeNames, mode) => {
+          if (
+            Array.isArray(storeNames) &&
+            storeNames.includes("file_change_quarantines") &&
+            mode === "readwrite"
+          ) {
+            throw new DOMException(
+              "Quarantine storage is full.",
+              "QuotaExceededError",
+            );
+          }
+          return target.transaction(storeNames, mode);
+        };
+      },
+    });
+  };
+
+  assert.deepEqual(await workspace.listChanges(), {
+    workspace_revision: 1,
+    changes: [],
+    quarantine_status: {
+      quarantined_receipt_count: 1,
+      pending_receipt_count: 1,
+    },
+  });
+
+  database.open = originalOpen;
+  assert.deepEqual(await workspace.listChanges(), {
+    workspace_revision: 1,
+    changes: [],
+    quarantine_status: {
+      quarantined_receipt_count: 1,
+      pending_receipt_count: 0,
+    },
+  });
+  database.close();
+});
+
+test("a repaired IndexedDB receipt takes precedence over its stale quarantine marker", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-stale-quarantine-${crypto.randomUUID()}`,
+  );
+  const backend = new IndexedDbWorkspaceBackend(database, {
+    "/notes.txt": "before",
+  });
+  const workspace = await backend.create("project-1");
+  await workspace.write("/notes.txt", "after", {
+    change: workspaceChangeMetadata("repaired-receipt", "write_file"),
+  });
+
+  const connection = await database.open();
+  const damage = connection.transaction("file_changes", "readwrite");
+  const damageComplete = transactionComplete(damage);
+  const store = damage.objectStore("file_changes");
+  const valid = await requestValue(
+    store.get(["project-1", "repaired-receipt"]),
+  );
+  const invalid = structuredClone(valid);
+  invalid.after_content = 42;
+  store.put(invalid);
+  await damageComplete;
+
+  assert.equal(
+    (await workspace.listChanges()).quarantine_status
+      .quarantined_receipt_count,
+    1,
+  );
+
+  const repair = connection.transaction("file_changes", "readwrite");
+  const repairComplete = transactionComplete(repair);
+  repair.objectStore("file_changes").put(valid);
+  await repairComplete;
+
+  const journal = await workspace.listChanges();
+  assert.equal(journal.quarantine_status, undefined);
+  assert.equal(journal.changes.length, 1);
+  assert.equal(
+    (await workspace.getChange("repaired-receipt")).change.change_id,
+    "repaired-receipt",
+  );
+  assert.equal(
+    (await workspace.revertChange("repaired-receipt"))
+      .revert_outcome,
+    "applied",
+  );
+  assert.equal((await workspace.read("/notes.txt")).content, "before");
+  database.close();
+});
+
 test("IndexedDB reverts fail closed on corrupt persisted state", async (t) => {
   const cases = [
     {
@@ -422,10 +730,22 @@ test("IndexedDB reverts fail closed on corrupt persisted state", async (t) => {
           workspace.getChange("corrupt-revert"),
           (error) => error instanceof WorkspaceCorruptionError,
         );
-        await assert.rejects(
-          workspace.listChanges(),
-          (error) => error instanceof WorkspaceCorruptionError,
-        );
+        assert.deepEqual(await workspace.listChanges(), {
+          workspace_revision: 1,
+          changes: [],
+          quarantine_status: {
+            quarantined_receipt_count: 1,
+            pending_receipt_count: 0,
+          },
+        });
+        assert.deepEqual(await workspace.listChanges(), {
+          workspace_revision: 1,
+          changes: [],
+          quarantine_status: {
+            quarantined_receipt_count: 1,
+            pending_receipt_count: 0,
+          },
+        });
       }
       await assert.rejects(
         workspace.revertChange("corrupt-revert"),
@@ -435,20 +755,39 @@ test("IndexedDB reverts fail closed on corrupt persisted state", async (t) => {
       assert.equal(current.workspace_revision, 1);
       assert.equal(current.content, "after");
       const verification = connection.transaction(
-        "file_changes",
+        ["file_changes", "file_change_quarantines"],
         "readonly",
       );
       const verificationComplete = transactionComplete(verification);
-      const currentChange = await requestValue(
-        verification
-          .objectStore("file_changes")
-          .get(["project-1", "corrupt-revert"]),
-      );
+      const [currentChange, quarantines] = await Promise.all([
+        requestValue(
+          verification
+            .objectStore("file_changes")
+            .get(["project-1", "corrupt-revert"]),
+        ),
+        requestValue(
+          verification
+            .objectStore("file_change_quarantines")
+            .index("by_project")
+            .getAll("project-1"),
+        ),
+      ]);
       await verificationComplete;
       assert.equal(
         currentChange.reverted_at_workspace_revision,
         null,
       );
+      assert.equal(
+        quarantines.length,
+        testCase.corrupts_receipt ? 1 : 0,
+      );
+      if (testCase.corrupts_receipt) {
+        assert.equal(
+          quarantines[0].source_change_id,
+          "corrupt-revert",
+        );
+        assert.equal(quarantines[0].reason_code, "invalid_receipt");
+      }
       database.close();
     });
   }
@@ -1106,10 +1445,18 @@ test("IndexedDB v4 workspace markers gain explicit content storage state", async
 
   const database = new ResearchBoxDatabase(factory, databaseName);
   const connection = await database.open();
-  assert.equal(connection.version, 6);
+  assert.equal(connection.version, 8);
   assert.equal(connection.objectStoreNames.contains("opfs_files"), true);
+  assert.equal(
+    connection.objectStoreNames.contains("file_change_quarantines"),
+    true,
+  );
   const verification = connection.transaction(
-    ["project_filesystems", "opfs_files"],
+    [
+      "project_filesystems",
+      "opfs_files",
+      "file_change_quarantines",
+    ],
     "readonly",
   );
   const verificationComplete = transactionComplete(verification);
@@ -1118,6 +1465,12 @@ test("IndexedDB v4 workspace markers gain explicit content storage state", async
       .objectStore("opfs_files")
       .indexNames.contains("by_project"),
     true,
+  );
+  assert.deepEqual(
+    [...verification
+      .objectStore("file_change_quarantines")
+      .indexNames],
+    ["by_change", "by_project", "by_workspace"],
   );
   assert.deepEqual(
     await requestValue(
@@ -1532,11 +1885,42 @@ test("a blocked IndexedDB upgrade can be retried without leaking its late connec
 
   legacyDatabase.close();
   const connection = await database.open();
-  assert.equal(connection.version, 6);
+  assert.equal(connection.version, 8);
 
   database.close();
   await Promise.resolve();
   await deleteDatabase(factory, databaseName);
+});
+
+test("IndexedDB v7 databases gain receipt quarantine storage", async () => {
+  const factory = new IDBFactory();
+  const databaseName = `researchbox-v7-quarantine-${crypto.randomUUID()}`;
+  const legacyDatabase = await openVersionSevenWithoutQuarantineDatabase(
+    factory,
+    databaseName,
+  );
+  legacyDatabase.close();
+
+  const database = new ResearchBoxDatabase(factory, databaseName);
+  const connection = await database.open();
+  assert.equal(connection.version, 8);
+  assert.equal(
+    connection.objectStoreNames.contains("file_change_quarantines"),
+    true,
+  );
+  const verification = connection.transaction(
+    "file_change_quarantines",
+    "readonly",
+  );
+  const verificationComplete = transactionComplete(verification);
+  const quarantineStore = verification.objectStore(
+    "file_change_quarantines",
+  );
+  assert.equal(quarantineStore.indexNames.contains("by_project"), true);
+  assert.equal(quarantineStore.indexNames.contains("by_workspace"), true);
+  assert.equal(quarantineStore.indexNames.contains("by_change"), true);
+  await verificationComplete;
+  database.close();
 });
 
 test("closing a pending blocked open consumes its rejection", async () => {
@@ -1866,6 +2250,49 @@ function openVersionFourDatabase(factory, databaseName) {
         keyPath: ["project_id", "change_id"],
       });
       changes.createIndex("by_project", "project_id", { unique: false });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function openVersionSevenWithoutQuarantineDatabase(factory, databaseName) {
+  return new Promise((resolve, reject) => {
+    const request = factory.open(databaseName, 7);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      database.createObjectStore("meta", { keyPath: "key" });
+      database.createObjectStore("projects", { keyPath: "project_id" });
+      const sessions = database.createObjectStore("sessions", {
+        keyPath: "session_id",
+      });
+      sessions.createIndex("by_project", "project_id", { unique: false });
+      database.createObjectStore("session_documents", {
+        keyPath: "session_id",
+      });
+      database.createObjectStore("project_filesystems", {
+        keyPath: "project_id",
+      });
+      const files = database.createObjectStore("files", {
+        keyPath: ["project_id", "path"],
+      });
+      files.createIndex("by_project", "project_id", { unique: false });
+      const changes = database.createObjectStore("file_changes", {
+        keyPath: ["project_id", "change_id"],
+      });
+      changes.createIndex("by_project", "project_id", { unique: false });
+      const opfsFiles = database.createObjectStore("opfs_files", {
+        keyPath: ["project_id", "path"],
+      });
+      opfsFiles.createIndex("by_project", "project_id", {
+        unique: false,
+      });
+      opfsFiles.createIndex("by_storage", "storage_id", {
+        unique: false,
+      });
+      opfsFiles.createIndex("by_content", "content_id", {
+        unique: false,
+      });
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);

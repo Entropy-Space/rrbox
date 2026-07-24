@@ -8,7 +8,7 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v9 command", () => {
+test("round-trips every protocol-v10 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("project_create", { name: "Docs" }),
@@ -376,6 +376,15 @@ test("round-trips every normalized timeline core event", () => {
       workspace_revision: 2,
       change: createFileChange(),
     }),
+    coreEvent("workspace_recovery_notice", {
+      code: "workspace_change_quarantine",
+      message:
+        "One malformed workspace change receipt was isolated.",
+      quarantined_receipt_count: 1,
+      pending_receipt_count: 0,
+      affected_project_count: 1,
+    }),
+    coreEvent("workspace_recovery_cleared", {}),
     coreEvent(
       "files_snapshot",
       {
@@ -448,6 +457,22 @@ test("round-trips every normalized timeline core event", () => {
   ];
 
   for (const event of events) assert.deepEqual(parseCoreEvent(event), event);
+});
+
+test("rejects impossible workspace recovery counts", () => {
+  assert.throws(
+    () =>
+      parseCoreEvent(
+        coreEvent("workspace_recovery_notice", {
+          code: "workspace_change_quarantine",
+          message: "Malformed receipts were isolated.",
+          quarantined_receipt_count: 1,
+          pending_receipt_count: 0,
+          affected_project_count: 2,
+        }),
+      ),
+    /counts are inconsistent/,
+  );
 });
 
 test("rejects retired message and activity events", () => {

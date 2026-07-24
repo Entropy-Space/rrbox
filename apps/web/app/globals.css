@@ -1693,6 +1693,18 @@ textarea:focus-visible {
   font-size: 11px;
 }
 
+.recovery-banner {
+  width: fit-content;
+  max-width: min(100%, 620px);
+  margin: 0 auto 8px;
+  padding: 7px 11px;
+  border: 1px solid #d8d5b2;
+  border-radius: 9px;
+  background: #fffdf0;
+  color: #665d22;
+  font-size: 11px;
+}
+
 .status-banner {
   width: fit-content;
   max-width: min(100%, 620px);

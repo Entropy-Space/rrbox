@@ -46,6 +46,10 @@ import {
 import {
   assertValidStoredPathRevision,
   assertValidStoredWorkspaceChangeRecord,
+  deleteQuarantinedWorkspaceChanges,
+  persistWorkspaceChangeQuarantines,
+  readAccessibleStoredWorkspaceChange,
+  readStoredWorkspaceChanges,
   type WorkspaceChangeStorageRecord,
 } from "./workspace-change-storage.ts";
 
@@ -80,6 +84,7 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
         databaseStores.project_filesystems,
         databaseStores.files,
         databaseStores.file_changes,
+        databaseStores.file_change_quarantines,
         databaseStores.opfs_files,
       ],
       "readwrite",
@@ -136,6 +141,7 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
       for (const key of fileKeys) fileStore.delete(key);
       for (const key of changeKeys) changeStore.delete(key);
       for (const key of opfsFileKeys) opfsFileStore.delete(key);
+      await deleteQuarantinedWorkspaceChanges(transaction, projectId);
       workspaceStore.put({
         project_id: projectId,
         incarnation_id: incarnationId,
@@ -240,6 +246,7 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
         databaseStores.project_filesystems,
         databaseStores.files,
         databaseStores.file_changes,
+        databaseStores.file_change_quarantines,
         databaseStores.opfs_files,
         databaseStores.meta,
       ],
@@ -302,6 +309,7 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
       for (const change of changes) {
         changeStore.delete([projectId, change.change_id]);
       }
+      await deleteQuarantinedWorkspaceChanges(transaction, projectId);
       const cleanupStorageIds = new Set(
         opfsFiles.map((file) => file.storage_id),
       );
@@ -646,7 +654,11 @@ class IndexedDbWorkspace implements Workspace {
   async listChanges(): Promise<WorkspaceChangesResult> {
     const database = await this.database.open();
     const transaction = database.transaction(
-      [databaseStores.project_filesystems, databaseStores.file_changes],
+      [
+        databaseStores.project_filesystems,
+        databaseStores.file_changes,
+        databaseStores.file_change_quarantines,
+      ],
       "readonly",
     );
     const completion = transactionDone(transaction);
@@ -656,26 +668,32 @@ class IndexedDbWorkspace implements Workspace {
         this.projectId,
         this.incarnationId,
       );
-      const records = (await requestResult(
-        transaction
-          .objectStore(databaseStores.file_changes)
-          .index("by_project")
-          .getAll(this.projectId),
-      )) as WorkspaceChangeStorageRecord[];
+      const stored = await readStoredWorkspaceChanges(transaction, {
+        project_id: this.projectId,
+        incarnation_id: marker.incarnation_id,
+        incarnation_baseline_revision:
+          marker.incarnation_baseline_revision,
+        workspace_revision: marker.workspace_revision,
+        content_storage: "indexeddb",
+      });
       await completion;
+      const pendingReceiptCount =
+        await persistWorkspaceChangeQuarantines(
+          this.database,
+          stored.pending_quarantines,
+        );
       return {
         workspace_revision: marker.workspace_revision,
-        changes: records
-          .map((record) =>
-            assertValidStoredWorkspaceChangeRecord(record, {
-              project_id: this.projectId,
-              change_id: record.change_id,
-              incarnation_baseline_revision:
-                marker.incarnation_baseline_revision,
-              workspace_revision: marker.workspace_revision,
+        changes: stored.changes.sort(compareWorkspaceChanges),
+        ...(stored.quarantined_receipt_count === 0
+          ? {}
+          : {
+              quarantine_status: {
+                quarantined_receipt_count:
+                  stored.quarantined_receipt_count,
+                pending_receipt_count: pendingReceiptCount,
+              },
             }),
-          )
-          .sort(compareWorkspaceChanges),
       };
     } catch (error) {
       return abortTransaction(transaction, completion, error);
@@ -685,7 +703,11 @@ class IndexedDbWorkspace implements Workspace {
   async getChange(changeId: string): Promise<WorkspaceChangeResult> {
     const database = await this.database.open();
     const transaction = database.transaction(
-      [databaseStores.project_filesystems, databaseStores.file_changes],
+      [
+        databaseStores.project_filesystems,
+        databaseStores.file_changes,
+        databaseStores.file_change_quarantines,
+      ],
       "readonly",
     );
     const completion = transactionDone(transaction);
@@ -700,19 +722,25 @@ class IndexedDbWorkspace implements Workspace {
           .objectStore(databaseStores.file_changes)
           .get([this.projectId, changeId]),
       )) as WorkspaceChangeStorageRecord | undefined;
-      await completion;
-      return {
-        workspace_revision: marker.workspace_revision,
-        change:
-          record === undefined
-            ? null
-            : assertValidStoredWorkspaceChangeRecord(record, {
+      const change =
+        record === undefined
+          ? null
+          : await readAccessibleStoredWorkspaceChange(
+              transaction,
+              record,
+              {
                 project_id: this.projectId,
                 change_id: changeId,
+                incarnation_id: marker.incarnation_id,
                 incarnation_baseline_revision:
                   marker.incarnation_baseline_revision,
                 workspace_revision: marker.workspace_revision,
-              }),
+              },
+            );
+      await completion;
+      return {
+        workspace_revision: marker.workspace_revision,
+        change,
       };
     } catch (error) {
       return abortTransaction(transaction, completion, error);
@@ -728,6 +756,7 @@ class IndexedDbWorkspace implements Workspace {
         databaseStores.project_filesystems,
         databaseStores.files,
         databaseStores.file_changes,
+        databaseStores.file_change_quarantines,
       ],
       "readwrite",
     );
@@ -750,11 +779,13 @@ class IndexedDbWorkspace implements Workspace {
           `Workspace change not found: ${changeId}`,
         );
       }
-      const change = assertValidStoredWorkspaceChangeRecord(
+      const change = await readAccessibleStoredWorkspaceChange(
+        transaction,
         storedChange,
         {
           project_id: this.projectId,
           change_id: changeId,
+          incarnation_id: marker.incarnation_id,
           incarnation_baseline_revision:
             marker.incarnation_baseline_revision,
           workspace_revision: marker.workspace_revision,

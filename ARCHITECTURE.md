@@ -34,7 +34,7 @@ packages/viewer → browser workspace adapter → browser/archive.worker.ts
                                               └─ packages/workspace-archive
 ```
 
-The viewer and core worker exchange only protocol-v9 JSON values. A
+The viewer and core worker exchange only protocol-v10 JSON values. A
 `project_id` plus nullable `session_id` scopes the active composer: `null`
 identifies that project's single virtual new chat, while incremental run events
 always identify a durable session. Filesystem and draft acknowledgements use a

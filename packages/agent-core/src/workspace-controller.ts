@@ -10,6 +10,7 @@ import {
   type WorkspaceFilesSnapshotReader,
   type WorkspaceFilesSnapshotResult,
   type WorkspaceListResult,
+  type WorkspacePathStateResult,
   type WorkspaceReadResult,
   type WorkspaceRemoveResult,
   type WorkspaceWriteResult,
@@ -49,6 +50,10 @@ export class WorkspaceController implements Workspace {
 
   read(path: string): Promise<WorkspaceReadResult> {
     return this.enqueue(() => this.filesystem.read(path));
+  }
+
+  getPathState(path: string): Promise<WorkspacePathStateResult> {
+    return this.enqueue(() => this.filesystem.getPathState(path));
   }
 
   write(

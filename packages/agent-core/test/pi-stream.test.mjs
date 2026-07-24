@@ -222,6 +222,7 @@ test("Pi transcript conversion preserves exact mutation arguments", async () => 
     old_text: "first line\n",
     new_text: "replacement\n\n",
   };
+  const removeArguments = { path: "/obsolete.md" };
   const requests = [];
   const streamFn = createModelStreamFn({
     async *stream(request) {
@@ -247,9 +248,16 @@ test("Pi transcript conversion preserves exact mutation arguments", async () => 
             name: "replace_text",
             arguments: replaceArguments,
           },
+          {
+            type: "toolCall",
+            id: "remove-1",
+            name: "remove_file",
+            arguments: removeArguments,
+          },
         ]),
         toolResult("write-1", "write_file"),
         toolResult("replace-1", "replace_text"),
+        toolResult("remove-1", "remove_file"),
       ],
       tools: [],
     },
@@ -273,6 +281,12 @@ test("Pi transcript conversion preserves exact mutation arguments", async () => 
       tool_call_id: "replace-1",
       tool_name: "replace_text",
       arguments: replaceArguments,
+    },
+    {
+      type: "tool_call",
+      tool_call_id: "remove-1",
+      tool_name: "remove_file",
+      arguments: removeArguments,
     },
   ]);
 });

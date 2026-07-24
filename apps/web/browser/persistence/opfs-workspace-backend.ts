@@ -1,9 +1,11 @@
 import {
+  applyWorkspaceRemoveChangeRevision,
   applyWorkspaceChangeRevision,
   assertVfsWriteExpectation,
   compareVfsEntries,
   compareVfsStrings,
   compareWorkspaceChanges,
+  createVfsRemoveResult,
   createVfsWriteResult,
   incrementWorkspaceRevision,
   normalizeFilePath,
@@ -14,6 +16,7 @@ import {
   normalizeVfsSeedFiles,
   snapshotWorkspaceCreateOptions,
   VfsError,
+  WorkspaceCorruptionError,
   WorkspaceBackendError,
   type VfsEntry,
   type VfsRemoveOptions,
@@ -30,12 +33,14 @@ import {
   type WorkspaceFilesSnapshotReader,
   type WorkspaceFilesSnapshotResult,
   type WorkspaceListResult,
+  type WorkspacePathStateResult,
   type WorkspaceReadResult,
   type WorkspaceRemoveResult,
   type WorkspaceWriteResult,
 } from "@researchbox/vfs";
 import {
   databaseStores,
+  type FilePathTombstoneRecord,
   hasCompleteProjectFileSystemMetadata,
   type OpfsFileRecord,
   type ProjectFileSystemRecord,
@@ -57,6 +62,15 @@ import {
   readStoredWorkspaceChanges,
   type WorkspaceChangeStorageRecord,
 } from "./workspace-change-storage.ts";
+import {
+  deleteAncestorFilePathTombstones,
+  deleteDescendantFilePathTombstones,
+  deleteFilePathTombstone,
+  deleteProjectFilePathTombstones,
+  putFilePathTombstone,
+  readFilePathTombstone,
+  sameFilePathTombstone,
+} from "./workspace-path-state-storage.ts";
 
 type InlineFileRecord = {
   project_id: string;
@@ -93,6 +107,7 @@ type OpfsWorkspaceSnapshot = {
 
 type OpfsWorkspaceChangeSnapshot = OpfsWorkspaceSnapshot & {
   change: WorkspaceChangeRecord;
+  path_tombstone: FilePathTombstoneRecord | null;
 };
 
 export type OpfsWorkspaceExclusiveRunner = <T>(
@@ -183,6 +198,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
           [
             databaseStores.project_filesystems,
             databaseStores.files,
+            databaseStores.file_path_tombstones,
             databaseStores.file_changes,
             databaseStores.file_change_quarantines,
             databaseStores.opfs_files,
@@ -239,6 +255,10 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
           for (const key of inlineKeys) inlineStore.delete(key);
           for (const key of changeKeys) changeStore.delete(key);
           for (const key of opfsKeys) opfsStore.delete(key);
+          await deleteProjectFilePathTombstones(
+            transaction,
+            projectId,
+          );
           await deleteQuarantinedWorkspaceChanges(
             transaction,
             projectId,
@@ -319,6 +339,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
       [
         databaseStores.project_filesystems,
         databaseStores.files,
+        databaseStores.file_path_tombstones,
         databaseStores.file_changes,
         databaseStores.file_change_quarantines,
         databaseStores.opfs_files,
@@ -385,6 +406,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
       }
 
       for (const key of inlineKeys) fileStore.delete(key);
+      await deleteProjectFilePathTombstones(transaction, projectId);
       for (const change of changes) {
         changeStore.delete([projectId, change.change_id]);
       }
@@ -465,6 +487,14 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
       read: (path) =>
         this.enqueue(() =>
           this.readWorkspace(projectId, incarnationId, path),
+        ),
+      getPathState: (path) =>
+        this.enqueue(() =>
+          this.readWorkspacePathState(
+            projectId,
+            incarnationId,
+            path,
+          ),
         ),
       readFilesSnapshot: (options) =>
         this.enqueue(() =>
@@ -605,6 +635,96 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
     };
   }
 
+  private async readWorkspacePathState(
+    projectId: string,
+    incarnationId: string,
+    path: string,
+  ): Promise<WorkspacePathStateResult> {
+    const normalizedPath = normalizePath(path);
+    const database = await this.database.open();
+    const transaction = database.transaction(
+      [
+        databaseStores.project_filesystems,
+        databaseStores.opfs_files,
+        databaseStores.file_path_tombstones,
+      ],
+      "readonly",
+    );
+    const completion = transactionDone(transaction);
+    let marker: ActiveOpfsMarker;
+    let files: OpfsFileRecord[];
+    let tombstone: FilePathTombstoneRecord | null;
+    try {
+      marker = await readActiveOpfsMarker(
+        transaction,
+        projectId,
+        incarnationId,
+      );
+      files = (await requestResult(
+        transaction
+          .objectStore(databaseStores.opfs_files)
+          .index("by_project")
+          .getAll(projectId),
+      )) as OpfsFileRecord[];
+      assertOpfsFileSet(marker, files);
+      tombstone = normalizedPath === "/"
+        ? null
+        : await readFilePathTombstone(transaction, {
+            project_id: projectId,
+            incarnation_id: marker.incarnation_id,
+            path: normalizedPath,
+            workspace_revision: marker.workspace_revision,
+          });
+      await completion;
+    } catch (error) {
+      return abortTransaction(transaction, completion, error);
+    }
+
+    const record = files.find(
+      (candidate) => candidate.path === normalizedPath,
+    );
+    if (record) {
+      if (tombstone !== null) {
+        throw new WorkspaceCorruptionError(
+          `Workspace path is both present and deleted: ${normalizedPath}`,
+        );
+      }
+      const content = await this.objects.read(
+        record.storage_id,
+        record.content_id,
+      );
+      assertObjectByteSize(record, content);
+      return {
+        workspace_revision: marker.workspace_revision,
+        path: normalizedPath,
+        kind: "file",
+        path_revision: assertValidStoredPathRevision(
+          record.path_revision,
+          marker.workspace_revision,
+          normalizedPath,
+        ),
+        content,
+      };
+    }
+    if (
+      normalizedPath === "/" ||
+      hasDescendants(files, normalizedPath)
+    ) {
+      return {
+        workspace_revision: marker.workspace_revision,
+        path: normalizedPath,
+        kind: "directory",
+        path_revision: null,
+      };
+    }
+    return {
+      workspace_revision: marker.workspace_revision,
+      path: normalizedPath,
+      kind: "missing",
+      path_revision: tombstone?.path_revision ?? null,
+    };
+  }
+
   private async writeWorkspace(
     projectId: string,
     incarnationId: string,
@@ -711,6 +831,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
       [
         databaseStores.project_filesystems,
         databaseStores.opfs_files,
+        databaseStores.file_path_tombstones,
         databaseStores.file_changes,
         databaseStores.meta,
       ],
@@ -727,6 +848,20 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
       const current = (await requestResult(
         opfsStore.get([snapshot.marker.project_id, path]),
       )) as OpfsFileRecord | undefined;
+      const currentTombstone = await readFilePathTombstone(
+        transaction,
+        {
+          project_id: marker.project_id,
+          incarnation_id: marker.incarnation_id,
+          path,
+          workspace_revision: marker.workspace_revision,
+        },
+      );
+      if (current !== undefined && currentTombstone !== null) {
+        throw new WorkspaceCorruptionError(
+          `Workspace path is both present and deleted: ${path}`,
+        );
+      }
       if (
         marker.workspace_revision !== snapshot.marker.workspace_revision ||
         marker.opfs_storage_id !== snapshot.marker.opfs_storage_id ||
@@ -778,6 +913,21 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
         migration_id: null,
         path_revision: workspaceRevision,
       } satisfies OpfsFileRecord);
+      deleteFilePathTombstone(
+        transaction,
+        marker.project_id,
+        path,
+      );
+      deleteAncestorFilePathTombstones(
+        transaction,
+        marker.project_id,
+        path,
+      );
+      await deleteDescendantFilePathTombstones(
+        transaction,
+        marker.project_id,
+        path,
+      );
       transaction
         .objectStore(databaseStores.meta)
         .delete(cleanupKey);
@@ -855,15 +1005,25 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
           `File changed before it could be removed: ${normalizedPath}`,
         );
       }
+      const requestedResult =
+        options?.change === undefined
+          ? undefined
+          : createVfsRemoveResult(
+              normalizedPath,
+              content,
+              normalizeWorkspaceChangeTimestamp(
+                options.change,
+                snapshot.marker.last_change_at,
+              ),
+            );
 
       try {
-        return {
-          workspace_revision: await this.commitRemove(
-            snapshot,
-            normalizedPath,
-            existing,
-          ),
-        };
+        return await this.commitRemove(
+          snapshot,
+          normalizedPath,
+          existing,
+          requestedResult,
+        );
       } catch (error) {
         if (error instanceof RetryOpfsOperation) continue;
         throw error;
@@ -879,12 +1039,17 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
     snapshot: OpfsWorkspaceSnapshot,
     path: string,
     previous: OpfsFileRecord,
-  ): Promise<number> {
+    requestedResult:
+      | ReturnType<typeof createVfsRemoveResult>
+      | undefined,
+  ): Promise<WorkspaceRemoveResult> {
     const database = await this.database.open();
     const transaction = database.transaction(
       [
         databaseStores.project_filesystems,
         databaseStores.opfs_files,
+        databaseStores.file_path_tombstones,
+        databaseStores.file_changes,
         databaseStores.meta,
       ],
       "readwrite",
@@ -900,6 +1065,20 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
       const current = (await requestResult(
         opfsStore.get([snapshot.marker.project_id, path]),
       )) as OpfsFileRecord | undefined;
+      const currentTombstone = await readFilePathTombstone(
+        transaction,
+        {
+          project_id: marker.project_id,
+          incarnation_id: marker.incarnation_id,
+          path,
+          workspace_revision: marker.workspace_revision,
+        },
+      );
+      if (current !== undefined && currentTombstone !== null) {
+        throw new WorkspaceCorruptionError(
+          `Workspace path is both present and deleted: ${path}`,
+        );
+      }
       if (
         marker.workspace_revision !== snapshot.marker.workspace_revision ||
         marker.opfs_storage_id !== snapshot.marker.opfs_storage_id ||
@@ -911,12 +1090,58 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
       const workspaceRevision = incrementWorkspaceRevision(
         marker.workspace_revision,
       );
+      const committedResult =
+        requestedResult === undefined
+          ? undefined
+          : applyWorkspaceRemoveChangeRevision(
+              requestedResult,
+              workspaceRevision,
+            );
+      if (committedResult) {
+        const changeStore = transaction.objectStore(
+          databaseStores.file_changes,
+        );
+        const existingChange = await requestResult(
+          changeStore.get([
+            marker.project_id,
+            committedResult.change.change_id,
+          ]),
+        );
+        if (existingChange !== undefined) {
+          throw new VfsError(
+            "conflict",
+            `Workspace change already exists: ${committedResult.change.change_id}`,
+          );
+        }
+        changeStore.add({
+          ...committedResult.change,
+          project_id: marker.project_id,
+        } satisfies WorkspaceChangeStorageRecord);
+      }
       opfsStore.delete([snapshot.marker.project_id, path]);
+      deleteAncestorFilePathTombstones(
+        transaction,
+        marker.project_id,
+        path,
+      );
+      await deleteDescendantFilePathTombstones(
+        transaction,
+        marker.project_id,
+        path,
+      );
+      putFilePathTombstone(transaction, {
+        project_id: marker.project_id,
+        path,
+        incarnation_id: marker.incarnation_id,
+        path_revision: workspaceRevision,
+      } satisfies FilePathTombstoneRecord);
       transaction
         .objectStore(databaseStores.project_filesystems)
         .put({
           ...marker,
           workspace_revision: workspaceRevision,
+          last_change_at:
+            committedResult?.change.created_at ?? marker.last_change_at,
         } satisfies ProjectFileSystemRecord);
       if (
         !snapshot.files.some(
@@ -936,7 +1161,12 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
           );
       }
       await completion;
-      return workspaceRevision;
+      return {
+        workspace_revision: workspaceRevision,
+        ...(committedResult === undefined
+          ? {}
+          : { result: committedResult }),
+      };
     } catch (error) {
       return abortTransaction(transaction, completion, error);
     }
@@ -1076,7 +1306,10 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
         (change.change_kind === "created" &&
           change.before_content !== null) ||
         (change.change_kind === "updated" &&
-          change.before_content === null)
+          change.before_content === null) ||
+        (change.change_kind === "deleted" &&
+          (change.before_content === null ||
+            change.after_content !== null))
       ) {
         throw new VfsError(
           "conflict",
@@ -1095,39 +1328,48 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
               snapshot.marker.workspace_revision,
               change.path,
             );
-      if (
-        previous === undefined ||
-        pathRevision !== change.applied_workspace_revision
-      ) {
+      const isCurrentGeneration =
+        change.change_kind === "deleted"
+          ? previous === undefined &&
+            !hasDescendants(snapshot.files, change.path) &&
+            !hasFileAncestor(snapshot.files, change.path) &&
+            snapshot.path_tombstone?.path_revision ===
+              change.applied_workspace_revision
+          : previous !== undefined &&
+            snapshot.path_tombstone === null &&
+            pathRevision === change.applied_workspace_revision;
+      if (!isCurrentGeneration) {
         throw new VfsError(
           "conflict",
           `Workspace path changed after receipt was created: ${change.path}`,
         );
       }
-      let currentContent: string;
-      try {
-        currentContent = await this.objects.read(
-          previous.storage_id,
-          previous.content_id,
-        );
-        assertObjectByteSize(previous, currentContent);
-      } catch {
-        throw new VfsError(
-          "conflict",
-          `Workspace path cannot be verified for revert: ${change.path}`,
-        );
-      }
-      if (currentContent !== change.after_content) {
-        throw new VfsError(
-          "conflict",
-          `Workspace path changed after receipt was created: ${change.path}`,
-        );
+      if (previous !== undefined) {
+        let currentContent: string;
+        try {
+          currentContent = await this.objects.read(
+            previous.storage_id,
+            previous.content_id,
+          );
+          assertObjectByteSize(previous, currentContent);
+        } catch {
+          throw new VfsError(
+            "conflict",
+            `Workspace path cannot be verified for revert: ${change.path}`,
+          );
+        }
+        if (currentContent !== change.after_content) {
+          throw new VfsError(
+            "conflict",
+            `Workspace path changed after receipt was created: ${change.path}`,
+          );
+        }
       }
 
       let replacement: WorkspaceObjectWriteResult | null = null;
       let cleanupKey: string | null = null;
       if (
-        change.change_kind === "updated" &&
+        change.change_kind !== "created" &&
         change.before_content !== null
       ) {
         const identified = await this.objects.identify(
@@ -1175,7 +1417,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
 
   private async commitWorkspaceChangeRevert(
     snapshot: OpfsWorkspaceChangeSnapshot,
-    previous: OpfsFileRecord,
+    previous: OpfsFileRecord | undefined,
     replacement: WorkspaceObjectWriteResult | null,
     cleanupKey: string | null,
   ): Promise<WorkspaceChangeRevertResult> {
@@ -1184,6 +1426,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
       [
         databaseStores.project_filesystems,
         databaseStores.opfs_files,
+        databaseStores.file_path_tombstones,
         databaseStores.file_changes,
         databaseStores.file_change_quarantines,
         databaseStores.meta,
@@ -1257,12 +1500,30 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
           snapshot.change.path,
         );
       }
+      const currentTombstone = await readFilePathTombstone(
+        transaction,
+        {
+          project_id: marker.project_id,
+          incarnation_id: marker.incarnation_id,
+          path: snapshot.change.path,
+          workspace_revision: marker.workspace_revision,
+        },
+      );
+      if (current !== undefined && currentTombstone !== null) {
+        throw new WorkspaceCorruptionError(
+          `Workspace path is both present and deleted: ${snapshot.change.path}`,
+        );
+      }
       if (
         marker.workspace_revision !==
           snapshot.marker.workspace_revision ||
         marker.opfs_storage_id !==
           snapshot.marker.opfs_storage_id ||
-        !sameOpfsFile(current, previous)
+        !sameOpfsFile(current, previous) ||
+        !sameFilePathTombstone(
+          currentTombstone,
+          snapshot.path_tombstone,
+        )
       ) {
         throw new RetryOpfsOperation();
       }
@@ -1275,6 +1536,22 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
           snapshot.marker.project_id,
           change.path,
         ]);
+        deleteAncestorFilePathTombstones(
+          transaction,
+          marker.project_id,
+          change.path,
+        );
+        await deleteDescendantFilePathTombstones(
+          transaction,
+          marker.project_id,
+          change.path,
+        );
+        putFilePathTombstone(transaction, {
+          project_id: marker.project_id,
+          path: change.path,
+          incarnation_id: marker.incarnation_id,
+          path_revision: workspaceRevision,
+        } satisfies FilePathTombstoneRecord);
       } else {
         if (replacement === null || cleanupKey === null) {
           throw new VfsError(
@@ -1292,6 +1569,21 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
           migration_id: null,
           path_revision: workspaceRevision,
         } satisfies OpfsFileRecord);
+        deleteFilePathTombstone(
+          transaction,
+          marker.project_id,
+          change.path,
+        );
+        deleteAncestorFilePathTombstones(
+          transaction,
+          marker.project_id,
+          change.path,
+        );
+        await deleteDescendantFilePathTombstones(
+          transaction,
+          marker.project_id,
+          change.path,
+        );
         transaction
           .objectStore(databaseStores.meta)
           .delete(cleanupKey);
@@ -1311,6 +1603,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
           workspace_revision: workspaceRevision,
         } satisfies ProjectFileSystemRecord);
       if (
+        previous !== undefined &&
         !snapshot.files.some(
           (file) =>
             file.path !== change.path &&
@@ -1358,6 +1651,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
       [
         databaseStores.project_filesystems,
         databaseStores.opfs_files,
+        databaseStores.file_path_tombstones,
         databaseStores.file_changes,
         databaseStores.file_change_quarantines,
       ],
@@ -1402,6 +1696,23 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
           workspace_revision: marker.workspace_revision,
         },
       );
+      const pathTombstone = await readFilePathTombstone(
+        transaction,
+        {
+          project_id: projectId,
+          incarnation_id: marker.incarnation_id,
+          path: change.path,
+          workspace_revision: marker.workspace_revision,
+        },
+      );
+      if (
+        pathTombstone !== null &&
+        files.some((file) => file.path === change.path)
+      ) {
+        throw new WorkspaceCorruptionError(
+          `Workspace path is both present and deleted: ${change.path}`,
+        );
+      }
       await completion;
       return {
         marker,
@@ -1413,6 +1724,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
               : 0,
         ),
         change,
+        path_tombstone: pathTombstone,
       };
     } catch (error) {
       return abortTransaction(transaction, completion, error);
@@ -2320,6 +2632,20 @@ function hasDescendants(
 ): boolean {
   const prefix = `${path}/`;
   return files.some((file) => file.path.startsWith(prefix));
+}
+
+function hasFileAncestor(
+  files: readonly OpfsFileRecord[],
+  path: string,
+): boolean {
+  const paths = new Set(files.map((file) => file.path));
+  const segments = path.split("/").filter(Boolean);
+  for (let index = 1; index < segments.length; index += 1) {
+    if (paths.has(`/${segments.slice(0, index).join("/")}`)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function sameCreationBaseline(

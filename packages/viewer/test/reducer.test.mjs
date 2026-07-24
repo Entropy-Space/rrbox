@@ -4,6 +4,7 @@ import { PROTOCOL_VERSION } from "@researchbox/protocol";
 import {
   coreReducer,
   initialAgentSessionState,
+  workspaceRefreshReadPath,
 } from "../src/use-agent-session.ts";
 
 test("viewer applies authoritative snapshots and ignores stale session events", () => {
@@ -678,6 +679,7 @@ test("an applied created-file revert clears the preview and refreshes its path",
       {
         project_id: "p1",
         change_id: "change-created",
+        tool_name: "write_file",
         path: "/notes/created.md",
         change_kind: "created",
         workspace_revision: 5,
@@ -695,6 +697,600 @@ test("an applied created-file revert clears the preview and refreshes its path",
   assert.deepEqual(state.pending_workspace_refresh, {
     workspace_revision: 5,
     changed_paths: ["/notes/created.md"],
+  });
+  assert.equal(state.deleted_file_preview_intent, null);
+});
+
+test("a deleted change clears and restores the relevant selected preview", () => {
+  let state = coreReducer(
+    initialAgentSessionState,
+    event("ready", { state: snapshot("p1", "s1", 1, "", 4) }),
+  );
+  state = {
+    ...state,
+    current_path: "/notes",
+    files: [fileEntry("deleted.md", "/notes/deleted.md")],
+    selected_file: {
+      path: "/notes/deleted.md",
+      content: "restore me",
+    },
+  };
+
+  state = coreReducer(
+    state,
+    event("workspace_changed", {
+      project_id: "p1",
+      session_id: "s1",
+      workspace_revision: 5,
+      change: fileChange("/notes/deleted.md", {
+        change_id: "change-deleted",
+        change_kind: "deleted",
+        tool_name: "remove_file",
+        additions: 0,
+        deletions: 1,
+        byte_size: 0,
+      }),
+    }),
+  );
+
+  assert.equal(state.selected_file, null);
+  assert.deepEqual(state.deleted_file_preview_intent, {
+    path: "/notes/deleted.md",
+    change_id: "change-deleted",
+    phase: "deleted",
+  });
+  assert.deepEqual(state.pending_workspace_refresh, {
+    workspace_revision: 5,
+    changed_paths: ["/notes/deleted.md"],
+  });
+
+  state = coreReducer(state, {
+    type: "workspace_refresh_started",
+    workspace_revision: 5,
+  });
+  state = coreReducer(
+    state,
+    event("workspace_change_reverted", {
+      project_id: "p1",
+      change_id: "change-deleted",
+      tool_name: "remove_file",
+      path: "/notes/deleted.md",
+      change_kind: "deleted",
+      workspace_revision: 6,
+      reverted_at_workspace_revision: 6,
+      revert_outcome: "applied",
+    }),
+  );
+
+  assert.deepEqual(state.deleted_file_preview_intent, {
+    path: "/notes/deleted.md",
+    change_id: "change-deleted",
+    phase: "reopening",
+  });
+  assert.deepEqual(state.pending_workspace_refresh, {
+    workspace_revision: 6,
+    changed_paths: ["/notes/deleted.md"],
+    reopen_path: "/notes/deleted.md",
+  });
+  assert.equal(
+    workspaceRefreshReadPath(
+      state.pending_workspace_refresh.reopen_path,
+      state.selected_file?.path,
+    ),
+    "/notes/deleted.md",
+  );
+
+  state = coreReducer(state, {
+    type: "workspace_refresh_started",
+    workspace_revision: 6,
+  });
+  state = coreReducer(state, {
+    type: "fs_list_requested",
+    request_id: "restored-list",
+    path: "/notes",
+    expected_workspace_revision: 6,
+    request_kind: "workspace_refresh",
+  });
+  state = coreReducer(state, {
+    type: "fs_read_requested",
+    request_id: "restored-read",
+    path: "/notes/deleted.md",
+    expected_workspace_revision: 6,
+    request_kind: "workspace_refresh",
+  });
+  state = coreReducer(
+    state,
+    event(
+      "file_content",
+      {
+        project_id: "p1",
+        path: "/notes/deleted.md",
+        workspace_revision: 6,
+        content: "restore me",
+      },
+      "restored-read",
+    ),
+  );
+
+  assert.deepEqual(state.selected_file, {
+    path: "/notes/deleted.md",
+    content: "restore me",
+  });
+  assert.equal(state.deleted_file_preview_intent, null);
+});
+
+test("same-path navigation preserves deletion preview intent while different navigation clears it", () => {
+  const deletedIntent = {
+    path: "/notes/deleted.md",
+    change_id: "change-deleted",
+    phase: "reopening",
+  };
+  const initial = {
+    ...coreReducer(
+      initialAgentSessionState,
+      event("ready", { state: snapshot("p1", "s1", 1, "", 6) }),
+    ),
+    deleted_file_preview_intent: deletedIntent,
+    pending_workspace_refresh: {
+      workspace_revision: 6,
+      changed_paths: ["/notes/deleted.md"],
+      reopen_path: "/notes/deleted.md",
+    },
+  };
+
+  const samePath = coreReducer(initial, {
+    type: "fs_read_requested",
+    request_id: "same-path-read",
+    path: "/notes/deleted.md",
+    expected_workspace_revision: 5,
+    request_kind: "navigation",
+  });
+  assert.deepEqual(samePath.deleted_file_preview_intent, deletedIntent);
+  assert.equal(
+    samePath.pending_workspace_refresh?.reopen_path,
+    "/notes/deleted.md",
+  );
+  const afterStaleResponse = coreReducer(
+    samePath,
+    event(
+      "file_content",
+      {
+        project_id: "p1",
+        path: "/notes/deleted.md",
+        workspace_revision: 5,
+        content: "stale content",
+      },
+      "same-path-read",
+    ),
+  );
+  assert.equal(afterStaleResponse.pending_fs_read, null);
+  assert.deepEqual(
+    afterStaleResponse.deleted_file_preview_intent,
+    deletedIntent,
+  );
+
+  const differentPath = coreReducer(initial, {
+    type: "fs_read_requested",
+    request_id: "different-path-read",
+    path: "/notes/other.md",
+    expected_workspace_revision: 6,
+    request_kind: "navigation",
+  });
+  assert.equal(differentPath.deleted_file_preview_intent, null);
+  assert.deepEqual(differentPath.pending_workspace_refresh, {
+    workspace_revision: 6,
+    changed_paths: ["/notes/deleted.md"],
+  });
+
+  const differentDirectory = coreReducer(initial, {
+    type: "fs_list_requested",
+    request_id: "different-directory-list",
+    path: "/other",
+    expected_workspace_revision: 6,
+    request_kind: "navigation",
+  });
+  assert.equal(differentDirectory.deleted_file_preview_intent, null);
+  assert.deepEqual(differentDirectory.pending_workspace_refresh, {
+    workspace_revision: 6,
+    changed_paths: ["/notes/deleted.md"],
+  });
+});
+
+test("a transient restored-file read failure preserves reopening until content arrives", () => {
+  let state = {
+    ...coreReducer(
+      initialAgentSessionState,
+      event("ready", { state: snapshot("p1", "s1", 1, "", 5) }),
+    ),
+    deleted_file_preview_intent: {
+      path: "/notes/deleted.md",
+      change_id: "change-deleted",
+      phase: "deleted",
+    },
+  };
+
+  state = coreReducer(
+    state,
+    event("workspace_change_reverted", {
+      project_id: "p1",
+      change_id: "change-deleted",
+      tool_name: "remove_file",
+      path: "/notes/deleted.md",
+      change_kind: "deleted",
+      workspace_revision: 6,
+      reverted_at_workspace_revision: 6,
+      revert_outcome: "applied",
+    }),
+  );
+  assert.deepEqual(state.deleted_file_preview_intent, {
+    path: "/notes/deleted.md",
+    change_id: "change-deleted",
+    phase: "reopening",
+  });
+
+  state = coreReducer(state, {
+    type: "workspace_refresh_started",
+    workspace_revision: 6,
+  });
+  state = coreReducer(state, {
+    type: "fs_read_requested",
+    request_id: "failed-restored-read",
+    path: "/notes/deleted.md",
+    expected_workspace_revision: 6,
+    request_kind: "workspace_refresh",
+  });
+  state = coreReducer(
+    state,
+    event(
+      "error",
+      {
+        code: "fs_read_failed",
+        message: "Temporary read failure.",
+        project_id: "p1",
+        session_id: "s1",
+      },
+      "failed-restored-read",
+    ),
+  );
+  assert.equal(state.pending_fs_read, null);
+  assert.deepEqual(state.deleted_file_preview_intent, {
+    path: "/notes/deleted.md",
+    change_id: "change-deleted",
+    phase: "reopening",
+  });
+
+  state = coreReducer(
+    state,
+    event("workspace_changed", {
+      project_id: "p1",
+      session_id: "s1",
+      workspace_revision: 7,
+      change: fileChange("/notes/other.md"),
+    }),
+  );
+  assert.deepEqual(state.pending_workspace_refresh, {
+    workspace_revision: 7,
+    changed_paths: ["/notes/deleted.md", "/notes/other.md"],
+    reopen_path: "/notes/deleted.md",
+  });
+
+  state = coreReducer(state, {
+    type: "workspace_refresh_started",
+    workspace_revision: 7,
+  });
+  state = coreReducer(state, {
+    type: "fs_read_requested",
+    request_id: "retried-restored-read",
+    path: "/notes/deleted.md",
+    expected_workspace_revision: 7,
+    request_kind: "workspace_refresh",
+  });
+  state = coreReducer(
+    state,
+    event(
+      "file_content",
+      {
+        project_id: "p1",
+        path: "/notes/deleted.md",
+        workspace_revision: 7,
+        content: "restore me",
+      },
+      "retried-restored-read",
+    ),
+  );
+
+  assert.deepEqual(state.selected_file, {
+    path: "/notes/deleted.md",
+    content: "restore me",
+  });
+  assert.equal(state.deleted_file_preview_intent, null);
+});
+
+test("reverting a deletion does not replace a later user-selected preview", () => {
+  let state = {
+    ...coreReducer(
+      initialAgentSessionState,
+      event("ready", { state: snapshot("p1", "s1", 1, "", 4) }),
+    ),
+    selected_file: {
+      path: "/notes/deleted.md",
+      content: "restore me",
+    },
+  };
+  state = coreReducer(
+    state,
+    event("workspace_changed", {
+      project_id: "p1",
+      session_id: "s1",
+      workspace_revision: 5,
+      change: fileChange("/notes/deleted.md", {
+        change_id: "change-deleted",
+        change_kind: "deleted",
+        tool_name: "remove_file",
+        additions: 0,
+        deletions: 1,
+        byte_size: 0,
+      }),
+    }),
+  );
+  state = coreReducer(state, {
+    type: "fs_read_requested",
+    request_id: "other-read",
+    path: "/notes/other.md",
+    expected_workspace_revision: 5,
+    request_kind: "navigation",
+  });
+  state = coreReducer(
+    state,
+    event(
+      "file_content",
+      {
+        project_id: "p1",
+        path: "/notes/other.md",
+        workspace_revision: 5,
+        content: "other",
+      },
+      "other-read",
+    ),
+  );
+  state = coreReducer(
+    state,
+    event("workspace_change_reverted", {
+      project_id: "p1",
+      change_id: "change-deleted",
+      tool_name: "remove_file",
+      path: "/notes/deleted.md",
+      change_kind: "deleted",
+      workspace_revision: 6,
+      reverted_at_workspace_revision: 6,
+      revert_outcome: "applied",
+    }),
+  );
+
+  assert.deepEqual(state.selected_file, {
+    path: "/notes/other.md",
+    content: "other",
+  });
+  assert.equal(state.deleted_file_preview_intent, null);
+  assert.deepEqual(state.pending_workspace_refresh, {
+    workspace_revision: 6,
+    changed_paths: ["/notes/deleted.md"],
+  });
+});
+
+test("a repeated deletion preserves an in-flight preview reopen intent", () => {
+  let state = {
+    ...coreReducer(
+      initialAgentSessionState,
+      event("ready", { state: snapshot("p1", "s1", 1, "", 6) }),
+    ),
+    pending_fs_read: {
+      request_id: "restored-read",
+      path: "/notes/deleted.md",
+      expected_workspace_revision: 6,
+      request_kind: "workspace_refresh",
+    },
+  };
+
+  state = coreReducer(
+    state,
+    event("workspace_changed", {
+      project_id: "p1",
+      session_id: "s1",
+      workspace_revision: 7,
+      change: fileChange("/notes/deleted.md", {
+        change_id: "change-repeated-deletion",
+        change_kind: "deleted",
+        tool_name: "remove_file",
+        additions: 0,
+        deletions: 1,
+        byte_size: 0,
+      }),
+    }),
+  );
+
+  assert.equal(state.pending_fs_read, null);
+  assert.deepEqual(state.deleted_file_preview_intent, {
+    path: "/notes/deleted.md",
+    change_id: "change-repeated-deletion",
+    phase: "deleted",
+  });
+  assert.deepEqual(state.pending_workspace_refresh, {
+    workspace_revision: 7,
+    changed_paths: ["/notes/deleted.md"],
+  });
+});
+
+test("a deletion captures a pending file selection and only its receipt can reopen it", () => {
+  let state = coreReducer(
+    initialAgentSessionState,
+    event("ready", { state: snapshot("p1", "s1", 1, "", 4) }),
+  );
+  state = coreReducer(state, {
+    type: "fs_read_requested",
+    request_id: "pending-navigation",
+    path: "/notes/pending.md",
+    expected_workspace_revision: 4,
+    request_kind: "navigation",
+  });
+  state = coreReducer(
+    state,
+    event("workspace_changed", {
+      project_id: "p1",
+      session_id: "s1",
+      workspace_revision: 5,
+      change: fileChange("/notes/pending.md", {
+        change_id: "pending-deletion",
+        change_kind: "deleted",
+        tool_name: "remove_file",
+        additions: 0,
+        deletions: 1,
+        byte_size: 0,
+      }),
+    }),
+  );
+
+  assert.equal(state.pending_fs_read, null);
+  assert.deepEqual(state.deleted_file_preview_intent, {
+    path: "/notes/pending.md",
+    change_id: "pending-deletion",
+    phase: "deleted",
+  });
+  assert.deepEqual(state.pending_workspace_refresh, {
+    workspace_revision: 5,
+    changed_paths: ["/notes/pending.md"],
+  });
+
+  const mismatched = coreReducer(
+    state,
+    event("workspace_change_reverted", {
+      project_id: "p1",
+      change_id: "other-deletion",
+      tool_name: "remove_file",
+      path: "/notes/pending.md",
+      change_kind: "deleted",
+      workspace_revision: 6,
+      reverted_at_workspace_revision: 6,
+      revert_outcome: "applied",
+    }),
+  );
+  assert.equal(mismatched.deleted_file_preview_intent, null);
+  assert.deepEqual(mismatched.pending_workspace_refresh, {
+    workspace_revision: 6,
+    changed_paths: ["/notes/pending.md"],
+  });
+
+  const matched = coreReducer(
+    state,
+    event("workspace_change_reverted", {
+      project_id: "p1",
+      change_id: "pending-deletion",
+      tool_name: "remove_file",
+      path: "/notes/pending.md",
+      change_kind: "deleted",
+      workspace_revision: 6,
+      reverted_at_workspace_revision: 6,
+      revert_outcome: "applied",
+    }),
+  );
+  assert.deepEqual(matched.deleted_file_preview_intent, {
+    path: "/notes/pending.md",
+    change_id: "pending-deletion",
+    phase: "reopening",
+  });
+  assert.deepEqual(matched.pending_workspace_refresh, {
+    workspace_revision: 6,
+    changed_paths: ["/notes/pending.md"],
+    reopen_path: "/notes/pending.md",
+  });
+});
+
+test("recreating a deleted path clears preview intent before a later deletion", () => {
+  let state = {
+    ...coreReducer(
+      initialAgentSessionState,
+      event("ready", { state: snapshot("p1", "s1", 1, "", 4) }),
+    ),
+    selected_file: {
+      path: "/notes/reused.md",
+      content: "original",
+    },
+  };
+  state = coreReducer(
+    state,
+    event("workspace_changed", {
+      project_id: "p1",
+      session_id: "s1",
+      workspace_revision: 5,
+      change: fileChange("/notes/reused.md", {
+        change_id: "original-deletion",
+        change_kind: "deleted",
+        tool_name: "remove_file",
+        additions: 0,
+        deletions: 1,
+        byte_size: 0,
+      }),
+    }),
+  );
+  assert.deepEqual(state.deleted_file_preview_intent, {
+    path: "/notes/reused.md",
+    change_id: "original-deletion",
+    phase: "deleted",
+  });
+
+  state = coreReducer(
+    state,
+    event("workspace_changed", {
+      project_id: "p1",
+      session_id: "s1",
+      workspace_revision: 6,
+      change: fileChange("/notes/reused.md", {
+        change_id: "independent-recreation",
+        change_kind: "created",
+        tool_name: "write_file",
+        additions: 1,
+        deletions: 0,
+        byte_size: 11,
+      }),
+    }),
+  );
+  assert.equal(state.deleted_file_preview_intent, null);
+
+  state = coreReducer(
+    state,
+    event("workspace_changed", {
+      project_id: "p1",
+      session_id: "s1",
+      workspace_revision: 7,
+      change: fileChange("/notes/reused.md", {
+        change_id: "later-deletion",
+        change_kind: "deleted",
+        tool_name: "remove_file",
+        additions: 0,
+        deletions: 1,
+        byte_size: 0,
+      }),
+    }),
+  );
+  assert.equal(state.deleted_file_preview_intent, null);
+
+  state = coreReducer(
+    state,
+    event("workspace_change_reverted", {
+      project_id: "p1",
+      change_id: "later-deletion",
+      tool_name: "remove_file",
+      path: "/notes/reused.md",
+      change_kind: "deleted",
+      workspace_revision: 8,
+      reverted_at_workspace_revision: 8,
+      revert_outcome: "applied",
+    }),
+  );
+  assert.equal(state.deleted_file_preview_intent, null);
+  assert.deepEqual(state.pending_workspace_refresh, {
+    workspace_revision: 8,
+    changed_paths: ["/notes/reused.md"],
   });
 });
 
@@ -716,6 +1312,7 @@ test("updated reverts refresh previews while stale or idempotent events are no-o
       {
         project_id: "p1",
         change_id: "change-updated",
+        tool_name: "write_file",
         path: "/notes/updated.md",
         change_kind: "updated",
         workspace_revision: 5,
@@ -758,6 +1355,7 @@ test("updated reverts refresh previews while stale or idempotent events are no-o
         "workspace_change_reverted",
         {
           change_id: "change-updated",
+          tool_name: "write_file",
           path: "/notes/updated.md",
           change_kind: "updated",
           ...payload,
@@ -1348,14 +1946,16 @@ function fileEntry(name, path = `/${name}`, size = 1) {
   };
 }
 
-function fileChange(path) {
+function fileChange(path, overrides = {}) {
   return {
     change_id: "change-1",
     tool_call_id: "tool-1",
+    tool_name: "write_file",
     path,
     change_kind: "updated",
     additions: 2,
     deletions: 1,
     byte_size: 24,
+    ...overrides,
   };
 }

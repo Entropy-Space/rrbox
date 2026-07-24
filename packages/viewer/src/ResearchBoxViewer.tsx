@@ -37,6 +37,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -64,6 +65,10 @@ import {
 } from "./use-workspace-change-review.ts";
 import { WorkspaceChangeReview } from "./WorkspaceChangeReview.tsx";
 import { WorkspaceSidebar } from "./WorkspaceSidebar.tsx";
+import {
+  workspaceChangeRevertConfirmation,
+  workspaceChangeRevertGuardReason,
+} from "./workspace-change-review.ts";
 import {
   useWorkspaceTransfer,
   type WorkspaceTransferAdapter,
@@ -270,12 +275,16 @@ export function ResearchBoxViewer({
     focusComposerAfterSearchRef.current = false;
     composerRef.current?.focus();
   }, [chatSearchOpen, coreState.is_ready, isManagementPending]);
+  const workspaceChangeRevertDisabledReason =
+    workspaceChangeRevertGuardReason({
+      is_core_ready: coreState.is_ready,
+      is_management_pending: isManagementPending,
+      is_running: coreState.is_running,
+      has_pending_prompt: coreState.pending_prompt !== null,
+      is_workspace_transfer_pending: isWorkspaceTransferPending,
+    });
   const isWorkspaceChangeRevertDisabled =
-    !coreState.is_ready ||
-    isManagementPending ||
-    coreState.is_running ||
-    coreState.pending_prompt !== null ||
-    isWorkspaceTransferPending;
+    workspaceChangeRevertDisabledReason !== null;
 
   useEffect(() => {
     if (!coreState.is_ready || consumeImportFocusSuppression()) return;
@@ -582,6 +591,9 @@ export function ResearchBoxViewer({
             selectedFile={coreState.selected_file}
             changeReview={workspaceChangeReview}
             isChangeRevertDisabled={isWorkspaceChangeRevertDisabled}
+            changeRevertDisabledReason={
+              workspaceChangeRevertDisabledReason
+            }
             headingRef={workspaceHeadingRef}
             onClose={closeWorkspace}
             onBackToWorkspace={showWorkspaceBrowser}
@@ -927,6 +939,7 @@ function WorkspacePanel({
   selectedFile,
   changeReview,
   isChangeRevertDisabled,
+  changeRevertDisabledReason,
   headingRef,
   onClose,
   onBackToWorkspace,
@@ -943,6 +956,7 @@ function WorkspacePanel({
   selectedFile: { path: string; content: string } | null;
   changeReview: WorkspaceChangeReviewView;
   isChangeRevertDisabled: boolean;
+  changeRevertDisabledReason: string | null;
   headingRef: RefObject<HTMLHeadingElement | null>;
   onClose: () => void;
   onBackToWorkspace: () => void;
@@ -956,6 +970,8 @@ function WorkspacePanel({
   const reviewShellRef = useRef<HTMLDivElement | null>(null);
   const revertButtonRef = useRef<HTMLButtonElement | null>(null);
   const confirmationCancelRef = useRef<HTMLButtonElement | null>(null);
+  const confirmationHeadingId = useId();
+  const confirmationDescriptionId = useId();
   const isReviewMode = changeReview.phase !== "idle";
   const reviewChangeId = isReviewMode
     ? changeReview.selection.change_id
@@ -1070,6 +1086,7 @@ function WorkspacePanel({
             isRevertDisabled={
               isChangeRevertDisabled || changeReview.is_confirming
             }
+            revertDisabledReason={changeRevertDisabledReason}
             revertButtonRef={revertButtonRef}
             onRequestRevert={onRequestChangeRevert}
           />
@@ -1077,13 +1094,15 @@ function WorkspacePanel({
             <div
               className="workspace-change-confirmation"
               role="group"
-              aria-label="Confirm workspace change revert"
+              aria-labelledby={confirmationHeadingId}
             >
-              <strong>Revert this agent change?</strong>
-              <p>
-                {changeReview.snapshot.change.change_kind === "created"
-                  ? "This removes the file only if it is still the exact agent-created version."
-                  : "This restores the exact previous content only if the file is still this agent-edited version."}{" "}
+              <strong id={confirmationHeadingId}>
+                Revert this agent change?
+              </strong>
+              <p id={confirmationDescriptionId}>
+                {workspaceChangeRevertConfirmation(
+                  changeReview.snapshot.change.change_kind,
+                )}{" "}
                 Later edits will never be overwritten.
               </p>
               <div className="workspace-change-confirmation-actions">
@@ -1091,6 +1110,7 @@ function WorkspacePanel({
                   ref={confirmationCancelRef}
                   type="button"
                   disabled={changeReview.is_reverting}
+                  aria-describedby={confirmationDescriptionId}
                   onClick={cancelChangeRevert}
                 >
                   Cancel
@@ -1099,6 +1119,7 @@ function WorkspacePanel({
                   className="danger"
                   type="button"
                   disabled={changeReview.is_reverting}
+                  aria-describedby={confirmationDescriptionId}
                   onClick={confirmChangeRevert}
                 >
                   {changeReview.is_reverting ? (

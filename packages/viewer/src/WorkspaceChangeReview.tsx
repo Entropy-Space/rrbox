@@ -22,6 +22,7 @@ export type WorkspaceChangeReviewProps = {
   change: WorkspaceChangeReviewData;
   isReverting?: boolean;
   isRevertDisabled?: boolean;
+  revertDisabledReason?: string | null;
   maxOutputRows?: number;
   revertButtonRef?: Ref<HTMLButtonElement>;
   onRequestRevert: () => void;
@@ -31,17 +32,19 @@ export function WorkspaceChangeReview({
   change,
   isReverting = false,
   isRevertDisabled = false,
+  revertDisabledReason = null,
   maxOutputRows,
   revertButtonRef,
   onRequestRevert,
 }: WorkspaceChangeReviewProps) {
   const headingId = useId();
   const diffRegionId = useId();
+  const revertDisabledReasonId = useId();
   const diff = useMemo(
     () =>
       createLineDiffModel(
         change.before_content ?? "",
-        change.after_content,
+        change.after_content ?? "",
         maxOutputRows === undefined
           ? {}
           : { max_output_rows: maxOutputRows },
@@ -49,11 +52,23 @@ export function WorkspaceChangeReview({
     [change.after_content, change.before_content, maxOutputRows],
   );
   const kindLabel =
-    change.change_kind === "created" ? "Created file" : "Updated file";
+    change.change_kind === "created"
+      ? "Created file"
+      : change.change_kind === "deleted"
+        ? "Deleted file"
+        : "Updated file";
   const reviewState = createWorkspaceChangeReviewState(change, {
     isReverting,
     isRevertDisabled,
   });
+  const visibleRevertDisabledReason =
+    change.revert_status === "available"
+      ? revertDisabledReason
+      : null;
+  const revertDescriptionIds = [
+    reviewState.statusMessage ? diffRegionId : null,
+    visibleRevertDisabledReason ? revertDisabledReasonId : null,
+  ].filter((id): id is string => id !== null);
 
   return (
     <section
@@ -80,7 +95,9 @@ export function WorkspaceChangeReview({
           type="button"
           disabled={reviewState.isRevertDisabled}
           aria-describedby={
-            reviewState.statusMessage ? diffRegionId : undefined
+            revertDescriptionIds.length > 0
+              ? revertDescriptionIds.join(" ")
+              : undefined
           }
           onClick={onRequestRevert}
         >
@@ -103,6 +120,16 @@ export function WorkspaceChangeReview({
         </div>
       )}
 
+      {visibleRevertDisabledReason && (
+        <div
+          id={revertDisabledReasonId}
+          className="workspace-change-status unavailable"
+          role="status"
+        >
+          {visibleRevertDisabledReason}
+        </div>
+      )}
+
       {(diff.is_simplified || diff.is_truncated) && (
         <p className="workspace-change-diff-note" role="note">
           {diff.is_simplified &&
@@ -114,7 +141,9 @@ export function WorkspaceChangeReview({
 
       {diff.additions === 0 && diff.deletions === 0 ? (
         <div className="workspace-change-empty">
-          No textual difference remains in this change.
+          {change.change_kind === "deleted"
+            ? "The deleted file was empty."
+            : "No textual difference remains in this change."}
         </div>
       ) : (
         <div

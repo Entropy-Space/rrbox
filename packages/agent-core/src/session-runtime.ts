@@ -57,7 +57,11 @@ type WorkspaceToolDetails = {
   file_change?: WorkspaceChangeSummary;
 };
 
-type MutationToolName = "write_file" | "replace_text";
+type MutationToolName = "write_file" | "replace_text" | "remove_file";
+
+type FileMutationResult =
+  | Awaited<ReturnType<WorkspaceController["write"]>>
+  | Awaited<ReturnType<WorkspaceController["remove"]>>;
 
 type ActiveRun = {
   request_id: string;
@@ -706,7 +710,33 @@ export class SessionRuntime {
       },
     };
 
-    return [listFiles, searchFiles, readFile, writeFile, replaceText];
+    const removeFile: AgentTool<
+      typeof pathParameters,
+      WorkspaceToolDetails
+    > = {
+      name: "remove_file",
+      label: "Remove file",
+      description:
+        "Delete one existing UTF-8 text file from the workspace.",
+      parameters: pathParameters,
+      execute: async (toolCallId, params) => {
+        const { content } = await this.workspace.read(params.path);
+        const removal = await this.workspace.remove(params.path, {
+          expected_content: content,
+          change: this.createChangeMetadata(toolCallId, "remove_file"),
+        });
+        return this.fileMutationResult(removal, this.activeRequestId());
+      },
+    };
+
+    return [
+      listFiles,
+      searchFiles,
+      readFile,
+      writeFile,
+      replaceText,
+      removeFile,
+    ];
   }
 
   private appendTimelineEntry(
@@ -1100,20 +1130,26 @@ export class SessionRuntime {
   }
 
   private fileMutationResult(
-    write: Awaited<ReturnType<WorkspaceController["write"]>>,
+    mutation: FileMutationResult,
     requestId: string,
   ): {
     content: [{ type: "text"; text: string }];
     details: WorkspaceToolDetails;
   } {
-    const record = write.result.change;
-    if (write.result.change_kind === "unchanged") {
+    const result = mutation.result;
+    if (!result) {
+      throw new Error(
+        "The workspace mutation did not return its journaled result.",
+      );
+    }
+    const record = result.change;
+    if (result.change_kind === "unchanged") {
       return {
         content: [
           {
             type: "text",
             text: JSON.stringify({
-              path: write.result.path,
+              path: result.path,
               change_kind: "unchanged",
             }),
           },
@@ -1128,7 +1164,7 @@ export class SessionRuntime {
     this.emit(
       "workspace_changed",
       {
-        workspace_revision: write.workspace_revision,
+        workspace_revision: mutation.workspace_revision,
         change: fileChange,
       },
       requestId,
@@ -1281,13 +1317,19 @@ function toolLabel(toolName: string, args: unknown): string {
       return `Writing ${path}`;
     case "replace_text":
       return `Editing ${path}`;
+    case "remove_file":
+      return `Removing ${path}`;
     default:
       return `Listing ${path}`;
   }
 }
 
 function isMutationToolName(value: string): value is MutationToolName {
-  return value === "write_file" || value === "replace_text";
+  return (
+    value === "write_file" ||
+    value === "replace_text" ||
+    value === "remove_file"
+  );
 }
 
 function countOverlappingOccurrences(value: string, search: string): number {
@@ -1308,6 +1350,7 @@ function workspaceChangeSummary(
   return {
     change_id: record.change_id,
     tool_call_id: record.tool_call_id,
+    tool_name: record.tool_name,
     path: record.path,
     change_kind: record.change_kind,
     additions: record.additions,
@@ -1317,7 +1360,12 @@ function workspaceChangeSummary(
 }
 
 function changeSummary(change: WorkspaceChangeSummary): string {
-  const verb = change.change_kind === "created" ? "Created" : "Updated";
+  const verb =
+    change.change_kind === "created"
+      ? "Created"
+      : change.change_kind === "updated"
+        ? "Updated"
+        : "Deleted";
   return `${verb} · +${change.additions} −${change.deletions}`;
 }
 

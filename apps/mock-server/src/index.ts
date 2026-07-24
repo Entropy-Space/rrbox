@@ -143,6 +143,9 @@ function createMockResponse(request: ModelRequest): ModelStreamEvent[] {
   const shouldCreateNote =
     normalizedPrompt.includes("create") &&
     normalizedPrompt.includes("note");
+  const shouldRemoveNote =
+    /\b(?:delete|remove)\b/u.test(normalizedPrompt) &&
+    normalizedPrompt.includes("note");
   const searchQuery = workspaceSearchQuery(prompt);
   const shouldInspectFiles = ["file", "workspace", "readme", "project"].some(
     (term) => normalizedPrompt.includes(term),
@@ -175,6 +178,28 @@ function createMockResponse(request: ModelRequest): ModelStreamEvent[] {
         createNoteIntroduction,
         1,
         createNoteIntroductionDeltas,
+      ),
+      ...toolCallEvents(toolCall, 2),
+      { type: "done", stop_reason: "tool_use" },
+    ];
+  }
+
+  if (shouldRemoveNote && toolResults.length === 0) {
+    const toolCall: ModelToolCall = {
+      tool_call_id: crypto.randomUUID(),
+      tool_name: "remove_file",
+      arguments: {
+        path: "/notes/agent-note.md",
+      },
+    };
+    return [
+      ...reasoningEvents(
+        "The requested workspace note can be removed directly by its exact path.",
+        0,
+      ),
+      ...textEvents(
+        "I’ll remove `/notes/agent-note.md` from the workspace.",
+        1,
       ),
       ...toolCallEvents(toolCall, 2),
       { type: "done", stop_reason: "tool_use" },
@@ -228,7 +253,10 @@ function createMockResponse(request: ModelRequest): ModelStreamEvent[] {
   }
 
   const response: MockTextResponse =
-    shouldCreateNote || searchQuery !== null || shouldInspectFiles
+    shouldCreateNote ||
+    shouldRemoveNote ||
+    searchQuery !== null ||
+    shouldInspectFiles
       ? responseFromToolResult(toolResults[0])
       : {
           text: "This prototype is running through a versioned JSON boundary. The viewer only renders events; the agent core owns the conversation and tools inside a Web Worker. That gives us a clean path from today’s mock model to Pi without coupling the interface to either one.",
@@ -330,6 +358,11 @@ function responseFromToolResult(
   if (result.tool_name === "replace_text") {
     return {
       text: "I updated the requested text in the workspace. The exact-match edit and its durable change record both completed successfully.",
+    };
+  }
+  if (result.tool_name === "remove_file") {
+    return {
+      text: "I removed `/notes/agent-note.md` from the workspace. The deletion is recorded as a reversible workspace change.",
     };
   }
   if (result.tool_name === "read_file") {

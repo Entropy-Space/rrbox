@@ -18,7 +18,7 @@ export type WorkspaceChangeMetadata = {
   tool_call_block_id: string;
   assistant_message_index: number;
   tool_call_id: string;
-  tool_name: "write_file" | "replace_text";
+  tool_name: "write_file" | "replace_text" | "remove_file";
   created_at: string;
 };
 
@@ -51,9 +51,9 @@ export type WorkspaceChangeRecord = Omit<
    */
   reverted_at_workspace_revision: number | null;
   path: string;
-  change_kind: "created" | "updated";
+  change_kind: "created" | "updated" | "deleted";
   before_content: string | null;
-  after_content: string;
+  after_content: string | null;
   additions: number;
   deletions: number;
   byte_size: number;
@@ -74,6 +74,15 @@ export type VfsWriteResult = {
 
 export type VfsRemoveOptions = {
   expected_content?: string;
+  change?: WorkspaceChangeMetadata;
+};
+
+export type VfsRemoveResult = {
+  path: string;
+  change_kind: "deleted";
+  before_content: string;
+  after_content: null;
+  change: WorkspaceChangeRecord;
 };
 
 export type VfsSeedFile = {
@@ -97,6 +106,33 @@ export type WorkspaceReadResult = {
   content: string;
 };
 
+export type WorkspacePathStateResult =
+  | {
+      workspace_revision: number;
+      path: string;
+      kind: "file";
+      path_revision: number;
+      content: string;
+    }
+  | {
+      workspace_revision: number;
+      path: string;
+      kind: "directory";
+      path_revision: null;
+    }
+  | {
+      workspace_revision: number;
+      path: string;
+      kind: "missing";
+      /**
+       * The last mutation revision for a path whose absence is tracked.
+       *
+       * `null` means the path has no authoritative deleted generation in the
+       * current workspace incarnation.
+       */
+      path_revision: number | null;
+    };
+
 export type WorkspaceFilesSnapshotResult = {
   workspace_revision: number;
   files: VfsSeedFile[];
@@ -113,6 +149,14 @@ export type WorkspaceWriteResult = {
 
 export type WorkspaceRemoveResult = {
   workspace_revision: number;
+  /**
+   * Present only when the caller requested a journaled removal through
+   * `VfsRemoveOptions.change`.
+   *
+   * Keeping this field absent for ordinary removals preserves the existing
+   * unjournaled API while allowing an agent mutation to receive its receipt.
+   */
+  result?: VfsRemoveResult;
 };
 
 export type WorkspaceChangesResult = {
@@ -163,6 +207,14 @@ export class WorkspaceCorruptionError extends Error {
 export interface WorkspaceReader {
   list(path: string): Promise<WorkspaceListResult>;
   read(path: string): Promise<WorkspaceReadResult>;
+  /**
+   * Reads file content or the authoritative generation of an absent path.
+   *
+   * Unlike `read`, this operation does not reject a missing path. A deleted
+   * receipt is current only when this returns `kind: "missing"` with the
+   * receipt's exact applied revision.
+   */
+  getPathState(path: string): Promise<WorkspacePathStateResult>;
 }
 
 /**
@@ -248,6 +300,8 @@ export interface WorkspaceChangeJournal {
  * not optional backend capabilities. New receipts must carry their non-null
  * `applied_workspace_revision`, and every successful read must return the
  * path's last mutation revision from the same observation as its content.
+ * Removed paths retain a generation tombstone so `getPathState` can
+ * distinguish the original absence from a delete/recreate/delete ABA cycle.
  */
 export interface Workspace
   extends WorkspaceReader,
@@ -340,6 +394,18 @@ export function createVfsWriteResult(
   change?: WorkspaceChangeMetadata,
 ): VfsWriteResult {
   const normalizedPath = normalizeFilePath(path);
+  if (change?.tool_name === "remove_file") {
+    throw new VfsError(
+      "conflict",
+      "A remove_file receipt cannot journal a file write.",
+    );
+  }
+  if (change?.tool_name === "replace_text" && beforeContent === null) {
+    throw new VfsError(
+      "conflict",
+      "A replace_text receipt cannot journal a file creation.",
+    );
+  }
   if (beforeContent === afterContent) {
     return {
       path: normalizedPath,
@@ -381,16 +447,77 @@ export function applyWorkspaceChangeRevision(
   workspaceRevision: number,
 ): VfsWriteResult {
   if (result.change === null) return result;
+  return {
+    ...result,
+    change: applyWorkspaceChangeRecordRevision(
+      result.change,
+      workspaceRevision,
+    ),
+  };
+}
+
+/**
+ * Creates the immutable before/after receipt for a removed UTF-8 file.
+ */
+export function createVfsRemoveResult(
+  path: string,
+  beforeContent: string,
+  change: WorkspaceChangeMetadata,
+): VfsRemoveResult {
+  const normalizedPath = normalizeFilePath(path);
+  if (change.tool_name !== "remove_file") {
+    throw new VfsError(
+      "conflict",
+      "A file removal requires a remove_file receipt.",
+    );
+  }
+  const record: WorkspaceChangeRecord = {
+    ...change,
+    applied_workspace_revision: null,
+    reverted_at_workspace_revision: null,
+    path: normalizedPath,
+    change_kind: "deleted",
+    before_content: beforeContent,
+    after_content: null,
+    ...computeLineChanges(beforeContent, ""),
+    byte_size: 0,
+  };
+  return {
+    path: normalizedPath,
+    change_kind: "deleted",
+    before_content: beforeContent,
+    after_content: null,
+    change: record,
+  };
+}
+
+export function applyWorkspaceRemoveChangeRevision(
+  result: VfsRemoveResult,
+  workspaceRevision: number,
+): VfsRemoveResult {
+  return {
+    ...result,
+    change: applyWorkspaceChangeRecordRevision(
+      result.change,
+      workspaceRevision,
+    ),
+  };
+}
+
+/**
+ * Stamps any journaled workspace mutation with its atomic commit revision.
+ */
+export function applyWorkspaceChangeRecordRevision(
+  change: WorkspaceChangeRecord,
+  workspaceRevision: number,
+): WorkspaceChangeRecord {
   if (!Number.isSafeInteger(workspaceRevision) || workspaceRevision < 0) {
     throw new VfsError("conflict", "Workspace revision is invalid.");
   }
   return {
-    ...result,
-    change: {
-      ...result.change,
-      applied_workspace_revision: workspaceRevision,
-      reverted_at_workspace_revision: null,
-    },
+    ...change,
+    applied_workspace_revision: workspaceRevision,
+    reverted_at_workspace_revision: null,
   };
 }
 
@@ -471,7 +598,8 @@ export function assertValidWorkspaceChangeRecord(
   }
   if (
     change.tool_name !== "write_file" &&
-    change.tool_name !== "replace_text"
+    change.tool_name !== "replace_text" &&
+    change.tool_name !== "remove_file"
   ) {
     throw invalidWorkspaceChangeRecord("has an invalid tool_name");
   }
@@ -540,20 +668,42 @@ export function assertValidWorkspaceChangeRecord(
   }
   if (
     change.change_kind !== "created" &&
-    change.change_kind !== "updated"
+    change.change_kind !== "updated" &&
+    change.change_kind !== "deleted"
   ) {
     throw invalidWorkspaceChangeRecord("has an invalid change_kind");
   }
-  if (typeof change.after_content !== "string") {
+  const toolMatchesChangeKind =
+    (change.tool_name === "write_file" &&
+      (change.change_kind === "created" ||
+        change.change_kind === "updated")) ||
+    (change.tool_name === "replace_text" &&
+      change.change_kind === "updated") ||
+    (change.tool_name === "remove_file" &&
+      change.change_kind === "deleted");
+  if (!toolMatchesChangeKind) {
+    throw invalidWorkspaceChangeRecord(
+      "has a tool_name inconsistent with its change_kind",
+    );
+  }
+  if (
+    change.after_content !== null &&
+    typeof change.after_content !== "string"
+  ) {
     throw invalidWorkspaceChangeRecord(
       "has invalid after_content",
     );
   }
   if (
     (change.change_kind === "created" &&
-      change.before_content !== null) ||
+      (change.before_content !== null ||
+        typeof change.after_content !== "string")) ||
     (change.change_kind === "updated" &&
-      typeof change.before_content !== "string")
+      (typeof change.before_content !== "string" ||
+        typeof change.after_content !== "string")) ||
+    (change.change_kind === "deleted" &&
+      (typeof change.before_content !== "string" ||
+        change.after_content !== null))
   ) {
     throw invalidWorkspaceChangeRecord(
       "has inconsistent change content",
@@ -566,9 +716,10 @@ export function assertValidWorkspaceChangeRecord(
   }
 
   const beforeContent = change.before_content as string | null;
+  const afterContent = change.after_content as string | null;
   const lineChanges = computeLineChanges(
     beforeContent ?? "",
-    change.after_content,
+    afterContent ?? "",
   );
   if (
     !Number.isSafeInteger(change.additions) ||
@@ -586,7 +737,7 @@ export function assertValidWorkspaceChangeRecord(
     !Number.isSafeInteger(change.byte_size) ||
     (change.byte_size as number) < 0 ||
     change.byte_size !==
-      new TextEncoder().encode(change.after_content).byteLength
+      new TextEncoder().encode(afterContent ?? "").byteLength
   ) {
     throw invalidWorkspaceChangeRecord("has an invalid byte_size");
   }

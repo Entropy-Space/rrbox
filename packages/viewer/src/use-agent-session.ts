@@ -47,6 +47,7 @@ export type AgentSessionState = {
   files: FileEntry[];
   current_path: string;
   selected_file: { path: string; content: string } | null;
+  deleted_file_preview_intent: DeletedFilePreviewIntent | null;
   core_lifecycle: CoreLifecyclePhase;
   core_status_message: string | null;
   workspace_recovery_notice: WorkspaceRecoveryNotice | null;
@@ -82,6 +83,7 @@ export const initialAgentSessionState: AgentSessionState = {
   files: [],
   current_path: "/",
   selected_file: null,
+  deleted_file_preview_intent: null,
   core_lifecycle: "electing",
   core_status_message: null,
   workspace_recovery_notice: null,
@@ -116,7 +118,20 @@ type PendingFileSystemRequest = {
 type PendingWorkspaceRefresh = {
   workspace_revision: number;
   changed_paths: string[];
+  reopen_path?: string;
 };
+
+type DeletedFilePreviewIntent = {
+  path: string;
+  change_id: string;
+  phase: "deleted" | "reopening";
+};
+
+type WorkspaceMutationEffect =
+  | "content_changed"
+  | "file_deleted"
+  | "created_file_reverted"
+  | "deleted_file_reverted";
 
 type AgentSessionAction =
   | CoreEvent
@@ -313,7 +328,10 @@ export function useAgentSession(createWorker: () => Worker) {
       },
     );
 
-    const selectedPath = coreState.selected_file?.path;
+    const selectedPath = workspaceRefreshReadPath(
+      refresh.reopen_path,
+      coreState.selected_file?.path,
+    );
     if (selectedPath && refresh.changed_paths.includes(selectedPath)) {
       sendFileSystemCommand(
         createCommand("fs_read", {
@@ -982,6 +1000,16 @@ export function coreReducer(
           event.request_kind === "workspace_refresh"
             ? state.selected_file
             : null,
+        deleted_file_preview_intent:
+          event.request_kind === "workspace_refresh"
+            ? state.deleted_file_preview_intent
+            : null,
+        pending_workspace_refresh:
+          event.request_kind === "workspace_refresh"
+            ? state.pending_workspace_refresh
+            : clearWorkspaceRefreshReopenPath(
+                state.pending_workspace_refresh,
+              ),
         error_message: null,
       };
     case "fs_read_requested":
@@ -996,6 +1024,18 @@ export function coreReducer(
           event.request_kind === "workspace_refresh"
             ? state.selected_file
             : null,
+        deleted_file_preview_intent:
+          event.request_kind === "workspace_refresh" ||
+            state.deleted_file_preview_intent?.path === event.path
+            ? state.deleted_file_preview_intent
+            : null,
+        pending_workspace_refresh:
+          event.request_kind === "workspace_refresh" ||
+            state.pending_workspace_refresh?.reopen_path === event.path
+            ? state.pending_workspace_refresh
+            : clearWorkspaceRefreshReopenPath(
+                state.pending_workspace_refresh,
+              ),
         error_message: null,
       };
     case "workspace_refresh_started":
@@ -1121,7 +1161,10 @@ export function coreReducer(
         state,
         event.payload.workspace_revision,
         event.payload.change.path,
-        false,
+        event.payload.change.change_id,
+        event.payload.change.change_kind === "deleted"
+          ? "file_deleted"
+          : "content_changed",
       );
     }
     case "workspace_export_snapshot":
@@ -1138,7 +1181,12 @@ export function coreReducer(
         state,
         event.payload.workspace_revision,
         event.payload.path,
-        event.payload.change_kind === "created",
+        event.payload.change_id,
+        event.payload.change_kind === "created"
+          ? "created_file_reverted"
+          : event.payload.change_kind === "deleted"
+            ? "deleted_file_reverted"
+            : "content_changed",
       );
     case "files_snapshot": {
       const pending = state.pending_fs_list;
@@ -1190,6 +1238,10 @@ export function coreReducer(
           path: event.payload.path,
           content: event.payload.content,
         },
+        deleted_file_preview_intent:
+          state.deleted_file_preview_intent?.path === event.payload.path
+            ? null
+            : state.deleted_file_preview_intent,
         pending_fs_read: null,
       };
     }
@@ -1336,6 +1388,9 @@ function applySnapshot(
     files: preserveWorkspace ? state.files : snapshot.files,
     current_path: preserveWorkspace ? state.current_path : "/",
     selected_file: preserveWorkspace ? state.selected_file : null,
+    deleted_file_preview_intent: preserveWorkspace
+      ? state.deleted_file_preview_intent
+      : null,
     core_lifecycle: "ready",
     core_status_message: null,
     is_ready: true,
@@ -1434,28 +1489,81 @@ function applyWorkspaceMutation(
   state: AgentSessionState,
   workspaceRevision: number,
   changedPath: string,
-  removedFile: boolean,
+  changeId: string,
+  effect: WorkspaceMutationEffect,
 ): AgentSessionState {
   if (workspaceRevision <= state.workspace_revision) return state;
-  const inFlightRefreshPath =
-    state.pending_fs_read?.request_kind === "workspace_refresh" &&
+  const inFlightPreviewPath =
+    state.pending_fs_read &&
     state.pending_fs_read.expected_workspace_revision < workspaceRevision
       ? state.pending_fs_read.path
       : null;
+  const removesChangedFile =
+    effect === "file_deleted" ||
+    effect === "created_file_reverted";
+  const deletedPreviewIntent = state.deleted_file_preview_intent;
+  const shouldReopenDeletedFile =
+    effect === "deleted_file_reverted" &&
+    deletedPreviewIntent?.path === changedPath &&
+    deletedPreviewIntent.change_id === changeId;
+  let reopenPath =
+    state.pending_workspace_refresh?.reopen_path ??
+    (inFlightPreviewPath !== null && state.selected_file === null
+      ? inFlightPreviewPath
+      : deletedPreviewIntent?.phase === "reopening"
+        ? deletedPreviewIntent.path
+        : null);
+  const previewTargetWasDeleted =
+    effect === "file_deleted" &&
+    (state.selected_file?.path === changedPath ||
+      reopenPath === changedPath ||
+      (deletedPreviewIntent?.phase === "reopening" &&
+        deletedPreviewIntent.path === changedPath));
+  if (shouldReopenDeletedFile) reopenPath = changedPath;
+  if (removesChangedFile && reopenPath === changedPath) {
+    reopenPath = null;
+  }
   const changedPaths = appendPath(
     appendPath(
-      state.pending_workspace_refresh?.changed_paths ?? [],
-      inFlightRefreshPath,
+      appendPath(
+        state.pending_workspace_refresh?.changed_paths ?? [],
+        reopenPath,
+      ),
+      inFlightPreviewPath,
     ),
     changedPath,
   );
+  const invalidatesDeletedPreviewIntent =
+    deletedPreviewIntent?.path === changedPath &&
+    (
+      effect === "created_file_reverted" ||
+      effect === "deleted_file_reverted" ||
+      (effect === "content_changed" &&
+        deletedPreviewIntent.phase === "deleted") ||
+      (effect === "file_deleted" && !previewTargetWasDeleted)
+    );
   return {
     ...state,
     workspace_revision: workspaceRevision,
     selected_file:
-      removedFile && state.selected_file?.path === changedPath
+      removesChangedFile && state.selected_file?.path === changedPath
         ? null
         : state.selected_file,
+    deleted_file_preview_intent: previewTargetWasDeleted
+      ? {
+          path: changedPath,
+          change_id: changeId,
+          phase: "deleted",
+        }
+      : shouldReopenDeletedFile
+        ? {
+            path: changedPath,
+            change_id: changeId,
+            phase: "reopening",
+          }
+        : invalidatesDeletedPreviewIntent
+          ? null
+          : deletedPreviewIntent,
     pending_fs_list: invalidateStaleFileSystemRequest(
       state.pending_fs_list,
       workspaceRevision,
@@ -1467,12 +1575,30 @@ function applyWorkspaceMutation(
     pending_workspace_refresh: {
       workspace_revision: workspaceRevision,
       changed_paths: changedPaths,
+      ...(reopenPath === null ? {} : { reopen_path: reopenPath }),
     },
   };
 }
 
 function appendPath(paths: string[], path: string | null): string[] {
   return path === null || paths.includes(path) ? paths : [...paths, path];
+}
+
+function clearWorkspaceRefreshReopenPath(
+  refresh: PendingWorkspaceRefresh | null,
+): PendingWorkspaceRefresh | null {
+  if (refresh?.reopen_path === undefined) return refresh;
+  return {
+    workspace_revision: refresh.workspace_revision,
+    changed_paths: refresh.changed_paths,
+  };
+}
+
+export function workspaceRefreshReadPath(
+  reopenPath: string | undefined,
+  selectedPath: string | undefined,
+): string | null {
+  return reopenPath ?? selectedPath ?? null;
 }
 
 function appendTimelineEntry(

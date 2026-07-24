@@ -37,16 +37,56 @@ test("an updated change fallback snapshot preserves an empty original", () => {
   assert.equal(reverted.change.revert_status, "already_reverted");
 });
 
-test("the viewer requires an explicit second revert action", async () => {
+test("a deleted change fallback snapshot records recreation after revert", () => {
+  const reverted = revertedWorkspaceChangeSnapshot(
+    snapshot({
+      change_kind: "deleted",
+      tool_name: "remove_file",
+      before_content: "restore me",
+      after_content: null,
+      current_content: null,
+    }),
+    {
+      workspace_revision: 12,
+      reverted_at_workspace_revision: 12,
+    },
+  );
+
+  assert.equal(reverted.workspace_revision, 12);
+  assert.equal(reverted.change.current_content, "restore me");
+  assert.equal(reverted.change.reverted_at_workspace_revision, 12);
+  assert.equal(reverted.change.revert_status, "already_reverted");
+});
+
+test("the viewer exposes and focuses a described second revert action", async () => {
   const viewer = await readFile(
     new URL("../src/ResearchBoxViewer.tsx", import.meta.url),
     "utf8",
   );
 
-  assert.match(viewer, />Revert this agent change\?</);
+  assert.match(viewer, /Revert this agent change\?/);
   assert.match(viewer, /"Revert now"/);
   assert.match(viewer, /Later edits will never be overwritten\./);
-  assert.match(viewer, /aria-label="Confirm workspace change revert"/);
+  assert.match(viewer, /aria-labelledby=\{confirmationHeadingId\}/);
+  assert.match(viewer, /aria-describedby=\{confirmationDescriptionId\}/);
+  assert.equal(
+    viewer.match(/aria-describedby=\{confirmationDescriptionId\}/g)?.length,
+    2,
+  );
+  assert.doesNotMatch(
+    viewer,
+    /role="group"\s+aria-labelledby=\{confirmationHeadingId\}\s+aria-describedby=\{confirmationDescriptionId\}/,
+  );
+  assert.match(viewer, /<strong id=\{confirmationHeadingId\}>/);
+  assert.match(viewer, /<p id=\{confirmationDescriptionId\}>/);
+  assert.match(
+    viewer,
+    /requestAnimationFrame\(\(\) => confirmationCancelRef\.current\?\.focus\(\)\)/,
+  );
+  assert.match(
+    viewer,
+    /workspaceChangeRevertConfirmation\(\s*changeReview\.snapshot\.change\.change_kind,\s*\)/s,
+  );
   assert.match(viewer, /aria-controls="researchbox-workspace"/);
   assert.match(viewer, /inert=\{isOpen \? undefined : true\}/);
 });
@@ -58,6 +98,7 @@ function snapshot(overrides) {
     change: {
       change_id: "change-1",
       tool_call_id: "call-1",
+      tool_name: "write_file",
       path: "/notes.md",
       change_kind: "updated",
       additions: 1,

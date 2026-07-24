@@ -1,4 +1,4 @@
-export const RESEARCHBOX_DATABASE_VERSION = 8;
+export const RESEARCHBOX_DATABASE_VERSION = 9;
 
 export const databaseStores = {
   meta: "meta",
@@ -7,6 +7,7 @@ export const databaseStores = {
   session_documents: "session_documents",
   project_filesystems: "project_filesystems",
   files: "files",
+  file_path_tombstones: "file_path_tombstones",
   file_changes: "file_changes",
   file_change_quarantines: "file_change_quarantines",
   opfs_files: "opfs_files",
@@ -59,6 +60,13 @@ export type OpfsFileRecord = {
   byte_size: number;
   migration_id: string | null;
   path_revision?: number;
+};
+
+export type FilePathTombstoneRecord = {
+  project_id: string;
+  path: string;
+  incarnation_id: string;
+  path_revision: number;
 };
 
 export type StoredWorkspaceChangeTimestamp = {
@@ -220,6 +228,21 @@ function createSchema(
       keyPath: ["project_id", "path"],
     });
     files.createIndex("by_project", "project_id", { unique: false });
+  }
+  if (
+    !database.objectStoreNames.contains(
+      databaseStores.file_path_tombstones,
+    )
+  ) {
+    const tombstones = database.createObjectStore(
+      databaseStores.file_path_tombstones,
+      {
+        keyPath: ["project_id", "path"],
+      },
+    );
+    tombstones.createIndex("by_project", "project_id", {
+      unique: false,
+    });
   }
   if (!database.objectStoreNames.contains(databaseStores.file_changes)) {
     const fileChanges = database.createObjectStore(

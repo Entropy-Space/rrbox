@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { createWorkspaceChangeReviewState } from "../src/workspace-change-review.ts";
+import {
+  createWorkspaceChangeReviewState,
+  workspaceChangeRevertConfirmation,
+  workspaceChangeRevertGuardReason,
+} from "../src/workspace-change-review.ts";
 
 test("available changes expose an enabled revert action", () => {
   const state = createWorkspaceChangeReviewState(change());
@@ -69,6 +73,94 @@ test("an already-reverted change reports a stable terminal state", () => {
   assert.equal(state.isRevertDisabled, true);
 });
 
+test("deleted changes explain safe recreation and deletion conflicts", () => {
+  const available = createWorkspaceChangeReviewState(
+    change({
+      change_kind: "deleted",
+      after_content: null,
+      current_content: null,
+    }),
+  );
+  assert.equal(available.statusRole, "note");
+  assert.match(available.statusMessage, /recreates the deleted file/i);
+  assert.equal(available.isRevertDisabled, false);
+  assert.match(
+    workspaceChangeRevertConfirmation("deleted"),
+    /recreates the file with its exact previous content/i,
+  );
+
+  const pathOccupied = createWorkspaceChangeReviewState(
+    change({
+      change_kind: "deleted",
+      after_content: null,
+      current_content: "replacement",
+      revert_status: "conflict",
+    }),
+  );
+  assert.equal(pathOccupied.statusRole, "alert");
+  assert.match(pathOccupied.statusMessage, /file now exists at this path/i);
+  assert.equal(pathOccupied.isRevertDisabled, true);
+});
+
+test("created and updated revert confirmation copy remains specific", () => {
+  assert.match(
+    workspaceChangeRevertConfirmation("created"),
+    /removes the file/i,
+  );
+  assert.match(
+    workspaceChangeRevertConfirmation("updated"),
+    /restores the exact previous content/i,
+  );
+});
+
+test("global revert guards explain why an available change is disabled", () => {
+  const available = {
+    is_core_ready: true,
+    is_management_pending: false,
+    is_running: false,
+    has_pending_prompt: false,
+    is_workspace_transfer_pending: false,
+  };
+
+  assert.equal(workspaceChangeRevertGuardReason(available), null);
+  assert.match(
+    workspaceChangeRevertGuardReason({
+      ...available,
+      is_core_ready: false,
+      is_running: true,
+    }),
+    /browser core is ready/i,
+  );
+  assert.match(
+    workspaceChangeRevertGuardReason({
+      ...available,
+      is_management_pending: true,
+    }),
+    /project or chat change/i,
+  );
+  assert.match(
+    workspaceChangeRevertGuardReason({
+      ...available,
+      is_running: true,
+    }),
+    /current response/i,
+  );
+  assert.match(
+    workspaceChangeRevertGuardReason({
+      ...available,
+      has_pending_prompt: true,
+    }),
+    /current response/i,
+  );
+  assert.match(
+    workspaceChangeRevertGuardReason({
+      ...available,
+      is_workspace_transfer_pending: true,
+    }),
+    /workspace transfer/i,
+  );
+});
+
 test("the review component exposes a bounded accessible diff surface", async () => {
   const [component, styles, entrypoint] = await Promise.all([
     readFile(
@@ -89,6 +181,13 @@ test("the review component exposes a bounded accessible diff surface", async () 
   assert.match(component, /<caption className="visually-hidden">/);
   assert.match(component, /className="visually-hidden">\{label\}/);
   assert.match(component, /No newline at end of file/);
+  assert.match(component, /change\.after_content \?\? ""/);
+  assert.match(component, /"Deleted file"/);
+  assert.match(component, /"The deleted file was empty\."/);
+  assert.match(component, /revertDisabledReason/);
+  assert.match(component, /revertDescriptionIds\.join\(" "\)/);
+  assert.match(component, /className="workspace-change-status unavailable"/);
+  assert.match(component, /role="status"/);
   assert.doesNotMatch(component, /dangerouslySetInnerHTML/);
   assert.match(styles, /\.workspace-change-diff\s*\{[^}]*max-height:/s);
   assert.match(styles, /\.workspace-change-diff\s*\{[^}]*overflow: auto;/s);

@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 10 as const;
+export const PROTOCOL_VERSION = 11 as const;
 
 export type FileEntry = {
   name: string;
@@ -15,8 +15,9 @@ export type WorkspaceTransferFile = {
 export type WorkspaceChangeSummary = {
   change_id: string;
   tool_call_id: string;
+  tool_name: "write_file" | "replace_text" | "remove_file";
   path: string;
-  change_kind: "created" | "updated";
+  change_kind: "created" | "updated" | "deleted";
   additions: number;
   deletions: number;
   byte_size: number;
@@ -29,7 +30,7 @@ export type WorkspaceChangeRevertStatus =
 
 export type WorkspaceChangeDetails = WorkspaceChangeSummary & {
   before_content: string | null;
-  after_content: string;
+  after_content: string | null;
   current_content: string | null;
   reverted_at_workspace_revision: number | null;
   revert_status: WorkspaceChangeRevertStatus;
@@ -379,8 +380,9 @@ export type CoreEvent =
       {
         project_id: string;
         change_id: string;
+        tool_name: WorkspaceChangeSummary["tool_name"];
         path: string;
-        change_kind: "created" | "updated";
+        change_kind: WorkspaceChangeSummary["change_kind"];
         workspace_revision: number;
         reverted_at_workspace_revision: number;
         revert_outcome: "applied" | "already_reverted";
@@ -848,6 +850,7 @@ export function parseCoreEvent(value: unknown): CoreEvent {
         [
           "project_id",
           "change_id",
+          "tool_name",
           "path",
           "change_kind",
           "workspace_revision",
@@ -857,6 +860,8 @@ export function parseCoreEvent(value: unknown): CoreEvent {
         "workspace_change_reverted payload",
       );
       const changeKind = parseWorkspaceChangeKind(payload.change_kind);
+      const changeToolName = parseWorkspaceChangeToolName(payload.tool_name);
+      assertWorkspaceChangeToolMatchesKind(changeToolName, changeKind);
       const revertedWorkspaceRevision = requireNonNegativeInteger(
         payload,
         "workspace_revision",
@@ -883,6 +888,7 @@ export function parseCoreEvent(value: unknown): CoreEvent {
         {
           project_id: requireString(payload, "project_id"),
           change_id: requireString(payload, "change_id"),
+          tool_name: changeToolName,
           path: requireString(payload, "path"),
           change_kind: changeKind,
           workspace_revision: revertedWorkspaceRevision,
@@ -1254,6 +1260,7 @@ export function parseTimelineEntry(value: unknown): TimelineEntry {
     }
     case "tool_result": {
       const toolCallId = requireString(value, "tool_call_id");
+      const toolName = requireString(value, "tool_name");
       const summary = optionalString(value, "summary", true);
       const fileChange =
         value.file_change === undefined
@@ -1262,12 +1269,15 @@ export function parseTimelineEntry(value: unknown): TimelineEntry {
       if (fileChange && fileChange.tool_call_id !== toolCallId) {
         throw new Error("Tool result file_change must match tool_call_id.");
       }
+      if (fileChange && fileChange.tool_name !== toolName) {
+        throw new Error("Tool result file_change must match tool_name.");
+      }
       return {
         type: "tool_result",
         ...base,
         tool_call_block_id: requireString(value, "tool_call_block_id"),
         tool_call_id: toolCallId,
-        tool_name: requireString(value, "tool_name"),
+        tool_name: toolName,
         content: requireString(value, "content", true),
         is_error: requireBoolean(value, "is_error"),
         ...(summary === undefined ? {} : { summary }),
@@ -1431,6 +1441,12 @@ export function assertTimelineInvariants(timeline: TimelineEntry[]): void {
     ) {
       throw new Error("Tool result identity must match its tool_call block.");
     }
+    if (
+      entry.file_change &&
+      entry.file_change.tool_name !== entry.tool_name
+    ) {
+      throw new Error("Tool result file_change must match tool_name.");
+    }
     resolvedToolCalls.add(entry.tool_call_block_id);
     pendingToolCalls?.delete(entry.tool_call_block_id);
     if (pendingToolCalls?.size === 0) pendingToolCalls = null;
@@ -1540,9 +1556,12 @@ export function parseWorkspaceChangeSummary(
     throw new Error("Workspace change summary must be an object.");
   }
   const changeKind = parseWorkspaceChangeKind(value.change_kind);
+  const toolName = parseWorkspaceChangeToolName(value.tool_name);
+  assertWorkspaceChangeToolMatchesKind(toolName, changeKind);
   return {
     change_id: requireString(value, "change_id"),
     tool_call_id: requireString(value, "tool_call_id"),
+    tool_name: toolName,
     path: requireString(value, "path"),
     change_kind: changeKind,
     additions: requireNonNegativeInteger(value, "additions"),
@@ -1554,10 +1573,43 @@ export function parseWorkspaceChangeSummary(
 function parseWorkspaceChangeKind(
   value: unknown,
 ): WorkspaceChangeSummary["change_kind"] {
-  if (value !== "created" && value !== "updated") {
+  if (
+    value !== "created" &&
+    value !== "updated" &&
+    value !== "deleted"
+  ) {
     throw new Error("Invalid workspace change kind.");
   }
   return value;
+}
+
+function parseWorkspaceChangeToolName(
+  value: unknown,
+): WorkspaceChangeSummary["tool_name"] {
+  if (
+    value !== "write_file" &&
+    value !== "replace_text" &&
+    value !== "remove_file"
+  ) {
+    throw new Error("Invalid workspace change tool name.");
+  }
+  return value;
+}
+
+function assertWorkspaceChangeToolMatchesKind(
+  toolName: WorkspaceChangeSummary["tool_name"],
+  changeKind: WorkspaceChangeSummary["change_kind"],
+): void {
+  const matches =
+    (toolName === "write_file" &&
+      (changeKind === "created" || changeKind === "updated")) ||
+    (toolName === "replace_text" && changeKind === "updated") ||
+    (toolName === "remove_file" && changeKind === "deleted");
+  if (!matches) {
+    throw new Error(
+      "Workspace change tool_name does not match change_kind.",
+    );
+  }
 }
 
 function parseWorkspaceChangeRevertOutcome(
@@ -1580,6 +1632,7 @@ export function parseWorkspaceChangeDetails(
     [
       "change_id",
       "tool_call_id",
+      "tool_name",
       "path",
       "change_kind",
       "additions",
@@ -1603,15 +1656,25 @@ export function parseWorkspaceChangeDetails(
     throw new Error("Invalid workspace change revert status.");
   }
   const beforeContent = requireNullableString(value, "before_content", true);
+  const afterContent = requireNullableString(value, "after_content", true);
   if (
-    (summary.change_kind === "created" && beforeContent !== null) ||
-    (summary.change_kind === "updated" && beforeContent === null)
+    (
+      summary.change_kind === "created" &&
+      (beforeContent !== null || afterContent === null)
+    ) ||
+    (
+      summary.change_kind === "updated" &&
+      (beforeContent === null || afterContent === null)
+    ) ||
+    (
+      summary.change_kind === "deleted" &&
+      (beforeContent === null || afterContent !== null)
+    )
   ) {
     throw new Error(
-      "Workspace change before_content does not match change_kind.",
+      "Workspace change contents do not match change_kind.",
     );
   }
-  const afterContent = requireString(value, "after_content", true);
   const currentContent = requireNullableString(
     value,
     "current_content",

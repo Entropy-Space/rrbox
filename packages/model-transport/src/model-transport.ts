@@ -3,7 +3,8 @@ export type ModelToolName =
   | "read_file"
   | "search_files"
   | "write_file"
-  | "replace_text";
+  | "replace_text"
+  | "remove_file";
 
 type ModelToolCallEnvelope<TName extends ModelToolName, TArguments> = {
   tool_call_id: string;
@@ -27,6 +28,10 @@ export type ModelToolCall =
   | ModelToolCallEnvelope<
       "replace_text",
       { path: string; old_text: string; new_text: string }
+    >
+  | ModelToolCallEnvelope<
+      "remove_file",
+      { path: string }
     >;
 
 export type ModelToolResult = {
@@ -542,6 +547,13 @@ export function parseModelToolCall(value: unknown): ModelToolCall {
           new_text: requireString(value.arguments, "new_text", true),
         },
       };
+    case "remove_file":
+      assertExactKeys(value.arguments, ["path"], "remove_file arguments");
+      return {
+        tool_call_id: toolCallId,
+        tool_name: toolName,
+        arguments: { path },
+      };
   }
 }
 
@@ -573,7 +585,8 @@ export function isModelToolName(value: unknown): value is ModelToolName {
     value === "read_file" ||
     value === "search_files" ||
     value === "write_file" ||
-    value === "replace_text"
+    value === "replace_text" ||
+    value === "remove_file"
   );
 }
 
@@ -593,6 +606,23 @@ function requireIdentifier(
     throw new Error(`${field} must be a non-empty string.`);
   }
   return candidate;
+}
+
+function assertExactKeys(
+  value: Record<string, unknown>,
+  expectedKeys: readonly string[],
+  label: string,
+): void {
+  const actualKeys = Object.keys(value).sort();
+  const expected = [...expectedKeys].sort();
+  if (
+    actualKeys.length !== expected.length ||
+    actualKeys.some((key, index) => key !== expected[index])
+  ) {
+    throw new Error(
+      `${label} must contain exactly: ${expected.join(", ")}.`,
+    );
+  }
 }
 
 function requireString(

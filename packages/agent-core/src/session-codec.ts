@@ -136,7 +136,11 @@ export function createToolResultEntry(
   const details = isRecord(message.details) ? message.details : undefined;
   const summary =
     typeof details?.summary === "string" ? details.summary : undefined;
-  const fileChange = isWorkspaceChangeSummary(details?.file_change)
+  const fileChange = isWorkspaceChangeSummary(
+    details?.file_change,
+    message.toolCallId,
+    message.toolName,
+  )
     ? structuredClone(details.file_change)
     : undefined;
   return {
@@ -310,13 +314,29 @@ function toolResultDetails(
 
 function isWorkspaceChangeSummary(
   value: unknown,
+  expectedToolCallId: string,
+  expectedToolName: string,
 ): value is NonNullable<ToolResultEntry["file_change"]> {
   if (!isRecord(value)) return false;
+  const changeKind = value.change_kind;
+  const toolName = value.tool_name;
+  const toolMatchesChangeKind =
+    (toolName === "write_file" &&
+      (changeKind === "created" || changeKind === "updated")) ||
+    (toolName === "replace_text" && changeKind === "updated") ||
+    (toolName === "remove_file" && changeKind === "deleted");
   return (
     typeof value.change_id === "string" &&
-    typeof value.tool_call_id === "string" &&
+    value.tool_call_id === expectedToolCallId &&
+    toolName === expectedToolName &&
+    (toolName === "write_file" ||
+      toolName === "replace_text" ||
+      toolName === "remove_file") &&
     typeof value.path === "string" &&
-    (value.change_kind === "created" || value.change_kind === "updated") &&
+    (changeKind === "created" ||
+      changeKind === "updated" ||
+      changeKind === "deleted") &&
+    toolMatchesChangeKind &&
     isNonNegativeInteger(value.additions) &&
     isNonNegativeInteger(value.deletions) &&
     isNonNegativeInteger(value.byte_size)

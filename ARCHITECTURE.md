@@ -34,7 +34,7 @@ packages/viewer → browser workspace adapter → browser/archive.worker.ts
                                               └─ packages/workspace-archive
 ```
 
-The viewer and core worker exchange only protocol-v10 JSON values. A
+The viewer and core worker exchange only protocol-v11 JSON values. A
 `project_id` plus nullable `session_id` scopes the active composer: `null`
 identifies that project's single virtual new chat, while incremental run events
 always identify a durable session. Filesystem and draft acknowledgements use a
@@ -48,7 +48,7 @@ Correlated change-read events expose the durable before/after receipt plus the
 current file state. A revert event distinguishes a newly applied revert from an
 idempotent replay. Together these prevent late work from replacing a newer
 project, chat, draft, or file-navigation result. The core and LLM workers use a
-separate protocol-v5
+separate protocol-v6
 JSON contract so provider discovery, full conversation requests, provider I/O,
 cancellation, and future credentials stay outside the agent runtime. The viewer
 never imports Pi,
@@ -123,18 +123,19 @@ request for automatic promotion.
 
 The elected browser core owns one IndexedDB database with `meta`, `projects`,
 `sessions`, `session_documents`, `project_filesystems`, `files`,
-`file_changes`, `file_change_quarantines`, and `opfs_files` stores. Catalog
-writes use a monotonic `state_revision` guard. Draft-only writes update one
-project or session
-document without rewriting the catalog; this relies on the origin-wide
+`file_path_tombstones`, `file_changes`, `file_change_quarantines`, and
+`opfs_files` stores. Catalog writes use a monotonic `state_revision` guard.
+Draft-only writes update one project or session document without rewriting the
+catalog; this relies on the origin-wide
 exclusive Web Lock that gives exactly one core write ownership. Session
-documents persist the existing-session input draft and one versioned, ordered
-timeline. Assistant entries own ordered text, reasoning, and tool-call blocks;
-tool results are separate entries linked by internal block identifiers. That
-timeline is the viewer state and maps back into the currently supported
-text-only user and tool-result Pi surface. Projects persist their virtual
-new-chat draft and model selection; durable sessions persist their own model
-selection.
+documents use format 4 to persist the existing-session input draft and one
+versioned, ordered timeline. Format-3 timelines are upgraded once by deriving a
+legacy file-change tool identity only from their enclosing mutation result.
+Assistant entries own ordered text, reasoning, and tool-call blocks; tool
+results are separate entries linked by internal block identifiers. That timeline
+is the viewer state and maps back into the currently supported text-only user
+and tool-result Pi surface. Projects persist their virtual new-chat draft and
+model selection; durable sessions persist their own model selection.
 
 `search_files` is a read-only, case-sensitive literal search over a coherent
 workspace snapshot. It accepts either a file or directory scope and returns
@@ -142,10 +143,11 @@ deterministically ordered, bounded line matches with Unicode-aware positions.
 Because it is implemented against the portable workspace contract in
 TypeScript, it does not depend on a shell or host Bun process.
 
-`write_file` and exact-match `replace_text` use compare-and-swap VFS writes.
-For inline projects, IndexedDB commits the file and an undo-ready before/after
-receipt, its applied path revision, and the workspace revision in one
-transaction. For OPFS projects, content bytes are immutable
+`write_file`, exact-match `replace_text`, and `remove_file` use
+compare-and-swap VFS mutations.
+For inline projects, IndexedDB commits the mutation and an undo-ready
+before/after receipt, its applied path revision, and the workspace revision in
+one transaction. For OPFS projects, content bytes are immutable
 SHA-256-addressed objects written and closed first; one later IndexedDB
 transaction atomically publishes the manifest pointer, receipt, clock, and
 revision. Pre-registered cleanup tasks make unpublished and superseded objects
@@ -158,11 +160,14 @@ receipt to record truthful success before the remaining stream is marked
 interrupted.
 
 The viewer can resolve a receipt by `change_id` and render its exact original
-before/after diff. Revert is a required atomic workspace operation, not a
-viewer-composed write/remove sequence. An unconsumed receipt applies only when
-both the current bytes and per-path mutation revision match the generation that
-created it. The same transaction restores the previous content (or removes a
-created file), advances the workspace revision once, and records
+before/after diff, including a deletion as before-to-empty. Revert is a
+required atomic workspace operation, not a viewer-composed write/remove
+sequence. An unconsumed receipt applies only when both the current bytes and
+per-path mutation revision match the generation that created it. Deleted paths
+retain a generation tombstone, so delete/recreate/delete ABA cycles cannot make
+an old receipt appear current. The same transaction restores the previous
+content, removes a created file, or recreates a deleted file; advances the
+workspace revision once; and records
 `reverted_at_workspace_revision`. A consumed receipt is permanently
 idempotent: later retries report `already_reverted` without inspecting or
 mutating whatever now occupies the path. Receipts from older storage without a
@@ -228,7 +233,7 @@ Deleted workspace markers retain only the next project-scoped revision so
 reusing an identifier cannot move the viewer's cache backwards; file content
 and change receipts are still removed.
 
-Browser storage version 8 gives each active workspace an explicit
+Browser storage version 9 gives each active workspace an explicit
 `indexeddb` or `opfs` content owner. Migration never performs filesystem I/O in
 an IndexedDB upgrade transaction. Inline content remains authoritative while
 each OPFS candidate is copied and recorded; a final IndexedDB transaction
@@ -236,7 +241,10 @@ rechecks the incarnation, source revision, and exact path coverage before
 flipping ownership. Cleanup of stale inline rows and unreachable OPFS objects
 is idempotent and resumes from durable `meta` records. Each incarnation also
 persists its baseline revision; a receipt is revertible only when its applied
-revision is strictly newer than that baseline.
+revision is strictly newer than that baseline. Project-scoped file-path
+tombstones retain the exact mutation revision of an absent path and are cleared
+atomically when that path is recreated or an ancestor/descendant namespace
+mutation makes the missing generation obsolete.
 
 ## Workspace archive boundary
 

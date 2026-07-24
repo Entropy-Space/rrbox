@@ -8,7 +8,7 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v10 command", () => {
+test("round-trips every protocol-v11 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("project_create", { name: "Docs" }),
@@ -159,6 +159,7 @@ test("tool results require one earlier matching call in the same run", () => {
 
   const mismatchedName = createTimeline();
   mismatchedName[2].tool_name = "read_file";
+  delete mismatchedName[2].file_change;
   assert.throws(
     () => parseTimeline(mismatchedName),
     /identity must match/,
@@ -441,6 +442,7 @@ test("round-trips every normalized timeline core event", () => {
       {
         project_id: "project-1",
         change_id: "change-1",
+        tool_name: "write_file",
         path: "/README.md",
         change_kind: "updated",
         workspace_revision: 3,
@@ -572,6 +574,7 @@ test("requires request correlation for filesystem, draft, and workspace change r
     coreEvent("workspace_change_reverted", {
       project_id: "project-1",
       change_id: "change-1",
+      tool_name: "write_file",
       path: "/README.md",
       change_kind: "updated",
       workspace_revision: 1,
@@ -715,6 +718,27 @@ test("validates workspace change identity and numeric fields", () => {
     /file_change must match tool_call_id/,
   );
 
+  const mismatchedToolName = createTimeline();
+  mismatchedToolName[2].file_change.tool_name = "replace_text";
+  assert.throws(
+    () => parseTimeline(mismatchedToolName),
+    /file_change must match tool_name/,
+  );
+
+  const deletionTimeline = createTimeline();
+  deletionTimeline[1].blocks[2].tool_name = "remove_file";
+  deletionTimeline[1].blocks[2].arguments = { path: "/README.md" };
+  deletionTimeline[2].tool_name = "remove_file";
+  deletionTimeline[2].file_change = {
+    ...deletionTimeline[2].file_change,
+    tool_name: "remove_file",
+    change_kind: "deleted",
+    additions: 0,
+    deletions: 2,
+    byte_size: 0,
+  };
+  assert.deepEqual(parseTimeline(deletionTimeline), deletionTimeline);
+
   assert.throws(
     () =>
       parseCoreEvent(
@@ -750,6 +774,22 @@ test("validates workspace change identity and numeric fields", () => {
       change_kind: "created",
       before_content: "# Impossible",
     },
+    {
+      ...createWorkspaceChangeDetails(),
+      tool_name: "remove_file",
+    },
+    {
+      ...createWorkspaceChangeDetails(),
+      tool_name: "replace_text",
+      change_kind: "created",
+      before_content: null,
+    },
+    {
+      ...createWorkspaceChangeDetails(),
+      change_kind: "deleted",
+      after_content: null,
+      current_content: null,
+    },
     { ...createWorkspaceChangeDetails(), before_content: null },
     {
       ...createWorkspaceChangeDetails(),
@@ -779,7 +819,7 @@ test("validates workspace change identity and numeric fields", () => {
             "workspace-change-request",
           ),
         ),
-      /Workspace change details|revert status|revert revision|before_content|current_content|after_content/,
+      /Workspace change details|revert status|revert revision|contents|before_content|current_content|after_content|tool_name/,
     );
   }
 
@@ -833,6 +873,43 @@ test("validates workspace change identity and numeric fields", () => {
   );
   assert.deepEqual(parseCoreEvent(created), created);
 
+  const deleted = coreEvent(
+    "workspace_change_snapshot",
+    {
+      project_id: "project-1",
+      workspace_revision: 2,
+      change: {
+        ...createWorkspaceChangeDetails(),
+        tool_name: "remove_file",
+        change_kind: "deleted",
+        before_content: "# Before",
+        after_content: null,
+        current_content: null,
+        additions: 0,
+        deletions: 1,
+        byte_size: 0,
+      },
+    },
+    "deleted-workspace-change",
+  );
+  assert.deepEqual(parseCoreEvent(deleted), deleted);
+
+  const deletedRevert = coreEvent(
+    "workspace_change_reverted",
+    {
+      project_id: "project-1",
+      change_id: "change-delete",
+      tool_name: "remove_file",
+      path: "/obsolete.md",
+      change_kind: "deleted",
+      workspace_revision: 3,
+      reverted_at_workspace_revision: 3,
+      revert_outcome: "applied",
+    },
+    "deleted-workspace-change-revert",
+  );
+  assert.deepEqual(parseCoreEvent(deletedRevert), deletedRevert);
+
   assert.throws(
     () =>
       parseCoreEvent(
@@ -879,6 +956,7 @@ test("validates workspace change identity and numeric fields", () => {
             {
               project_id: "project-1",
               change_id: "change-1",
+              tool_name: "write_file",
               path: "/README.md",
               change_kind: "updated",
               ...invalid,
@@ -1126,6 +1204,7 @@ function createFileChange() {
   return {
     change_id: "change-1",
     tool_call_id: "tool-1",
+    tool_name: "write_file",
     path: "/README.md",
     change_kind: "updated",
     additions: 2,

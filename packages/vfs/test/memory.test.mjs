@@ -274,6 +274,37 @@ test("memory reverts reject malformed receipts without mutation", async (t) => {
         applied_workspace_revision: 0,
       }),
     },
+    {
+      name: "remove tool on a write receipt",
+      corrupt: (change) => ({
+        ...change,
+        tool_name: "remove_file",
+      }),
+    },
+    {
+      name: "replace tool on a creation receipt",
+      corrupt: (change) => ({
+        ...change,
+        tool_name: "replace_text",
+        change_kind: "created",
+        before_content: null,
+        additions: 1,
+        deletions: 0,
+      }),
+    },
+    {
+      name: "write tool on a deletion receipt",
+      corrupt: (change) => ({
+        ...change,
+        tool_name: "write_file",
+        change_kind: "deleted",
+        before_content: "after",
+        after_content: null,
+        additions: 0,
+        deletions: 1,
+        byte_size: 0,
+      }),
+    },
   ];
 
   for (const testCase of cases) {

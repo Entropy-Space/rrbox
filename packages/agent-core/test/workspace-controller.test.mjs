@@ -11,6 +11,15 @@ test("WorkspaceController preserves the optional bulk snapshot capability", asyn
     async read() {
       throw new Error("Bulk capture must not fall back to read.");
     },
+    async getPathState(path) {
+      assert.equal(path, "/missing.txt");
+      return {
+        workspace_revision: 4,
+        path,
+        kind: "missing",
+        path_revision: null,
+      };
+    },
     async write() {
       throw new Error("Unexpected write");
     },
@@ -71,6 +80,12 @@ test("WorkspaceController preserves the optional bulk snapshot capability", asyn
   assert.deepEqual(await controller.getChange("missing-change"), {
     workspace_revision: 4,
     change: null,
+  });
+  assert.deepEqual(await controller.getPathState("/missing.txt"), {
+    workspace_revision: 4,
+    path: "/missing.txt",
+    kind: "missing",
+    path_revision: null,
   });
   assert.deepEqual(
     await controller.revertChange("tracked-change"),

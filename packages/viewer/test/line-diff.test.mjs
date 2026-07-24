@@ -35,6 +35,20 @@ test("created content is represented entirely as additions", () => {
   assert.equal(rebuildContent(model.rows, "after"), after);
 });
 
+test("deleted content is represented entirely as deletions", () => {
+  const before = "alpha\nbeta\n";
+  const model = createLineDiffModel(before, "", completeDiffOptions);
+
+  assert.equal(model.additions, 0);
+  assert.equal(model.deletions, 2);
+  assert.deepEqual(
+    model.rows.map((row) => row.kind),
+    ["deletion", "deletion"],
+  );
+  assert.equal(rebuildContent(model.rows, "before"), before);
+  assert.equal(rebuildContent(model.rows, "after"), "");
+});
+
 test("updated content keeps context around a minimal replacement", () => {
   const before = "one\ntwo\nthree\n";
   const after = "one\nTWO\nthree\n";

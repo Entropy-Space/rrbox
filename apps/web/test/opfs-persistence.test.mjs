@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { IDBFactory } from "fake-indexeddb";
 import { ResearchBoxCore } from "@researchbox/agent-core";
+import { SESSION_DOCUMENT_FORMAT_VERSION } from "@researchbox/project-store";
 import { createCommand } from "@researchbox/protocol";
 import {
   defineDurableWorkspaceBackendConformance,
@@ -97,6 +98,54 @@ test("independent OPFS backends atomically consume one revert receipt", async ()
     path_revision: 2,
     content: "before",
   });
+  database.close();
+});
+
+test("OPFS journaled removal rolls back when marker publication fails", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-opfs-remove-failure-${crypto.randomUUID()}`,
+  );
+  const objects = new MemoryWorkspaceObjectStore();
+  const backend = new OpfsWorkspaceBackend(
+    database,
+    objects,
+    { "/notes.txt": "before" },
+  );
+  const workspace = await backend.create("project-1");
+  const restoreOpen = failNextMarkerPublication(database);
+
+  try {
+    await assert.rejects(
+      workspace.remove("/notes.txt", {
+        expected_content: "before",
+        change: {
+          ...changeMetadata(
+            "failed-remove",
+            "2026-07-24T00:00:00.000Z",
+          ),
+          tool_name: "remove_file",
+        },
+      }),
+      /injected marker publication failure/,
+    );
+  } finally {
+    restoreOpen();
+  }
+
+  assert.deepEqual(await workspace.getPathState("/notes.txt"), {
+    workspace_revision: 0,
+    path: "/notes.txt",
+    kind: "file",
+    path_revision: 0,
+    content: "before",
+  });
+  assert.deepEqual(await workspace.listChanges(), {
+    workspace_revision: 0,
+    changes: [],
+  });
+  assert.equal(objects.write_attempts, 1);
   database.close();
 });
 
@@ -232,6 +281,25 @@ test("OPFS reverts fail before staging corrupt persisted state", async (t) => {
       corrupts_receipt: true,
       corrupt({ change }) {
         change.change_kind = "removed";
+      },
+    },
+    {
+      name: "remove tool on a write receipt",
+      corrupts_receipt: true,
+      corrupt({ change }) {
+        change.tool_name = "remove_file";
+      },
+    },
+    {
+      name: "write tool on a deletion receipt",
+      corrupts_receipt: true,
+      corrupt({ change }) {
+        change.change_kind = "deleted";
+        change.before_content = "after";
+        change.after_content = null;
+        change.additions = 0;
+        change.deletions = 1;
+        change.byte_size = 0;
       },
     },
     {
@@ -949,6 +1017,56 @@ test("OPFS migration preserves inline files, receipts, and revision", async () =
   reopenedDatabase.close();
 });
 
+test("OPFS migration preserves reversible deleted path generations", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-opfs-migrate-delete-${crypto.randomUUID()}`,
+  );
+  const inlineBackend = new IndexedDbWorkspaceBackend(database, {
+    "/deleted.txt": "before",
+  });
+  const inline = await inlineBackend.create("project-1");
+  await inline.remove("/deleted.txt", {
+    expected_content: "before",
+    change: {
+      ...changeMetadata(
+        "migrated-delete",
+        "2026-07-24T01:00:00.000Z",
+      ),
+      tool_name: "remove_file",
+    },
+  });
+
+  const objects = new MemoryWorkspaceObjectStore();
+  const migrated = await new OpfsWorkspaceBackend(
+    database,
+    objects,
+    {},
+  ).open("project-1");
+  assert.deepEqual(await migrated.getPathState("/deleted.txt"), {
+    workspace_revision: 1,
+    path: "/deleted.txt",
+    kind: "missing",
+    path_revision: 1,
+  });
+  assert.equal(
+    (await migrated.getChange("migrated-delete")).change?.change_kind,
+    "deleted",
+  );
+
+  const reverted = await migrated.revertChange("migrated-delete");
+  assert.equal(reverted.workspace_revision, 2);
+  assert.equal(reverted.revert_outcome, "applied");
+  assert.deepEqual(await migrated.read("/deleted.txt"), {
+    workspace_revision: 2,
+    path_revision: 2,
+    content: "before",
+  });
+  assert.equal(objects.write_attempts, 1);
+  database.close();
+});
+
 test("OPFS migration keeps legacy receipts readable but not revertible", async () => {
   const factory = new IDBFactory();
   const databaseName =
@@ -1112,7 +1230,7 @@ test("core bootstrap isolates a malformed OPFS receipt without denying its commi
     },
   });
   initial.documents.push({
-    format_version: 3,
+    format_version: SESSION_DOCUMENT_FORMAT_VERSION,
     session_id: "session-1",
     project_id: projectId,
     input_draft: "",
@@ -1556,6 +1674,89 @@ async function readOpfsCleanupRecords(database) {
   return records.filter(
     (record) => record.record_type === "opfs_cleanup",
   );
+}
+
+function failNextMarkerPublication(database) {
+  const originalOpen = database.open.bind(database);
+  let failurePending = true;
+  database.open = async () => {
+    const connection = await originalOpen();
+    return new Proxy(connection, {
+      get(target, property) {
+        if (property !== "transaction") {
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function"
+            ? value.bind(target)
+            : value;
+        }
+        return (storeNames, mode) => {
+          const transaction = target.transaction(storeNames, mode);
+          if (
+            !failurePending ||
+            mode !== "readwrite" ||
+            !includesStore(storeNames, "project_filesystems")
+          ) {
+            return transaction;
+          }
+          return new Proxy(transaction, {
+            get(transactionTarget, transactionProperty) {
+              if (transactionProperty !== "objectStore") {
+                const value = Reflect.get(
+                  transactionTarget,
+                  transactionProperty,
+                  transactionTarget,
+                );
+                return typeof value === "function"
+                  ? value.bind(transactionTarget)
+                  : value;
+              }
+              return (storeName) => {
+                const store = transactionTarget.objectStore(storeName);
+                if (storeName !== "project_filesystems") return store;
+                return new Proxy(store, {
+                  get(storeTarget, storeProperty) {
+                    if (storeProperty === "put") {
+                      return () => {
+                        failurePending = false;
+                        throw new Error(
+                          "injected marker publication failure",
+                        );
+                      };
+                    }
+                    const value = Reflect.get(
+                      storeTarget,
+                      storeProperty,
+                      storeTarget,
+                    );
+                    return typeof value === "function"
+                      ? value.bind(storeTarget)
+                      : value;
+                  },
+                });
+              };
+            },
+            set(transactionTarget, property, value) {
+              return Reflect.set(
+                transactionTarget,
+                property,
+                value,
+                transactionTarget,
+              );
+            },
+          });
+        };
+      },
+    });
+  };
+  return () => {
+    database.open = originalOpen;
+  };
+}
+
+function includesStore(storeNames, expected) {
+  return typeof storeNames === "string"
+    ? storeNames === expected
+    : [...storeNames].includes(expected);
 }
 
 function requestValue(request) {

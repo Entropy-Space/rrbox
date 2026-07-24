@@ -171,6 +171,34 @@ test("generic failed-tool summaries retain the provider error detail", () => {
   });
 });
 
+test("deleted workspace changes use a canonical timeline status", () => {
+  const result = {
+    ...toolResult(
+      "result-1",
+      "run-1",
+      "call-block-1",
+      "provider-call",
+      "Removed /notes.md",
+    ),
+    summary: "Removed file",
+    file_change: {
+      change_id: "change-1",
+      tool_call_id: "provider-call",
+      tool_name: "remove_file",
+      path: "/notes.md",
+      change_kind: "deleted",
+      additions: 0,
+      deletions: 3,
+      byte_size: 0,
+    },
+  };
+
+  assert.deepEqual(getToolResultCopy(result), {
+    summary: "Deleted · +0 −3",
+    error_detail: null,
+  });
+});
+
 function userEntry(entryId, runId) {
   return {
     type: "user_message",

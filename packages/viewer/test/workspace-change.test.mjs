@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { PROTOCOL_VERSION } from "@researchbox/protocol";
 
 import {
   WorkspaceChangeRequestError,
   WorkspaceChangeRequests,
 } from "../src/workspace-change.ts";
-
-const protocolVersion = 9;
 
 test("resolves a change read from its correlated snapshot", async () => {
   const requests = new WorkspaceChangeRequests();
@@ -31,6 +30,7 @@ test("resolves a revert while leaving its event available to the reducer", async
   const payload = {
     project_id: "project-1",
     change_id: "change-1",
+    tool_name: "write_file",
     path: "/notes/example.md",
     change_kind: "updated",
     workspace_revision: 8,
@@ -96,6 +96,7 @@ test("rejects a mismatched terminal response instead of hanging", async () => {
         {
           project_id: "project-1",
           change_id: "change-1",
+          tool_name: "write_file",
           path: "/notes/example.md",
           change_kind: "updated",
           workspace_revision: 8,
@@ -145,6 +146,7 @@ test("rejects a correlated revert for the wrong project or change", async () => 
     {
       project_id: "project-2",
       change_id: "change-1",
+      tool_name: "write_file",
       path: "/notes/example.md",
       change_kind: "updated",
       workspace_revision: 8,
@@ -154,6 +156,7 @@ test("rejects a correlated revert for the wrong project or change", async () => 
     {
       project_id: "project-1",
       change_id: "change-2",
+      tool_name: "write_file",
       path: "/notes/example.md",
       change_kind: "updated",
       workspace_revision: 8,
@@ -236,6 +239,7 @@ function snapshotPayload() {
     change: {
       change_id: "change-1",
       tool_call_id: "call-1",
+      tool_name: "write_file",
       path: "/notes/example.md",
       change_kind: "updated",
       additions: 2,
@@ -252,7 +256,7 @@ function snapshotPayload() {
 
 function coreEvent(type, payload, requestId) {
   return {
-    protocol_version: protocolVersion,
+    protocol_version: PROTOCOL_VERSION,
     event_id: crypto.randomUUID(),
     request_id: requestId,
     type,

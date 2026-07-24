@@ -56,6 +56,13 @@ test("round-trips exact mutation arguments through the LLM worker protocol", () 
       new_text: "replacement\n\n",
     },
   };
+  const removeCall = {
+    tool_call_id: "remove-1",
+    tool_name: "remove_file",
+    arguments: {
+      path: "/obsolete.md",
+    },
+  };
   const command = createLlmStreamStart("stream-mutation", {
     ...modelRequest,
     messages: [
@@ -65,6 +72,7 @@ test("round-trips exact mutation arguments through the LLM worker protocol", () 
         content_blocks: [
           { type: "tool_call", ...writeCall },
           { type: "tool_call", ...replaceCall },
+          { type: "tool_call", ...removeCall },
         ],
       },
       {
@@ -81,6 +89,13 @@ test("round-trips exact mutation arguments through the LLM worker protocol", () 
         content: "Text replaced",
         is_error: false,
       },
+      {
+        role: "tool",
+        tool_call_id: "remove-1",
+        tool_name: "remove_file",
+        content: "File removed",
+        is_error: false,
+      },
     ],
   });
   const writeEvent = createLlmStreamEvent("stream-mutation", {
@@ -93,10 +108,16 @@ test("round-trips exact mutation arguments through the LLM worker protocol", () 
     content_index: 0,
     arguments_delta: JSON.stringify(writeCall.arguments),
   });
+  const removeEvent = createLlmStreamEvent("stream-mutation", {
+    type: "tool_call_end",
+    content_index: 2,
+    tool_call: removeCall,
+  });
 
   assert.deepEqual(parseLlmWorkerCommand(command), command);
   assert.deepEqual(parseLlmWorkerEvent(writeEvent), writeEvent);
   assert.deepEqual(parseLlmWorkerEvent(argumentsEvent), argumentsEvent);
+  assert.deepEqual(parseLlmWorkerEvent(removeEvent), removeEvent);
 });
 
 test("round-trips exact search arguments through the LLM worker protocol", () => {
@@ -153,10 +174,45 @@ test("rejects malformed nested model events", () => {
       }),
     /tool_call_id must be a string/,
   );
+  assert.throws(
+    () =>
+      parseLlmWorkerCommand(
+        createLlmStreamStart("stream-invalid-remove", {
+          ...modelRequest,
+          messages: [
+            {
+              role: "assistant",
+              content_blocks: [
+                {
+                  type: "tool_call",
+                  tool_call_id: "remove-1",
+                  tool_name: "remove_file",
+                  arguments: {
+                    path: "/obsolete.md",
+                    recursive: true,
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    /remove_file arguments must contain exactly/,
+  );
 });
 
 test("keeps the LLM protocol version independent and validated", () => {
-  assert.equal(LLM_WORKER_PROTOCOL_VERSION, 5);
+  assert.equal(LLM_WORKER_PROTOCOL_VERSION, 6);
+  assert.throws(
+    () =>
+      parseLlmWorkerCommand({
+        protocol_version: 5,
+        stream_id: "stream-legacy",
+        type: "stream_start",
+        payload: { model_request: modelRequest },
+      }),
+    /Unsupported LLM worker protocol version/,
+  );
   assert.throws(
     () =>
       parseLlmWorkerCommand({

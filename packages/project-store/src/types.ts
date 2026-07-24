@@ -12,7 +12,7 @@ import {
 } from "@researchbox/protocol";
 
 export const PROJECT_STORE_SCHEMA_VERSION = 3 as const;
-export const SESSION_DOCUMENT_FORMAT_VERSION = 3 as const;
+export const SESSION_DOCUMENT_FORMAT_VERSION = 4 as const;
 
 export const DEFAULT_MODEL_SELECTION: ModelSelection = {
   provider_id: "researchbox",
@@ -23,6 +23,7 @@ const LEGACY_PROJECT_STORE_SCHEMA_VERSION = 1 as const;
 const DRAFT_PROJECT_STORE_SCHEMA_VERSION = 2 as const;
 const LEGACY_SESSION_DOCUMENT_FORMAT_VERSION = 1 as const;
 const TRANSCRIPT_SESSION_DOCUMENT_FORMAT_VERSION = 2 as const;
+const TIMELINE_SESSION_DOCUMENT_FORMAT_VERSION = 3 as const;
 
 export type ProjectRecord = {
   project_id: string;
@@ -249,7 +250,8 @@ function parseSessionDocument(
   const formatVersion = value.format_version;
   const isLegacyFormat =
     formatVersion === LEGACY_SESSION_DOCUMENT_FORMAT_VERSION ||
-    formatVersion === TRANSCRIPT_SESSION_DOCUMENT_FORMAT_VERSION;
+    formatVersion === TRANSCRIPT_SESSION_DOCUMENT_FORMAT_VERSION ||
+    formatVersion === TIMELINE_SESSION_DOCUMENT_FORMAT_VERSION;
   if (
     formatVersion !== SESSION_DOCUMENT_FORMAT_VERSION &&
     (!isLegacyFormat ||
@@ -275,6 +277,18 @@ function parseSessionDocument(
       was_migrated: false,
     };
   }
+  if (formatVersion === TIMELINE_SESSION_DOCUMENT_FORMAT_VERSION) {
+    return {
+      document: {
+        format_version: SESSION_DOCUMENT_FORMAT_VERSION,
+        session_id: sessionId,
+        project_id: projectId,
+        input_draft: inputDraft,
+        timeline: migrateNormalizedTimeline(value.timeline),
+      },
+      was_migrated: true,
+    };
+  }
 
   const messages = requireArray(value, "messages").map(parseChatMessage);
   const activities = requireArray(value, "activities").map((activity, index) =>
@@ -295,6 +309,30 @@ function parseSessionDocument(
     },
     was_migrated: true,
   };
+}
+
+function migrateNormalizedTimeline(value: unknown): TimelineEntry[] {
+  if (!Array.isArray(value)) return parseTimeline(value);
+  const timeline = value.map((entry) => {
+    if (
+      !isRecord(entry) ||
+      entry.type !== "tool_result" ||
+      !isRecord(entry.file_change) ||
+      Object.prototype.hasOwnProperty.call(entry.file_change, "tool_name") ||
+      (entry.tool_name !== "write_file" &&
+        entry.tool_name !== "replace_text")
+    ) {
+      return entry;
+    }
+    return {
+      ...entry,
+      file_change: {
+        ...entry.file_change,
+        tool_name: entry.tool_name,
+      },
+    };
+  });
+  return parseTimeline(timeline);
 }
 
 function findEmptyLegacyDocuments(documents: unknown[]): Set<string> {
@@ -414,10 +452,11 @@ function parseToolActivity(
   }
   const summary = optionalString(value, "summary", true);
   const toolCallId = requireString(value, "tool_call_id");
+  const toolName = requireString(value, "tool_name");
   const fileChange =
     value.file_change === undefined
       ? undefined
-      : parseWorkspaceChangeSummary(value.file_change);
+      : parseWorkspaceChangeSummary(value.file_change, toolName);
   if (fileChange && fileChange.tool_call_id !== toolCallId) {
     throw new Error(
       "Stored tool activity file_change must match tool_call_id.",
@@ -430,7 +469,7 @@ function parseToolActivity(
         : requireString(value, "activity_id"),
     tool_call_id: toolCallId,
     message_id: requireString(value, "message_id"),
-    tool_name: requireString(value, "tool_name"),
+    tool_name: toolName,
     label: requireString(value, "label"),
     status,
     ...(summary === undefined ? {} : { summary }),
@@ -954,7 +993,10 @@ function optionalStoredString<TField extends string>(
   >;
 }
 
-function parseWorkspaceChangeSummary(value: unknown): WorkspaceChangeSummary {
+function parseWorkspaceChangeSummary(
+  value: unknown,
+  legacyToolName: string,
+): WorkspaceChangeSummary {
   if (!isRecord(value)) {
     throw new Error("Stored workspace change summary must be an object.");
   }
@@ -965,6 +1007,10 @@ function parseWorkspaceChangeSummary(value: unknown): WorkspaceChangeSummary {
   return {
     change_id: requireString(value, "change_id"),
     tool_call_id: requireString(value, "tool_call_id"),
+    tool_name:
+      changeKind === "updated" && legacyToolName === "replace_text"
+        ? "replace_text"
+        : "write_file",
     path: requireString(value, "path"),
     change_kind: changeKind,
     additions: requireNonNegativeInteger(value, "additions"),

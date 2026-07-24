@@ -903,6 +903,362 @@ export function defineWorkspaceBackendConformance({
     );
   });
 
+  test(`${name}: journaled removals are reversible and idempotent`, async (context) => {
+    const { backend } = await createHarness(context, create_backend, {
+      "/notes.txt": "alpha\nbeta\n",
+    });
+    const workspace = await backend.create("project");
+
+    const removed = await workspace.remove("/notes.txt", {
+      expected_content: "alpha\nbeta\n",
+      change: changeMetadata(
+        "deleted-change",
+        "2026-07-24T00:00:00.000Z",
+        "remove_file",
+      ),
+    });
+    assert.equal(removed.workspace_revision, 1);
+    assert.deepEqual(
+      {
+        path: removed.result?.path,
+        change_kind: removed.result?.change_kind,
+        before_content: removed.result?.before_content,
+        after_content: removed.result?.after_content,
+        tool_name: removed.result?.change.tool_name,
+        applied_workspace_revision:
+          removed.result?.change.applied_workspace_revision,
+        reverted_at_workspace_revision:
+          removed.result?.change.reverted_at_workspace_revision,
+        additions: removed.result?.change.additions,
+        deletions: removed.result?.change.deletions,
+        byte_size: removed.result?.change.byte_size,
+      },
+      {
+        path: "/notes.txt",
+        change_kind: "deleted",
+        before_content: "alpha\nbeta\n",
+        after_content: null,
+        tool_name: "remove_file",
+        applied_workspace_revision: 1,
+        reverted_at_workspace_revision: null,
+        additions: 0,
+        deletions: 2,
+        byte_size: 0,
+      },
+    );
+    assert.deepEqual(await workspace.getPathState("/notes.txt"), {
+      workspace_revision: 1,
+      path: "/notes.txt",
+      kind: "missing",
+      path_revision: 1,
+    });
+    assert.deepEqual(
+      (await workspace.getChange("deleted-change")).change,
+      removed.result?.change,
+    );
+
+    const reverted = await workspace.revertChange("deleted-change");
+    assert.equal(reverted.workspace_revision, 2);
+    assert.equal(reverted.revert_outcome, "applied");
+    assert.equal(reverted.reverted_at_workspace_revision, 2);
+    assert.equal(reverted.change.reverted_at_workspace_revision, 2);
+    assert.deepEqual(await workspace.getPathState("/notes.txt"), {
+      workspace_revision: 2,
+      path: "/notes.txt",
+      kind: "file",
+      path_revision: 2,
+      content: "alpha\nbeta\n",
+    });
+
+    const replay = await workspace.revertChange("deleted-change");
+    assert.equal(replay.workspace_revision, 2);
+    assert.equal(replay.revert_outcome, "already_reverted");
+    assert.equal(replay.reverted_at_workspace_revision, 2);
+    assert.deepEqual(await workspace.read("/notes.txt"), {
+      workspace_revision: 2,
+      path_revision: 2,
+      content: "alpha\nbeta\n",
+    });
+  });
+
+  test(`${name}: removal receipt conflicts roll back atomically`, async (context) => {
+    const { backend } = await createHarness(context, create_backend, {
+      "/kept.txt": "keep",
+    });
+    const workspace = await backend.create("project");
+    await workspace.write("/receipt-owner.txt", "owner", {
+      change: changeMetadata(
+        "duplicate-change",
+        "2026-07-24T00:00:00.000Z",
+      ),
+    });
+
+    await assert.rejects(
+      workspace.remove("/kept.txt", {
+        expected_content: "keep",
+        change: changeMetadata(
+          "duplicate-change",
+          "2026-07-24T00:00:01.000Z",
+          "remove_file",
+        ),
+      }),
+      hasVfsCode("conflict"),
+    );
+    assert.deepEqual(await workspace.getPathState("/kept.txt"), {
+      workspace_revision: 1,
+      path: "/kept.txt",
+      kind: "file",
+      path_revision: 0,
+      content: "keep",
+    });
+    assert.deepEqual(
+      (await workspace.listChanges()).changes.map(
+        (change) => change.change_id,
+      ),
+      ["duplicate-change"],
+    );
+
+    assert.deepEqual(
+      await workspace.remove("/kept.txt", {
+        expected_content: "keep",
+      }),
+      { workspace_revision: 2 },
+    );
+    assert.deepEqual(await workspace.getPathState("/kept.txt"), {
+      workspace_revision: 2,
+      path: "/kept.txt",
+      kind: "missing",
+      path_revision: 2,
+    });
+  });
+
+  test(`${name}: receipt tool names must match their mutation`, async (context) => {
+    const { backend } = await createHarness(context, create_backend, {
+      "/notes.txt": "before",
+    });
+    const workspace = await backend.create("project");
+
+    await assert.rejects(
+      workspace.write("/notes.txt", "after", {
+        change: changeMetadata(
+          "mismatched-write",
+          "2026-07-24T00:00:00.000Z",
+          "remove_file",
+        ),
+      }),
+      hasVfsCode("conflict"),
+    );
+    await assert.rejects(
+      workspace.write("/notes.txt", "before", {
+        change: changeMetadata(
+          "mismatched-unchanged-write",
+          "2026-07-24T00:00:00.001Z",
+          "remove_file",
+        ),
+      }),
+      hasVfsCode("conflict"),
+    );
+    await assert.rejects(
+      workspace.write("/created-by-replace.txt", "created", {
+        change: changeMetadata(
+          "mismatched-replace-create",
+          "2026-07-24T00:00:00.002Z",
+          "replace_text",
+        ),
+      }),
+      hasVfsCode("conflict"),
+    );
+    await assert.rejects(
+      workspace.remove("/notes.txt", {
+        change: changeMetadata(
+          "mismatched-remove",
+          "2026-07-24T00:00:00.003Z",
+          "write_file",
+        ),
+      }),
+      hasVfsCode("conflict"),
+    );
+    assert.deepEqual(await workspace.read("/notes.txt"), {
+      workspace_revision: 0,
+      path_revision: 0,
+      content: "before",
+    });
+    await assert.rejects(
+      workspace.read("/created-by-replace.txt"),
+      hasVfsCode("not_found"),
+    );
+    assert.deepEqual(await workspace.listChanges(), {
+      workspace_revision: 0,
+      changes: [],
+    });
+  });
+
+  test(`${name}: concurrent removals consume one path generation`, async (context) => {
+    const { backend } = await createHarness(context, create_backend, {
+      "/notes.txt": "current",
+    });
+    const first = await backend.create("project");
+    const second = await backend.open("project");
+
+    const contenders = await Promise.allSettled([
+      first.remove("/notes.txt", {
+        expected_content: "current",
+        change: changeMetadata(
+          "remove-first",
+          "2026-07-24T00:00:00.000Z",
+          "remove_file",
+        ),
+      }),
+      second.remove("/notes.txt", {
+        expected_content: "current",
+        change: changeMetadata(
+          "remove-second",
+          "2026-07-24T00:00:00.001Z",
+          "remove_file",
+        ),
+      }),
+    ]);
+    const fulfilled = contenders.filter(
+      (result) => result.status === "fulfilled",
+    );
+    const rejected = contenders.filter(
+      (result) => result.status === "rejected",
+    );
+    assert.equal(fulfilled.length, 1);
+    assert.equal(rejected.length, 1);
+    assert.ok(
+      ["not_found", "conflict"].includes(rejected[0].reason?.code),
+    );
+    assert.equal(fulfilled[0].value.workspace_revision, 1);
+
+    const changes = await first.listChanges();
+    assert.equal(changes.workspace_revision, 1);
+    assert.equal(changes.changes.length, 1);
+    assert.equal(
+      changes.changes[0].change_id,
+      fulfilled[0].value.result?.change.change_id,
+    );
+    assert.deepEqual(await second.getPathState("/notes.txt"), {
+      workspace_revision: 1,
+      path: "/notes.txt",
+      kind: "missing",
+      path_revision: 1,
+    });
+  });
+
+  test(`${name}: deleted path generations reject ABA reverts`, async (context) => {
+    const { backend } = await createHarness(context, create_backend);
+    const fileCycle = await backend.create("file-cycle", {
+      initial_files: [{ path: "/node", content: "original" }],
+    });
+    await fileCycle.remove("/node", {
+      change: changeMetadata(
+        "file-delete",
+        "2026-07-24T00:00:00.000Z",
+        "remove_file",
+      ),
+    });
+    await fileCycle.write("/node", "original", {
+      expected_content: null,
+    });
+    await fileCycle.remove("/node", {
+      expected_content: "original",
+    });
+    assert.deepEqual(await fileCycle.getPathState("/node"), {
+      workspace_revision: 3,
+      path: "/node",
+      kind: "missing",
+      path_revision: 3,
+    });
+    await assert.rejects(
+      fileCycle.revertChange("file-delete"),
+      hasVfsCode("conflict"),
+    );
+    assert.equal(
+      (await fileCycle.getChange("file-delete")).change
+        .reverted_at_workspace_revision,
+      null,
+    );
+
+    const directoryCycle = await backend.create("directory-cycle", {
+      initial_files: [{ path: "/node", content: "original" }],
+    });
+    await directoryCycle.remove("/node", {
+      change: changeMetadata(
+        "directory-delete",
+        "2026-07-24T00:00:01.000Z",
+        "remove_file",
+      ),
+    });
+    await directoryCycle.write("/node/child.txt", "child");
+    await directoryCycle.remove("/node/child.txt");
+    assert.deepEqual(await directoryCycle.getPathState("/node"), {
+      workspace_revision: 3,
+      path: "/node",
+      kind: "missing",
+      path_revision: null,
+    });
+    await assert.rejects(
+      directoryCycle.revertChange("directory-delete"),
+      hasVfsCode("conflict"),
+    );
+
+    const ancestorCycle = await backend.create("ancestor-cycle", {
+      initial_files: [
+        { path: "/node/child.txt", content: "original" },
+      ],
+    });
+    await ancestorCycle.remove("/node/child.txt", {
+      change: changeMetadata(
+        "ancestor-delete",
+        "2026-07-24T00:00:02.000Z",
+        "remove_file",
+      ),
+    });
+    await ancestorCycle.write("/node", "ancestor file");
+    assert.deepEqual(
+      await ancestorCycle.getPathState("/node/child.txt"),
+      {
+        workspace_revision: 2,
+        path: "/node/child.txt",
+        kind: "missing",
+        path_revision: null,
+      },
+    );
+    await assert.rejects(
+      ancestorCycle.revertChange("ancestor-delete"),
+      hasVfsCode("conflict"),
+    );
+    assert.deepEqual(await ancestorCycle.read("/node"), {
+      workspace_revision: 2,
+      path_revision: 2,
+      content: "ancestor file",
+    });
+  });
+
+  test(`${name}: workspace recreation clears deleted generations`, async (context) => {
+    const { backend } = await createHarness(context, create_backend);
+    const original = await backend.create("project", {
+      initial_files: [{ path: "/gone.txt", content: "gone" }],
+    });
+    await original.remove("/gone.txt");
+    assert.equal(
+      (await original.getPathState("/gone.txt")).path_revision,
+      1,
+    );
+
+    await backend.delete("project");
+    const recreated = await backend.create("project", {
+      initial_files: [],
+    });
+    assert.deepEqual(await recreated.getPathState("/gone.txt"), {
+      workspace_revision: 2,
+      path: "/gone.txt",
+      kind: "missing",
+      path_revision: null,
+    });
+  });
+
   test(`${name}: deleted and replaced workspaces invalidate stale handles`, async (context) => {
     const { backend } = await createHarness(context, create_backend);
     const createdHandle = await backend.create("project");
@@ -1103,6 +1459,68 @@ export function defineDurableWorkspaceBackendConformance({
       workspace_revision: 3,
       changes: [],
     });
+    assert.deepEqual(await reopened.getPathState("/removed.txt"), {
+      workspace_revision: 3,
+      path: "/removed.txt",
+      kind: "missing",
+      path_revision: 3,
+    });
+  });
+
+  test(`${name}: deletion receipts survive reopening and remain reversible`, async (context) => {
+    const harness = await createHarness(context, create_backend, {
+      "/notes.txt": "before",
+    });
+    assert.equal(
+      typeof harness.reopen,
+      "function",
+      "A durable backend harness must provide reopen().",
+    );
+    const workspace = await harness.backend.create("project");
+    await workspace.remove("/notes.txt", {
+      expected_content: "before",
+      change: changeMetadata(
+        "durable-delete",
+        "2026-07-24T00:00:00.000Z",
+        "remove_file",
+      ),
+    });
+
+    const reopenedBackend = await harness.reopen();
+    const reopened = await reopenedBackend.open("project");
+    assert.deepEqual(await reopened.getPathState("/notes.txt"), {
+      workspace_revision: 1,
+      path: "/notes.txt",
+      kind: "missing",
+      path_revision: 1,
+    });
+    const persisted = await reopened.getChange("durable-delete");
+    assert.equal(persisted.change?.change_kind, "deleted");
+    assert.equal(persisted.change?.before_content, "before");
+    assert.equal(persisted.change?.after_content, null);
+    assert.equal(persisted.change?.applied_workspace_revision, 1);
+    assert.equal(persisted.change?.reverted_at_workspace_revision, null);
+
+    const reverted = await reopened.revertChange("durable-delete");
+    assert.equal(reverted.workspace_revision, 2);
+    assert.equal(reverted.revert_outcome, "applied");
+    assert.deepEqual(await reopened.read("/notes.txt"), {
+      workspace_revision: 2,
+      path_revision: 2,
+      content: "before",
+    });
+
+    const reopenedAgainBackend = await harness.reopen();
+    const reopenedAgain = await reopenedAgainBackend.open("project");
+    const replay = await reopenedAgain.revertChange("durable-delete");
+    assert.equal(replay.workspace_revision, 2);
+    assert.equal(replay.revert_outcome, "already_reverted");
+    assert.equal(replay.reverted_at_workspace_revision, 2);
+    assert.deepEqual(await reopenedAgain.read("/notes.txt"), {
+      workspace_revision: 2,
+      path_revision: 2,
+      content: "before",
+    });
   });
 
   test(`${name}: receipt timestamps remain monotonic across backend reopening`, async (context) => {
@@ -1210,6 +1628,10 @@ async function assertWorkspaceAccessRejected(workspace, code) {
   await assert.rejects(workspace.list("/"), hasVfsCode(code));
   await assert.rejects(workspace.read("/old.txt"), hasVfsCode(code));
   await assert.rejects(
+    workspace.getPathState("/old.txt"),
+    hasVfsCode(code),
+  );
+  await assert.rejects(
     workspace.write("/ghost.txt", "ghost"),
     hasVfsCode(code),
   );
@@ -1225,14 +1647,18 @@ async function assertWorkspaceAccessRejected(workspace, code) {
   );
 }
 
-function changeMetadata(changeId, createdAt) {
+function changeMetadata(
+  changeId,
+  createdAt,
+  toolName = "write_file",
+) {
   return {
     change_id: changeId,
     session_id: "session",
     tool_call_block_id: `block-${changeId}`,
     assistant_message_index: 1,
     tool_call_id: `tool-${changeId}`,
-    tool_name: "write_file",
+    tool_name: toolName,
     created_at: createdAt,
   };
 }

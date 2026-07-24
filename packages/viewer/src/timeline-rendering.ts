@@ -4,6 +4,7 @@ import {
   type TimelineEntry,
   type ToolResultEntry,
   type UserMessageEntry,
+  type WorkspaceChangeSummary,
 } from "@researchbox/protocol";
 
 export type TimelineRow =
@@ -134,7 +135,10 @@ export function getToolResultCopy(result: ToolResultEntry | undefined): {
 } {
   if (!result) return { summary: null, error_detail: null };
 
-  const summary = result.summary ?? result.content;
+  const summary =
+    !result.is_error && result.file_change
+      ? workspaceChangeActivitySummary(result.file_change)
+      : result.summary ?? result.content;
   return {
     summary: summary || null,
     error_detail:
@@ -144,6 +148,18 @@ export function getToolResultCopy(result: ToolResultEntry | undefined): {
         ? result.content
         : null,
   };
+}
+
+export function workspaceChangeActivitySummary(
+  change: WorkspaceChangeSummary,
+): string {
+  const verb =
+    change.change_kind === "created"
+      ? "Created"
+      : change.change_kind === "deleted"
+        ? "Deleted"
+        : "Updated";
+  return `${verb} · +${change.additions} −${change.deletions}`;
 }
 
 export function findFinalAssistantEntry(

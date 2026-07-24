@@ -228,6 +228,11 @@ test("parses each model tool with its exact discriminated arguments", () => {
         new_text: multilineNewText,
       },
     },
+    {
+      tool_call_id: "remove-1",
+      tool_name: "remove_file",
+      arguments: { path: "/obsolete.md" },
+    },
   ];
 
   assert.deepEqual(calls.map(parseModelToolCall), [
@@ -244,6 +249,7 @@ test("parses each model tool with its exact discriminated arguments", () => {
     },
     calls[3],
     calls[4],
+    calls[5],
   ]);
   for (const name of [
     "list_files",
@@ -251,6 +257,7 @@ test("parses each model tool with its exact discriminated arguments", () => {
     "search_files",
     "write_file",
     "replace_text",
+    "remove_file",
   ]) {
     assert.equal(isModelToolName(name), true);
   }
@@ -306,6 +313,22 @@ test("validates tool arguments according to the tool name", () => {
       }),
     /path must be a string/,
   );
+  for (const argumentsValue of [
+    {},
+    { path: "" },
+    { path: 42 },
+    { path: "/notes.md", recursive: true },
+  ]) {
+    assert.throws(
+      () =>
+        parseModelToolCall({
+          tool_call_id: "remove-1",
+          tool_name: "remove_file",
+          arguments: argumentsValue,
+        }),
+      /path must be a string|must contain exactly/,
+    );
+  }
 });
 
 test("NDJSON transport preserves multiline mutation arguments", async () => {

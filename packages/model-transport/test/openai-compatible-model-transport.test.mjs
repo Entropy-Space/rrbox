@@ -439,6 +439,145 @@ test("serializes prior mutation calls without truncating multiline arguments", a
   );
 });
 
+test("serializes and streams exact remove_file calls", async () => {
+  let sentBody;
+  const removeArguments = { path: "/obsolete.md" };
+  const transport = createTransport(async (_input, init) => {
+    sentBody = JSON.parse(init.body);
+    return sseResponse([
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"remove-2","function":{"name":"remove_file","arguments":"{\\"path\\":\\"/later.md\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+      "data: [DONE]\n\n",
+    ]);
+  });
+  const removeRequest = {
+    ...modelRequest,
+    messages: [
+      { role: "user", content: "Remove the obsolete file." },
+      {
+        role: "assistant",
+        content_blocks: [
+          {
+            type: "tool_call",
+            tool_call_id: "remove-1",
+            tool_name: "remove_file",
+            arguments: removeArguments,
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: "remove-1",
+        tool_name: "remove_file",
+        content: "File removed",
+        is_error: false,
+      },
+    ],
+    tools: [
+      {
+        name: "remove_file",
+        description: "Remove one workspace file.",
+        parameters: {
+          type: "object",
+          properties: { path: { type: "string" } },
+          required: ["path"],
+          additionalProperties: false,
+        },
+      },
+    ],
+  };
+
+  assert.deepEqual(
+    await collect(
+      transport,
+      new AbortController().signal,
+      removeRequest,
+    ),
+    [
+      { type: "tool_call_start", content_index: 0 },
+      {
+        type: "tool_call_delta",
+        content_index: 0,
+        tool_call_id_delta: "remove-2",
+        tool_name_delta: "remove_file",
+        arguments_delta: '{"path":"/later.md"}',
+      },
+      {
+        type: "tool_call_end",
+        content_index: 0,
+        tool_call: {
+          tool_call_id: "remove-2",
+          tool_name: "remove_file",
+          arguments: { path: "/later.md" },
+        },
+      },
+      { type: "done", stop_reason: "tool_use" },
+    ],
+  );
+  assert.deepEqual(sentBody.messages[2], {
+    role: "assistant",
+    content: null,
+    tool_calls: [
+      {
+        id: "remove-1",
+        type: "function",
+        function: {
+          name: "remove_file",
+          arguments: JSON.stringify(removeArguments),
+        },
+      },
+    ],
+  });
+  assert.deepEqual(sentBody.messages[3], {
+    role: "tool",
+    tool_call_id: "remove-1",
+    content: "File removed",
+  });
+  assert.deepEqual(sentBody.tools, [
+    {
+      type: "function",
+      function: removeRequest.tools[0],
+    },
+  ]);
+});
+
+test("rejects malformed streamed remove_file arguments", async () => {
+  for (const argumentsJson of [
+    "{}",
+    '{"path":"/obsolete.md","recursive":true}',
+  ]) {
+    const transport = createTransport(async () =>
+      sseResponse([
+        `data: ${JSON.stringify({
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "remove-invalid",
+                    function: {
+                      name: "remove_file",
+                      arguments: argumentsJson,
+                    },
+                  },
+                ],
+              },
+              finish_reason: "tool_calls",
+            },
+          ],
+        })}\n\n`,
+        "data: [DONE]\n\n",
+      ]),
+    );
+
+    await assert.rejects(
+      collect(transport),
+      /Malformed tool arguments|Invalid tool call/,
+    );
+  }
+});
+
 test("assembles fragmented and multiple streamed tool calls", async () => {
   const transport = createTransport(async () =>
     sseResponse([

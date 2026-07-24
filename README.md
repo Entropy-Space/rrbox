@@ -20,10 +20,10 @@ remote hosts.
 - One canonical, ordered timeline that preserves reasoning, assistant text,
   tool calls, tool results, and multi-turn continuations exactly as they stream
 - Project-isolated IndexedDB virtual filesystems with `list_files`, bounded
-  literal `search_files`, `read_file`, `write_file`, and exact-match
-  `replace_text` tools
+  literal `search_files`, `read_file`, `write_file`, exact-match
+  `replace_text`, and reversible `remove_file` tools
 - Atomic file-change receipts with line statistics, live workspace refresh, and
-  reload recovery when a write commits before its transcript checkpoint
+  reload recovery when a mutation commits before its transcript checkpoint
 - Exact before/after change review with a bounded unified diff and a confirmed,
   conflict-safe one-time revert
 - Versioned timeline checkpoints that restore the supported text and tool

@@ -1409,12 +1409,28 @@ test("workspace mutation tools persist receipts and emit live change events", as
         yield { type: "done", stop_reason: "tool_use" };
         return;
       }
-      const replaceResult = request.messages.at(-1);
-      assert.equal(replaceResult.role, "tool");
-      assert.equal(replaceResult.tool_call_id, "revise-note");
-      assert.equal(replaceResult.tool_name, "replace_text");
-      assert.equal(replaceResult.is_error, false);
-      yield* textEvents("The note is ready.");
+      if (requests.length === 3) {
+        const replaceResult = request.messages.at(-1);
+        assert.equal(replaceResult.role, "tool");
+        assert.equal(replaceResult.tool_call_id, "revise-note");
+        assert.equal(replaceResult.tool_name, "replace_text");
+        assert.equal(replaceResult.is_error, false);
+        yield* toolCallEvents({
+          tool_call_id: "remove-note",
+          tool_name: "remove_file",
+          arguments: {
+            path: "/notes/agent-note.md",
+          },
+        });
+        yield { type: "done", stop_reason: "tool_use" };
+        return;
+      }
+      const removeResult = request.messages.at(-1);
+      assert.equal(removeResult.role, "tool");
+      assert.equal(removeResult.tool_call_id, "remove-note");
+      assert.equal(removeResult.tool_name, "remove_file");
+      assert.equal(removeResult.is_error, false);
+      yield* textEvents("The note was removed.");
       yield { type: "done", stop_reason: "stop" };
     },
   });
@@ -1426,17 +1442,17 @@ test("workspace mutation tools persist receipts and emit live change events", as
     createCommand("prompt", {
       project_id: initial.active_project_id,
       session_id: null,
-      text: "Create and revise a note",
+      text: "Create, revise, and remove a note",
     }),
   );
 
   const workspace = await provider.open(initial.active_project_id);
-  assert.equal(
-    (await workspace.read("/notes/agent-note.md")).content,
-    finalContent,
+  await assert.rejects(
+    workspace.read("/notes/agent-note.md"),
+    (error) => error?.code === "not_found",
   );
   const { changes } = await workspace.listChanges();
-  assert.equal(changes.length, 2);
+  assert.equal(changes.length, 3);
   assert.deepEqual(
     changes.map((change) => ({
       tool_call_id: change.tool_call_id,
@@ -1463,6 +1479,14 @@ test("workspace mutation tools persist receipts and emit live change events", as
         before_content: initialContent,
         after_content: finalContent,
       },
+      {
+        tool_call_id: "remove-note",
+        tool_name: "remove_file",
+        path: "/notes/agent-note.md",
+        change_kind: "deleted",
+        before_content: finalContent,
+        after_content: null,
+      },
     ],
   );
 
@@ -1484,6 +1508,11 @@ test("workspace mutation tools persist receipts and emit live change events", as
       {
         workspace_revision: 2,
         tool_call_id: "revise-note",
+        path: "/notes/agent-note.md",
+      },
+      {
+        workspace_revision: 3,
+        tool_call_id: "remove-note",
         path: "/notes/agent-note.md",
       },
     ],
@@ -1513,9 +1542,15 @@ test("workspace mutation tools persist receipts and emit live change events", as
         path: "/notes/agent-note.md",
         summary: "Updated · +1 −1",
       },
+      {
+        tool_call_id: "remove-note",
+        is_error: false,
+        path: "/notes/agent-note.md",
+        summary: "Deleted · +0 −3",
+      },
     ],
   );
-  assert.equal(toolResults.length, 2);
+  assert.equal(toolResults.length, 3);
   for (const result of toolResults) {
     const toolCall = persisted.documents[0].timeline
       .filter((entry) => entry.type === "assistant_message")
@@ -1524,17 +1559,17 @@ test("workspace mutation tools persist receipts and emit live change events", as
     assert.ok(toolCall, "Tool results must reference an internal call block");
     assert.equal(toolCall.tool_call_id, result.tool_call_id);
   }
-  assert.equal(latestState(events).workspace_revision, 2);
+  assert.equal(latestState(events).workspace_revision, 3);
 
   const reloadedEvents = [];
   const reloaded = createCore(store, provider, reloadedEvents);
   await reloaded.handle(createCommand("bootstrap", {}));
-  assert.equal(latestState(reloadedEvents).workspace_revision, 2);
+  assert.equal(latestState(reloadedEvents).workspace_revision, 3);
   assert.equal(
     latestState(reloadedEvents).timeline.filter(
       (entry) => entry.type === "tool_result",
     ).length,
-    2,
+    3,
   );
   assert.equal(
     latestState(reloadedEvents).timeline.every(
@@ -1542,9 +1577,9 @@ test("workspace mutation tools persist receipts and emit live change events", as
     ),
     true,
   );
-  assert.equal(
-    (await workspace.read("/notes/agent-note.md")).content,
-    finalContent,
+  await assert.rejects(
+    workspace.read("/notes/agent-note.md"),
+    (error) => error?.code === "not_found",
   );
 });
 
@@ -1584,6 +1619,7 @@ test("reads coherent workspace change details from an inactive project", async (
   assert.deepEqual(snapshot.payload.change, {
     change_id: receipt.change_id,
     tool_call_id: receipt.tool_call_id,
+    tool_name: "write_file",
     path: receipt.path,
     change_kind: "updated",
     additions: receipt.additions,
@@ -1646,6 +1682,7 @@ test("reverts a created file and treats repeated reverts as success", async () =
       change_id: receipt.change_id,
       path: "/created.txt",
       change_kind: "created",
+      tool_name: "write_file",
       workspace_revision: 2,
       reverted_at_workspace_revision: 2,
       revert_outcome: "applied",
@@ -1761,6 +1798,118 @@ test("reverts an updated file and preserves an empty original exactly", async ()
   assert.equal(
     events.at(-1).payload.change.revert_status,
     "already_reverted",
+  );
+});
+
+test("reads and reverts deletion only at its exact missing generation", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+  const projectId = latestState(events).active_project_id;
+  const workspace = await provider.open(projectId);
+
+  await workspace.write("/deleted.txt", "restore me\n");
+  const removal = await workspace.remove("/deleted.txt", {
+    expected_content: "restore me\n",
+    change: createWorkspaceChangeMetadata(
+      "deleted-change",
+      "remove_file",
+    ),
+  });
+  const receipt = removal.result?.change;
+  assert.ok(receipt);
+  assert.equal(removal.workspace_revision, 2);
+
+  const read = createCommand("workspace_change_read", {
+    project_id: projectId,
+    change_id: receipt.change_id,
+  });
+  await core.handle(read);
+  const snapshot = events.at(-1);
+  assert.equal(snapshot.type, "workspace_change_snapshot");
+  assert.deepEqual(
+    {
+      tool_name: snapshot.payload.change.tool_name,
+      change_kind: snapshot.payload.change.change_kind,
+      before_content: snapshot.payload.change.before_content,
+      after_content: snapshot.payload.change.after_content,
+      current_content: snapshot.payload.change.current_content,
+      revert_status: snapshot.payload.change.revert_status,
+    },
+    {
+      tool_name: "remove_file",
+      change_kind: "deleted",
+      before_content: "restore me\n",
+      after_content: null,
+      current_content: null,
+      revert_status: "available",
+    },
+  );
+
+  const revert = createCommand("workspace_change_revert", {
+    project_id: projectId,
+    change_id: receipt.change_id,
+  });
+  await core.handle(revert);
+  assert.equal(events.at(-1).type, "workspace_change_reverted");
+  assert.equal(events.at(-1).payload.tool_name, "remove_file");
+  assert.equal(events.at(-1).payload.change_kind, "deleted");
+  assert.equal(events.at(-1).payload.workspace_revision, 3);
+  assert.equal(events.at(-1).payload.revert_outcome, "applied");
+  assert.equal(
+    (await workspace.read("/deleted.txt")).content,
+    "restore me\n",
+  );
+
+  const repeated = createCommand("workspace_change_revert", {
+    project_id: projectId,
+    change_id: receipt.change_id,
+  });
+  await core.handle(repeated);
+  assert.equal(events.at(-1).type, "workspace_change_reverted");
+  assert.equal(
+    events.at(-1).payload.revert_outcome,
+    "already_reverted",
+  );
+  assert.equal(events.at(-1).payload.workspace_revision, 3);
+
+  await workspace.write("/aba.txt", "same bytes");
+  const abaRemoval = await workspace.remove("/aba.txt", {
+    expected_content: "same bytes",
+    change: createWorkspaceChangeMetadata(
+      "deleted-aba",
+      "remove_file",
+    ),
+  });
+  const abaReceipt = abaRemoval.result?.change;
+  assert.ok(abaReceipt);
+  await workspace.write("/aba.txt", "same bytes");
+  await workspace.remove("/aba.txt", { expected_content: "same bytes" });
+
+  const inspectAba = createCommand("workspace_change_read", {
+    project_id: projectId,
+    change_id: abaReceipt.change_id,
+  });
+  await core.handle(inspectAba);
+  assert.equal(events.at(-1).type, "workspace_change_snapshot");
+  assert.equal(
+    events.at(-1).payload.change.revert_status,
+    "conflict",
+  );
+  assert.equal(events.at(-1).payload.change.current_content, null);
+
+  const revertAba = createCommand("workspace_change_revert", {
+    project_id: projectId,
+    change_id: abaReceipt.change_id,
+  });
+  await core.handle(revertAba);
+  assert.equal(events.at(-1).type, "error");
+  assert.equal(events.at(-1).payload.code, "workspace_change_conflict");
+  await assert.rejects(
+    workspace.read("/aba.txt"),
+    (error) => error?.code === "not_found",
   );
 });
 
@@ -2197,6 +2346,84 @@ test("reload recovers a committed mutation from its durable receipt", async () =
       )
     ).content,
     "committed before reload\n",
+  );
+});
+
+test("reload recovers a committed deletion from its durable receipt", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  let requestCount = 0;
+  const core = createCore(store, provider, events, {
+    async *stream() {
+      requestCount += 1;
+      if (requestCount === 1) {
+        yield* toolCallEvents({
+          tool_call_id: "recover-remove",
+          tool_name: "remove_file",
+          arguments: { path: "/README.md" },
+        });
+        yield { type: "done", stop_reason: "tool_use" };
+        return;
+      }
+      yield* textEvents("Removed.");
+      yield { type: "done", stop_reason: "stop" };
+    },
+  });
+
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await core.handle(
+    createCommand("prompt", {
+      project_id: initial.active_project_id,
+      session_id: null,
+      text: "Remove the README",
+    }),
+  );
+
+  const crashed = await store.load();
+  const document = crashed.documents[0];
+  const toolBlock = document.timeline[1].blocks[0];
+  assert.equal(toolBlock.type, "tool_call");
+  assert.equal(toolBlock.tool_name, "remove_file");
+  document.timeline = document.timeline.slice(0, 2);
+  const expectedRevision = crashed.state_revision;
+  crashed.state_revision += 1;
+  await store.save(crashed, expectedRevision);
+
+  const reloadedEvents = [];
+  const reloaded = createCore(store, provider, reloadedEvents);
+  await reloaded.handle(createCommand("bootstrap", {}));
+
+  const recovered = (await store.load()).documents[0];
+  assert.deepEqual(
+    recovered.timeline.map((entry) => entry.type),
+    ["user_message", "assistant_message", "tool_result"],
+  );
+  const recoveredResult = recovered.timeline.at(-1);
+  assert.deepEqual(
+    {
+      tool_call_id: recoveredResult.tool_call_id,
+      tool_call_block_id: recoveredResult.tool_call_block_id,
+      tool_name: recoveredResult.tool_name,
+      is_error: recoveredResult.is_error,
+      summary: recoveredResult.summary,
+      path: recoveredResult.file_change?.path,
+      change_kind: recoveredResult.file_change?.change_kind,
+    },
+    {
+      tool_call_id: "recover-remove",
+      tool_call_block_id: toolBlock.block_id,
+      tool_name: "remove_file",
+      is_error: false,
+      summary: "Deleted · +0 −1",
+      path: "/README.md",
+      change_kind: "deleted",
+    },
+  );
+  await assert.rejects(
+    (await provider.open(initial.active_project_id)).read("/README.md"),
+    (error) => error?.code === "not_found",
   );
 });
 
@@ -3310,6 +3537,7 @@ function promptFromRequest(request) {
       "read_file",
       "write_file",
       "replace_text",
+      "remove_file",
     ],
   );
   const message = [...request.messages]
@@ -3400,14 +3628,17 @@ function createWorkspaceProvider() {
   );
 }
 
-function createWorkspaceChangeMetadata(changeId) {
+function createWorkspaceChangeMetadata(
+  changeId,
+  toolName = "write_file",
+) {
   return {
     change_id: changeId,
     session_id: "receipt-session",
     tool_call_block_id: `block-${changeId}`,
     assistant_message_index: 0,
     tool_call_id: `tool-${changeId}`,
-    tool_name: "write_file",
+    tool_name: toolName,
     created_at: "2026-07-24T00:00:00.000Z",
   };
 }

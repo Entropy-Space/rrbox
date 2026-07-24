@@ -1,9 +1,11 @@
 import {
+  applyWorkspaceRemoveChangeRevision,
   applyWorkspaceChangeRevision,
   assertVfsWriteExpectation,
   compareVfsEntries,
   compareVfsStrings,
   compareWorkspaceChanges,
+  createVfsRemoveResult,
   createVfsWriteResult,
   incrementWorkspaceRevision,
   normalizeFilePath,
@@ -14,6 +16,7 @@ import {
   normalizeVfsSeedFiles,
   snapshotWorkspaceCreateOptions,
   VfsError,
+  WorkspaceCorruptionError,
   WorkspaceBackendError,
   type VfsEntry,
   type VfsRemoveOptions,
@@ -28,12 +31,14 @@ import {
   type WorkspaceFilesSnapshotOptions,
   type WorkspaceFilesSnapshotResult,
   type WorkspaceListResult,
+  type WorkspacePathStateResult,
   type WorkspaceReadResult,
   type WorkspaceRemoveResult,
   type WorkspaceWriteResult,
 } from "@researchbox/vfs";
 import {
   databaseStores,
+  type FilePathTombstoneRecord,
   hasCompleteProjectFileSystemMetadata,
   type OpfsFileRecord,
   ProjectFileSystemMetadataError,
@@ -52,6 +57,14 @@ import {
   readStoredWorkspaceChanges,
   type WorkspaceChangeStorageRecord,
 } from "./workspace-change-storage.ts";
+import {
+  deleteAncestorFilePathTombstones,
+  deleteDescendantFilePathTombstones,
+  deleteFilePathTombstone,
+  deleteProjectFilePathTombstones,
+  putFilePathTombstone,
+  readFilePathTombstone,
+} from "./workspace-path-state-storage.ts";
 
 type FileRecord = {
   project_id: string;
@@ -83,6 +96,7 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
       [
         databaseStores.project_filesystems,
         databaseStores.files,
+        databaseStores.file_path_tombstones,
         databaseStores.file_changes,
         databaseStores.file_change_quarantines,
         databaseStores.opfs_files,
@@ -141,6 +155,7 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
       for (const key of fileKeys) fileStore.delete(key);
       for (const key of changeKeys) changeStore.delete(key);
       for (const key of opfsFileKeys) opfsFileStore.delete(key);
+      await deleteProjectFilePathTombstones(transaction, projectId);
       await deleteQuarantinedWorkspaceChanges(transaction, projectId);
       workspaceStore.put({
         project_id: projectId,
@@ -245,6 +260,7 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
       [
         databaseStores.project_filesystems,
         databaseStores.files,
+        databaseStores.file_path_tombstones,
         databaseStores.file_changes,
         databaseStores.file_change_quarantines,
         databaseStores.opfs_files,
@@ -306,6 +322,7 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
         return;
       }
       for (const key of fileKeys) fileStore.delete(key);
+      await deleteProjectFilePathTombstones(transaction, projectId);
       for (const change of changes) {
         changeStore.delete([projectId, change.change_id]);
       }
@@ -470,6 +487,86 @@ class IndexedDbWorkspace implements Workspace {
     throw new VfsError("not_found", `File not found: ${normalizedPath}`);
   }
 
+  async getPathState(path: string): Promise<WorkspacePathStateResult> {
+    const normalizedPath = normalizePath(path);
+    const database = await this.database.open();
+    const transaction = database.transaction(
+      [
+        databaseStores.project_filesystems,
+        databaseStores.files,
+        databaseStores.file_path_tombstones,
+      ],
+      "readonly",
+    );
+    const completion = transactionDone(transaction);
+    try {
+      const marker = await assertActiveProjectFileSystem(
+        transaction,
+        this.projectId,
+        this.incarnationId,
+      );
+      const records = (await requestResult(
+        transaction
+          .objectStore(databaseStores.files)
+          .index("by_project")
+          .getAll(this.projectId),
+      )) as FileRecord[];
+      const tombstone = normalizedPath === "/"
+        ? null
+        : await readFilePathTombstone(transaction, {
+            project_id: this.projectId,
+            incarnation_id: marker.incarnation_id,
+            path: normalizedPath,
+            workspace_revision: marker.workspace_revision,
+          });
+      const record = records.find(
+        (candidate) => candidate.path === normalizedPath,
+      );
+      let result: WorkspacePathStateResult;
+      if (record) {
+        if (tombstone !== null) {
+          throw new WorkspaceCorruptionError(
+            `Workspace path is both present and deleted: ${normalizedPath}`,
+          );
+        }
+        result = {
+          workspace_revision: marker.workspace_revision,
+          path: normalizedPath,
+          kind: "file",
+          path_revision: assertValidStoredPathRevision(
+            record.path_revision,
+            marker.workspace_revision,
+            normalizedPath,
+          ),
+          content: record.content,
+        };
+      } else if (
+        normalizedPath === "/" ||
+        records.some((candidate) =>
+          candidate.path.startsWith(`${normalizedPath}/`)
+        )
+      ) {
+        result = {
+          workspace_revision: marker.workspace_revision,
+          path: normalizedPath,
+          kind: "directory",
+          path_revision: null,
+        };
+      } else {
+        result = {
+          workspace_revision: marker.workspace_revision,
+          path: normalizedPath,
+          kind: "missing",
+          path_revision: tombstone?.path_revision ?? null,
+        };
+      }
+      await completion;
+      return result;
+    } catch (error) {
+      return abortTransaction(transaction, completion, error);
+    }
+  }
+
   async readFilesSnapshot(
     options?: WorkspaceFilesSnapshotOptions,
   ): Promise<WorkspaceFilesSnapshotResult> {
@@ -494,6 +591,7 @@ class IndexedDbWorkspace implements Workspace {
       [
         databaseStores.project_filesystems,
         databaseStores.files,
+        databaseStores.file_path_tombstones,
         databaseStores.file_changes,
       ],
       "readwrite",
@@ -511,8 +609,24 @@ class IndexedDbWorkspace implements Workspace {
         store.index("by_project").getAll(this.projectId),
       )) as FileRecord[];
       assertWritablePath(records, normalizedPath);
-      const beforeContent =
-        records.find((record) => record.path === normalizedPath)?.content ?? null;
+      const existingRecord = records.find(
+        (record) => record.path === normalizedPath,
+      );
+      const existingTombstone = await readFilePathTombstone(
+        transaction,
+        {
+          project_id: this.projectId,
+          incarnation_id: marker.incarnation_id,
+          path: normalizedPath,
+          workspace_revision: marker.workspace_revision,
+        },
+      );
+      if (existingRecord && existingTombstone !== null) {
+        throw new WorkspaceCorruptionError(
+          `Workspace path is both present and deleted: ${normalizedPath}`,
+        );
+      }
+      const beforeContent = existingRecord?.content ?? null;
       assertVfsWriteExpectation(normalizedPath, beforeContent, options);
       const change =
         options?.change === undefined || beforeContent === content
@@ -543,6 +657,21 @@ class IndexedDbWorkspace implements Workspace {
           content,
           path_revision: workspaceRevision,
         } satisfies FileRecord);
+        deleteFilePathTombstone(
+          transaction,
+          this.projectId,
+          normalizedPath,
+        );
+        deleteAncestorFilePathTombstones(
+          transaction,
+          this.projectId,
+          normalizedPath,
+        );
+        await deleteDescendantFilePathTombstones(
+          transaction,
+          this.projectId,
+          normalizedPath,
+        );
         if (committedResult.change) {
           const changeStore = transaction.objectStore(
             databaseStores.file_changes,
@@ -592,7 +721,12 @@ class IndexedDbWorkspace implements Workspace {
     const normalizedPath = normalizeFilePath(path);
     const database = await this.database.open();
     const transaction = database.transaction(
-      [databaseStores.project_filesystems, databaseStores.files],
+      [
+        databaseStores.project_filesystems,
+        databaseStores.files,
+        databaseStores.file_path_tombstones,
+        databaseStores.file_changes,
+      ],
       "readwrite",
     );
     const completion = transactionDone(transaction);
@@ -623,6 +757,20 @@ class IndexedDbWorkspace implements Workspace {
         }
         throw new VfsError("not_found", `File not found: ${normalizedPath}`);
       }
+      const existingTombstone = await readFilePathTombstone(
+        transaction,
+        {
+          project_id: this.projectId,
+          incarnation_id: marker.incarnation_id,
+          path: normalizedPath,
+          workspace_revision: marker.workspace_revision,
+        },
+      );
+      if (existingTombstone !== null) {
+        throw new WorkspaceCorruptionError(
+          `Workspace path is both present and deleted: ${normalizedPath}`,
+        );
+      }
       if (
         options?.expected_content !== undefined &&
         options.expected_content !== record.content
@@ -632,19 +780,83 @@ class IndexedDbWorkspace implements Workspace {
           `File changed before it could be removed: ${normalizedPath}`,
         );
       }
-      store.delete([this.projectId, normalizedPath]);
+      const requestedResult =
+        options?.change === undefined
+          ? undefined
+          : createVfsRemoveResult(
+              normalizedPath,
+              record.content,
+              normalizeWorkspaceChangeTimestamp(
+                options.change,
+                marker.last_change_at,
+              ),
+            );
+      const changeStore = transaction.objectStore(
+        databaseStores.file_changes,
+      );
+      if (requestedResult) {
+        const existingChange = await requestResult(
+          changeStore.get([
+            this.projectId,
+            requestedResult.change.change_id,
+          ]),
+        );
+        if (existingChange !== undefined) {
+          throw new VfsError(
+            "conflict",
+            `Workspace change already exists: ${requestedResult.change.change_id}`,
+          );
+        }
+      }
       const workspaceRevision = incrementWorkspaceRevision(
         marker.workspace_revision,
       );
+      const committedResult =
+        requestedResult === undefined
+          ? undefined
+          : applyWorkspaceRemoveChangeRevision(
+              requestedResult,
+              workspaceRevision,
+            );
+      store.delete([this.projectId, normalizedPath]);
+      deleteAncestorFilePathTombstones(
+        transaction,
+        this.projectId,
+        normalizedPath,
+      );
+      await deleteDescendantFilePathTombstones(
+        transaction,
+        this.projectId,
+        normalizedPath,
+      );
+      putFilePathTombstone(transaction, {
+        project_id: this.projectId,
+        path: normalizedPath,
+        incarnation_id: marker.incarnation_id,
+        path_revision: workspaceRevision,
+      } satisfies FilePathTombstoneRecord);
+      if (committedResult) {
+        await requestResult(
+          changeStore.add({
+            ...committedResult.change,
+            project_id: this.projectId,
+          } satisfies WorkspaceChangeStorageRecord),
+        );
+      }
       transaction
         .objectStore(databaseStores.project_filesystems)
         .put({
           ...marker,
           workspace_revision: workspaceRevision,
+          last_change_at:
+            committedResult?.change.created_at ?? marker.last_change_at,
         } satisfies ProjectFileSystemRecord);
       await completion;
       return {
         workspace_revision: workspaceRevision,
+        ...(committedResult === undefined
+          ? {}
+          : { result: committedResult }),
       };
     } catch (error) {
       return abortTransaction(transaction, completion, error);
@@ -755,6 +967,7 @@ class IndexedDbWorkspace implements Workspace {
       [
         databaseStores.project_filesystems,
         databaseStores.files,
+        databaseStores.file_path_tombstones,
         databaseStores.file_changes,
         databaseStores.file_change_quarantines,
       ],
@@ -809,9 +1022,23 @@ class IndexedDbWorkspace implements Workspace {
       }
 
       const fileStore = transaction.objectStore(databaseStores.files);
-      const storedFile = (await requestResult(
-        fileStore.get([this.projectId, change.path]),
-      )) as FileRecord | undefined;
+      const projectFiles = (await requestResult(
+        fileStore.index("by_project").getAll(this.projectId),
+      )) as FileRecord[];
+      const storedFile = projectFiles.find(
+        (candidate) => candidate.path === change.path,
+      );
+      const tombstone = await readFilePathTombstone(transaction, {
+        project_id: this.projectId,
+        incarnation_id: marker.incarnation_id,
+        path: change.path,
+        workspace_revision: marker.workspace_revision,
+      });
+      if (storedFile !== undefined && tombstone !== null) {
+        throw new WorkspaceCorruptionError(
+          `Workspace path is both present and deleted: ${change.path}`,
+        );
+      }
       const pathRevision =
         storedFile === undefined
           ? null
@@ -820,14 +1047,24 @@ class IndexedDbWorkspace implements Workspace {
               marker.workspace_revision,
               change.path,
             );
-      if (
-        storedFile === undefined ||
-        storedFile.project_id !== this.projectId ||
-        storedFile.path !== change.path ||
-        typeof storedFile.content !== "string" ||
-        storedFile.content !== change.after_content ||
-        pathRevision !== change.applied_workspace_revision
-      ) {
+      const isCurrentGeneration =
+        change.change_kind === "deleted"
+          ? storedFile === undefined &&
+            !projectFiles.some((candidate) =>
+              candidate.path.startsWith(`${change.path}/`)
+            ) &&
+            !projectFiles.some((candidate) =>
+              change.path.startsWith(`${candidate.path}/`)
+            ) &&
+            tombstone?.path_revision ===
+              change.applied_workspace_revision
+          : storedFile !== undefined &&
+            storedFile.project_id === this.projectId &&
+            storedFile.path === change.path &&
+            typeof storedFile.content === "string" &&
+            storedFile.content === change.after_content &&
+            pathRevision === change.applied_workspace_revision;
+      if (!isCurrentGeneration) {
         throw new VfsError(
           "conflict",
           `Workspace path changed after receipt was created: ${change.path}`,
@@ -839,6 +1076,22 @@ class IndexedDbWorkspace implements Workspace {
       );
       if (change.change_kind === "created") {
         fileStore.delete([this.projectId, change.path]);
+        deleteAncestorFilePathTombstones(
+          transaction,
+          this.projectId,
+          change.path,
+        );
+        await deleteDescendantFilePathTombstones(
+          transaction,
+          this.projectId,
+          change.path,
+        );
+        putFilePathTombstone(transaction, {
+          project_id: this.projectId,
+          path: change.path,
+          incarnation_id: marker.incarnation_id,
+          path_revision: workspaceRevision,
+        } satisfies FilePathTombstoneRecord);
       } else {
         const beforeContent = change.before_content;
         if (beforeContent === null) {
@@ -853,6 +1106,21 @@ class IndexedDbWorkspace implements Workspace {
           content: beforeContent,
           path_revision: workspaceRevision,
         } satisfies FileRecord);
+        deleteFilePathTombstone(
+          transaction,
+          this.projectId,
+          change.path,
+        );
+        deleteAncestorFilePathTombstones(
+          transaction,
+          this.projectId,
+          change.path,
+        );
+        await deleteDescendantFilePathTombstones(
+          transaction,
+          this.projectId,
+          change.path,
+        );
       }
       const revertedChange = {
         ...storedChange,

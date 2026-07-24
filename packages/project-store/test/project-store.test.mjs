@@ -11,7 +11,7 @@ import {
 const TIMESTAMP = "2026-07-22T00:00:00.000Z";
 const TIMESTAMP_MS = Date.parse(TIMESTAMP);
 
-test("memory project store clones v3 timelines and enforces revisions", async () => {
+test("memory project store clones v4 timelines and enforces revisions", async () => {
   const store = new MemoryProjectStore();
   const first = createState(1);
   await store.save(first, null);
@@ -30,7 +30,7 @@ test("memory project store clones v3 timelines and enforces revisions", async ()
   await assert.rejects(store.save(createState(2), 1), ProjectStoreConflictError);
 });
 
-test("v3 documents contain only the normalized timeline", () => {
+test("v4 documents contain only the normalized timeline", () => {
   const state = parseProjectStoreState(createState(1));
   const document = state.documents[0];
 
@@ -44,6 +44,95 @@ test("v3 documents contain only the normalized timeline", () => {
   assert.equal("agent_messages" in document, false);
 });
 
+test("v3 normalized timelines infer legacy file-change tool names", () => {
+  const cases = [
+    ["write_file", "created"],
+    ["write_file", "updated"],
+    ["replace_text", "updated"],
+  ];
+
+  for (const [toolName, changeKind] of cases) {
+    const stored = createVersionThreeFileChangeState(toolName, changeKind);
+    const original = structuredClone(stored);
+    const result = parseProjectStoreStateWithMigration(stored);
+    const migrated = structuredClone(result.state);
+    const fileChange = migrated.documents[0].timeline[2].file_change;
+
+    assert.equal(result.was_migrated, true);
+    assert.equal(
+      migrated.documents[0].format_version,
+      SESSION_DOCUMENT_FORMAT_VERSION,
+    );
+    assert.equal(fileChange.tool_name, toolName);
+
+    migrated.documents[0].format_version = 3;
+    delete fileChange.tool_name;
+    assert.deepEqual(migrated, original);
+    assert.deepEqual(stored, original);
+  }
+});
+
+test("v4 normalized timelines require explicit matching file-change tools", () => {
+  const missing = createVersionThreeFileChangeState(
+    "write_file",
+    "created",
+  );
+  missing.documents[0].format_version = SESSION_DOCUMENT_FORMAT_VERSION;
+  assert.throws(
+    () => parseProjectStoreState(missing),
+    /Invalid workspace change tool name/,
+  );
+
+  for (const invalidToolName of [null, "read_file"]) {
+    const invalid = createVersionThreeFileChangeState(
+      "write_file",
+      "created",
+    );
+    invalid.documents[0].format_version = SESSION_DOCUMENT_FORMAT_VERSION;
+    invalid.documents[0].timeline[2].file_change.tool_name = invalidToolName;
+    assert.throws(
+      () => parseProjectStoreState(invalid),
+      /Invalid workspace change tool name/,
+    );
+  }
+
+  const mismatched = createVersionThreeFileChangeState(
+    "write_file",
+    "updated",
+  );
+  mismatched.documents[0].format_version = SESSION_DOCUMENT_FORMAT_VERSION;
+  mismatched.documents[0].timeline[2].file_change.tool_name = "replace_text";
+  assert.throws(
+    () => parseProjectStoreState(mismatched),
+    /file_change must match tool_name/,
+  );
+});
+
+test("v3 normalized timeline migration does not repair invalid tool identities", () => {
+  const explicitMismatch = createVersionThreeFileChangeState(
+    "write_file",
+    "updated",
+  );
+  explicitMismatch.documents[0].timeline[2].file_change.tool_name =
+    "replace_text";
+  assert.throws(
+    () => parseProjectStoreState(explicitMismatch),
+    /file_change must match tool_name/,
+  );
+
+  for (const [toolName, changeKind] of [
+    ["read_file", "created"],
+    ["remove_file", "deleted"],
+    ["replace_text", "created"],
+  ]) {
+    const invalid = createVersionThreeFileChangeState(toolName, changeKind);
+    assert.throws(
+      () => parseProjectStoreState(invalid),
+      /Invalid workspace change tool name|does not match change_kind/,
+    );
+  }
+});
+
 test("project store accepts a virtual new chat with no persisted sessions", () => {
   const state = createVirtualState(1);
   assert.deepEqual(parseProjectStoreState(state), state);
@@ -55,7 +144,10 @@ test("v2 migration follows agent transcript order and enriches tool metadata", (
   const timeline = result.state.documents[0].timeline;
 
   assert.equal(result.was_migrated, true);
-  assert.equal(result.state.documents[0].format_version, 3);
+  assert.equal(
+    result.state.documents[0].format_version,
+    SESSION_DOCUMENT_FORMAT_VERSION,
+  );
   assert.deepEqual(
     timeline.map((entry) => entry.type),
     [
@@ -331,7 +423,7 @@ test("v1 migration removes only an unambiguous empty placeholder", () => {
   assert.deepEqual(result.state, createVirtualState(legacy.state_revision));
 });
 
-test("v1 migration preserves nonempty sessions as v3 timelines", () => {
+test("v1 migration preserves nonempty sessions as v4 timelines", () => {
   const legacy = createLegacyState();
   legacy.sessions[0].title = "Kept chat";
   legacy.documents[0].messages.push(
@@ -344,7 +436,7 @@ test("v1 migration preserves nonempty sessions as v3 timelines", () => {
   const document = result.state.documents[0];
 
   assert.equal(result.was_migrated, true);
-  assert.equal(document.format_version, 3);
+  assert.equal(document.format_version, SESSION_DOCUMENT_FORMAT_VERSION);
   assert.equal(document.input_draft, "");
   assert.equal(document.timeline[0].content, "Keep this session");
   assert.deepEqual(
@@ -379,7 +471,10 @@ test("schema-v2 migration adds model defaults and migrates its document", () => 
   );
   assert.equal(result.state.projects[0].new_chat_draft, "new chat draft");
   assert.equal(result.state.documents[0].input_draft, "session draft");
-  assert.equal(result.state.documents[0].format_version, 3);
+  assert.equal(
+    result.state.documents[0].format_version,
+    SESSION_DOCUMENT_FORMAT_VERSION,
+  );
 });
 
 test("project store rejects broken timeline and ownership invariants", () => {
@@ -422,7 +517,7 @@ test("project store rejects broken timeline and ownership invariants", () => {
   );
 });
 
-test("v3 parser drops retired redundant document fields", () => {
+test("v4 parser drops retired redundant document fields", () => {
   const state = createState(1);
   const document = state.documents[0];
   document.messages = [];
@@ -559,7 +654,7 @@ function createSessionRecord(sessionId, title) {
 
 function createSessionDocument(sessionId, inputDraft = "") {
   return {
-    format_version: 3,
+    format_version: SESSION_DOCUMENT_FORMAT_VERSION,
     session_id: sessionId,
     project_id: "project-1",
     input_draft: inputDraft,
@@ -592,6 +687,70 @@ function createSessionDocument(sessionId, inputDraft = "") {
       },
     ],
   };
+}
+
+function createVersionThreeFileChangeState(toolName, changeKind) {
+  const state = createState(1);
+  const toolCallId = "legacy-change";
+  const runId = "session-1:legacy-run";
+  state.documents[0] = {
+    format_version: 3,
+    session_id: "session-1",
+    project_id: "project-1",
+    input_draft: "keep this draft",
+    timeline: [
+      {
+        type: "user_message",
+        entry_id: "legacy-user",
+        run_id: runId,
+        created_at: TIMESTAMP,
+        content: "Change the note",
+      },
+      {
+        type: "assistant_message",
+        entry_id: "legacy-assistant",
+        run_id: runId,
+        created_at: TIMESTAMP,
+        status: "complete",
+        api: "mock",
+        provider: "researchbox",
+        model: "researchbox-mock",
+        usage: emptyUsage(),
+        stop_reason: "tool_use",
+        blocks: [
+          {
+            type: "tool_call",
+            block_id: "legacy-tool-block",
+            tool_call_id: toolCallId,
+            tool_name: toolName,
+            arguments: { path: "/notes/note.md" },
+          },
+        ],
+      },
+      {
+        type: "tool_result",
+        entry_id: "legacy-result",
+        run_id: runId,
+        created_at: TIMESTAMP,
+        tool_call_block_id: "legacy-tool-block",
+        tool_call_id: toolCallId,
+        tool_name: toolName,
+        content: '{"path":"/notes/note.md"}',
+        is_error: false,
+        summary: `${changeKind} note`,
+        file_change: {
+          change_id: "legacy-change-receipt",
+          tool_call_id: toolCallId,
+          path: "/notes/note.md",
+          change_kind: changeKind,
+          additions: changeKind === "deleted" ? 0 : 1,
+          deletions: changeKind === "created" ? 0 : 1,
+          byte_size: changeKind === "deleted" ? 0 : 6,
+        },
+      },
+    ],
+  };
+  return state;
 }
 
 function createTranscriptState() {
@@ -716,6 +875,7 @@ function createFileChange() {
   return {
     change_id: "change-1",
     tool_call_id: "write-note",
+    tool_name: "write_file",
     path: "/notes/note.md",
     change_kind: "created",
     additions: 1,

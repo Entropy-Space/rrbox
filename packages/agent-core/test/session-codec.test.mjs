@@ -232,6 +232,7 @@ test("tool results retain the internal tool-call block identity and details", ()
       file_change: {
         change_id: "change-1",
         tool_call_id: "provider-tool-1",
+        tool_name: "write_file",
         path: "/note.md",
         change_kind: "created",
         additions: 1,
@@ -254,6 +255,74 @@ test("tool results retain the internal tool-call block identity and details", ()
   assert.equal(entry.tool_call_id, "provider-tool-1");
   assert.equal(entry.summary, "Created · +1 −0");
   assert.equal(entry.file_change.path, "/note.md");
+});
+
+test("deleted file-change details retain remove_file identity", () => {
+  const message = {
+    role: "toolResult",
+    toolCallId: "provider-remove-1",
+    toolName: "remove_file",
+    content: [{ type: "text", text: "Removed" }],
+    details: {
+      summary: "Deleted · +0 −1",
+      file_change: {
+        change_id: "change-remove-1",
+        tool_call_id: "provider-remove-1",
+        tool_name: "remove_file",
+        path: "/note.md",
+        change_kind: "deleted",
+        additions: 0,
+        deletions: 1,
+        byte_size: 0,
+      },
+    },
+    isError: false,
+    timestamp: Date.parse("2026-01-01T00:00:00.003Z"),
+  };
+
+  const entry = createToolResultEntry(
+    message,
+    "run-1",
+    "internal-remove-block-1",
+  );
+  assert.deepEqual(entry.file_change, message.details.file_change);
+
+  message.details.file_change.tool_name = "write_file";
+  const mismatched = createToolResultEntry(
+    message,
+    "run-1",
+    "internal-remove-block-2",
+  );
+  assert.equal(mismatched.file_change, undefined);
+
+  message.details.file_change.change_kind = "updated";
+  const coordinatedMismatch = createToolResultEntry(
+    message,
+    "run-1",
+    "internal-remove-block-3",
+  );
+  assert.equal(coordinatedMismatch.file_change, undefined);
+
+  message.details.file_change.tool_name = "remove_file";
+  message.details.file_change.change_kind = "deleted";
+  message.details.file_change.tool_call_id = "different-tool-call";
+  const mismatchedCallId = createToolResultEntry(
+    message,
+    "run-1",
+    "internal-remove-block-4",
+  );
+  assert.equal(mismatchedCallId.file_change, undefined);
+
+  message.toolName = "replace_text";
+  message.details.file_change.tool_name = "replace_text";
+  message.details.file_change.change_kind = "created";
+  message.details.file_change.tool_call_id = message.toolCallId;
+  const impossibleReplace = createToolResultEntry(
+    message,
+    "run-1",
+    "internal-replace-block-1",
+  );
+  assert.equal(impossibleReplace.file_change, undefined);
 });
 
 test("streaming timeline entries cannot be restored into a Pi transcript", () => {

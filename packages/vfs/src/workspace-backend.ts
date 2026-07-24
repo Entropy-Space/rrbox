@@ -11,7 +11,9 @@ import {
   type WorkspaceChangeRevertResult,
   type WorkspaceChangesResult,
   type WorkspaceFilesSnapshotReader,
+  type WorkspacePathStateResult,
   type WorkspaceReadResult,
+  type WorkspaceRemoveResult,
   type WorkspaceWriteResult,
 } from "./filesystem.ts";
 
@@ -216,6 +218,12 @@ export class MemoryWorkspaceBackend implements WorkspaceBackend {
             record,
             await record.workspace.read(path),
           )),
+      getPathState: (path) =>
+        this.runOnRecord(projectId, record, async () =>
+          this.withPathStateRevisionOffset(
+            record,
+            await record.workspace.getPathState(path),
+          )),
       write: (path, content, options) =>
         this.runOnRecord(projectId, record, async () => {
           await this.assertWriteRevisionCapacity(record, path, content);
@@ -229,7 +237,7 @@ export class MemoryWorkspaceBackend implements WorkspaceBackend {
           const existing = await record.workspace.read(path);
           record.localRevision = existing.workspace_revision;
           this.assertMutationRevisionCapacity(record);
-          return this.withRevisionOffset(
+          return this.withRemoveRevisionOffset(
             record,
             await record.workspace.remove(path, options),
           );
@@ -340,6 +348,22 @@ export class MemoryWorkspaceBackend implements WorkspaceBackend {
     };
   }
 
+  private withPathStateRevisionOffset(
+    record: MemoryWorkspaceRecord,
+    result: WorkspacePathStateResult,
+  ): WorkspacePathStateResult {
+    const versioned = this.withRevisionOffset(record, result);
+    return versioned.path_revision === null
+      ? versioned
+      : {
+          ...versioned,
+          path_revision: offsetWorkspaceRevision(
+            versioned.path_revision,
+            record.revisionOffset,
+          ),
+        };
+  }
+
   private withWriteRevisionOffset(
     record: MemoryWorkspaceRecord,
     result: WorkspaceWriteResult,
@@ -356,6 +380,26 @@ export class MemoryWorkspaceBackend implements WorkspaceBackend {
                 result.result.change,
               ),
       },
+    };
+  }
+
+  private withRemoveRevisionOffset(
+    record: MemoryWorkspaceRecord,
+    result: WorkspaceRemoveResult,
+  ): WorkspaceRemoveResult {
+    return {
+      ...this.withRevisionOffset(record, result),
+      ...(result.result === undefined
+        ? {}
+        : {
+            result: {
+              ...result.result,
+              change: this.withChangeRecordRevisionOffset(
+                record,
+                result.result.change,
+              ),
+            },
+          }),
     };
   }
 

@@ -287,6 +287,75 @@ test("creates a workspace note and continues from the write result", async () =>
   ]);
 });
 
+test("removes a workspace note and continues from the deletion result", async () => {
+  const firstResponse = await handleMockModelRequest(
+    createRequest(createModelRequest("Delete the workspace note")),
+  );
+  const firstEvents = await readEvents(firstResponse);
+  assertToolTurnLifecycle(firstEvents);
+  assert.match(
+    blockText(firstEvents, "reasoning"),
+    /removed directly by its exact path/i,
+  );
+  assert.match(
+    blockText(firstEvents, "text"),
+    /remove `\/notes\/agent-note\.md`/i,
+  );
+  const toolCall = firstEvents.find(
+    (event) => event.type === "tool_call_end",
+  )?.tool_call;
+  assert.deepEqual(
+    {
+      tool_name: toolCall?.tool_name,
+      arguments: toolCall?.arguments,
+    },
+    {
+      tool_name: "remove_file",
+      arguments: { path: "/notes/agent-note.md" },
+    },
+  );
+  assert.equal(firstEvents.at(-1)?.stop_reason, "tool_use");
+
+  const request = createModelRequest("Delete the workspace note");
+  request.messages.push(
+    {
+      role: "assistant",
+      content_blocks: [
+        {
+          type: "tool_call",
+          tool_call_id: "remove-note",
+          tool_name: "remove_file",
+          arguments: { path: "/notes/agent-note.md" },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: "remove-note",
+      tool_name: "remove_file",
+      content: JSON.stringify({
+        path: "/notes/agent-note.md",
+        change_kind: "deleted",
+      }),
+      is_error: false,
+    },
+  );
+
+  const continuation = await handleMockModelRequest(createRequest(request));
+  const continuationEvents = await readEvents(continuation);
+  assert.deepEqual(nonDeltaLifecycle(continuationEvents), [
+    { type: "reasoning_start", content_index: 0 },
+    { type: "reasoning_end", content_index: 0 },
+    { type: "text_start", content_index: 1 },
+    { type: "text_end", content_index: 1 },
+    { type: "done" },
+  ]);
+  assert.match(
+    blockText(continuationEvents, "text"),
+    /removed `\/notes\/agent-note\.md`.*reversible workspace change/is,
+  );
+});
+
 test("rejects malformed model requests", async () => {
   const response = await handleMockModelRequest(
     new Request("http://localhost/api/mock", {
@@ -360,6 +429,18 @@ function createModelRequest(prompt) {
             new_text: { type: "string" },
           },
           required: ["path", "old_text", "new_text"],
+        },
+      },
+      {
+        name: "remove_file",
+        description: "Remove one file from the workspace.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string" },
+          },
+          required: ["path"],
+          additionalProperties: false,
         },
       },
     ],

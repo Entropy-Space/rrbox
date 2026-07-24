@@ -1,10 +1,12 @@
 import {
+  applyWorkspaceRemoveChangeRevision,
   applyWorkspaceChangeRevision,
   assertValidWorkspaceChangeRecord,
   assertVfsWriteExpectation,
   compareVfsEntries,
   compareVfsStrings,
   compareWorkspaceChanges,
+  createVfsRemoveResult,
   createVfsWriteResult,
   incrementWorkspaceRevision,
   normalizeFilePath,
@@ -25,6 +27,7 @@ import {
   type WorkspaceFilesSnapshotOptions,
   type WorkspaceFilesSnapshotResult,
   type WorkspaceListResult,
+  type WorkspacePathStateResult,
   type WorkspaceReadResult,
   type WorkspaceRemoveResult,
   type WorkspaceWriteResult,
@@ -108,6 +111,37 @@ export class MemoryWorkspace implements Workspace {
     throw new VfsError("not_found", `File not found: ${normalizedPath}`);
   }
 
+  async getPathState(path: string): Promise<WorkspacePathStateResult> {
+    const normalizedPath = normalizePath(path);
+    const content = this.files.get(normalizedPath);
+    if (content !== undefined) {
+      return {
+        workspace_revision: this.workspaceRevision,
+        path: normalizedPath,
+        kind: "file",
+        path_revision: this.pathRevisions.get(normalizedPath) ?? 0,
+        content,
+      };
+    }
+    if (
+      normalizedPath === "/" ||
+      this.hasDescendants(normalizedPath)
+    ) {
+      return {
+        workspace_revision: this.workspaceRevision,
+        path: normalizedPath,
+        kind: "directory",
+        path_revision: null,
+      };
+    }
+    return {
+      workspace_revision: this.workspaceRevision,
+      path: normalizedPath,
+      kind: "missing",
+      path_revision: this.pathRevisions.get(normalizedPath) ?? null,
+    };
+  }
+
   async readFilesSnapshot(
     options?: WorkspaceFilesSnapshotOptions,
   ): Promise<WorkspaceFilesSnapshotResult> {
@@ -163,6 +197,7 @@ export class MemoryWorkspace implements Workspace {
     );
 
     this.files.set(normalizedPath, content);
+    this.invalidateRelatedMissingRevisions(normalizedPath);
     this.pathRevisions.set(normalizedPath, workspaceRevision);
     if (committedResult.change) {
       this.changes.set(
@@ -202,14 +237,56 @@ export class MemoryWorkspace implements Workspace {
         `File changed before it could be removed: ${normalizedPath}`,
       );
     }
+    const requestedResult =
+      options?.change === undefined
+        ? undefined
+        : createVfsRemoveResult(
+            normalizedPath,
+            content,
+            normalizeWorkspaceChangeTimestamp(
+              options.change,
+              this.lastChangeAt,
+            ),
+          );
+    if (
+      requestedResult &&
+      this.changes.has(requestedResult.change.change_id)
+    ) {
+      throw new VfsError(
+        "conflict",
+        `Workspace change already exists: ${requestedResult.change.change_id}`,
+      );
+    }
     const workspaceRevision = incrementWorkspaceRevision(
       this.workspaceRevision,
     );
+    const committedResult =
+      requestedResult === undefined
+        ? undefined
+        : applyWorkspaceRemoveChangeRevision(
+            requestedResult,
+            workspaceRevision,
+          );
     this.files.delete(normalizedPath);
-    this.pathRevisions.delete(normalizedPath);
+    this.invalidateRelatedMissingRevisions(normalizedPath);
+    this.pathRevisions.set(normalizedPath, workspaceRevision);
+    if (committedResult) {
+      this.changes.set(committedResult.change.change_id, {
+        ...committedResult.change,
+      });
+      this.lastChangeAt = committedResult.change.created_at;
+    }
     this.workspaceRevision = workspaceRevision;
     return {
       workspace_revision: this.workspaceRevision,
+      ...(committedResult === undefined
+        ? {}
+        : {
+            result: {
+              ...committedResult,
+              change: { ...committedResult.change },
+            },
+          }),
     };
   }
 
@@ -262,15 +339,16 @@ export class MemoryWorkspace implements Workspace {
 
     const content = this.files.get(change.path);
     const pathRevision = this.pathRevisions.get(change.path);
-    if (
-      content === undefined ||
-      content !== change.after_content ||
-      pathRevision !== change.applied_workspace_revision ||
-      (change.change_kind === "created" &&
-        change.before_content !== null) ||
-      (change.change_kind === "updated" &&
-        change.before_content === null)
-    ) {
+    const isCurrentGeneration =
+      change.change_kind === "deleted"
+        ? content === undefined &&
+          !this.hasDescendants(change.path) &&
+          !this.hasFileAncestor(change.path) &&
+          pathRevision === change.applied_workspace_revision
+        : content !== undefined &&
+          content === change.after_content &&
+          pathRevision === change.applied_workspace_revision;
+    if (!isCurrentGeneration) {
       throw new VfsError(
         "conflict",
         `Workspace path changed after receipt was created: ${change.path}`,
@@ -282,7 +360,8 @@ export class MemoryWorkspace implements Workspace {
     );
     if (change.change_kind === "created") {
       this.files.delete(change.path);
-      this.pathRevisions.delete(change.path);
+      this.invalidateRelatedMissingRevisions(change.path);
+      this.pathRevisions.set(change.path, workspaceRevision);
     } else {
       const beforeContent = change.before_content;
       if (beforeContent === null) {
@@ -292,6 +371,7 @@ export class MemoryWorkspace implements Workspace {
         );
       }
       this.files.set(change.path, beforeContent);
+      this.invalidateRelatedMissingRevisions(change.path);
       this.pathRevisions.set(change.path, workspaceRevision);
     }
     const revertedChange = {
@@ -331,6 +411,37 @@ export class MemoryWorkspace implements Workspace {
   private hasDescendants(path: string): boolean {
     const prefix = `${path}/`;
     return [...this.files.keys()].some((candidate) => candidate.startsWith(prefix));
+  }
+
+  private hasFileAncestor(path: string): boolean {
+    const segments = path.split("/").filter(Boolean);
+    for (let index = 1; index < segments.length; index += 1) {
+      if (
+        this.files.has(`/${segments.slice(0, index).join("/")}`)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private invalidateRelatedMissingRevisions(path: string): void {
+    const segments = path.split("/").filter(Boolean);
+    for (let index = 1; index < segments.length; index += 1) {
+      const ancestor = `/${segments.slice(0, index).join("/")}`;
+      if (!this.files.has(ancestor)) {
+        this.pathRevisions.delete(ancestor);
+      }
+    }
+    const descendantPrefix = `${path}/`;
+    for (const candidate of this.pathRevisions.keys()) {
+      if (
+        candidate.startsWith(descendantPrefix) &&
+        !this.files.has(candidate)
+      ) {
+        this.pathRevisions.delete(candidate);
+      }
+    }
   }
 }
 

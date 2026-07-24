@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { IDBFactory } from "fake-indexeddb";
 import {
+  SESSION_DOCUMENT_FORMAT_VERSION,
+} from "@researchbox/project-store";
+import {
   defineDurableWorkspaceBackendConformance,
   defineWorkspaceBackendConformance,
 } from "@researchbox/vfs-testkit";
@@ -332,6 +335,47 @@ test("IndexedDB atomically persists file writes and workspace change receipts", 
   reopenedDatabase.close();
 });
 
+test("IndexedDB journaled removal rolls back when marker publication fails", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-remove-failure-${crypto.randomUUID()}`,
+  );
+  const backend = new IndexedDbWorkspaceBackend(database, {
+    "/notes.txt": "before",
+  });
+  const workspace = await backend.create("project-1");
+  const restoreOpen = failNextMarkerPublication(database);
+
+  try {
+    await assert.rejects(
+      workspace.remove("/notes.txt", {
+        expected_content: "before",
+        change: workspaceChangeMetadata(
+          "failed-remove",
+          "remove_file",
+        ),
+      }),
+      /injected marker publication failure/,
+    );
+  } finally {
+    restoreOpen();
+  }
+
+  assert.deepEqual(await workspace.getPathState("/notes.txt"), {
+    workspace_revision: 0,
+    path: "/notes.txt",
+    kind: "file",
+    path_revision: 0,
+    content: "before",
+  });
+  assert.deepEqual(await workspace.listChanges(), {
+    workspace_revision: 0,
+    changes: [],
+  });
+  database.close();
+});
+
 test("IndexedDB preserves receipts with redundant malformed assistant indexes", async (t) => {
   const invalidIndexes = [
     { name: "missing", value: undefined, removes_field: true },
@@ -647,6 +691,25 @@ test("IndexedDB reverts fail closed on corrupt persisted state", async (t) => {
       corrupts_receipt: true,
       corrupt({ change }) {
         change.change_kind = "removed";
+      },
+    },
+    {
+      name: "remove tool on a write receipt",
+      corrupts_receipt: true,
+      corrupt({ change }) {
+        change.tool_name = "remove_file";
+      },
+    },
+    {
+      name: "write tool on a deletion receipt",
+      corrupts_receipt: true,
+      corrupt({ change }) {
+        change.change_kind = "deleted";
+        change.before_content = "after";
+        change.after_content = null;
+        change.additions = 0;
+        change.deletions = 1;
+        change.byte_size = 0;
       },
     },
     {
@@ -1073,7 +1136,7 @@ test("IndexedDB v1 project-store migration is persisted exactly once", async () 
   await verificationComplete;
 });
 
-test("IndexedDB v2 migration persists model selections and a v3 timeline exactly once", async () => {
+test("IndexedDB v2 migration persists model selections and a v4 timeline exactly once", async () => {
   const factory = new IDBFactory();
   const databaseName = `researchbox-model-migration-${crypto.randomUUID()}`;
   const legacyDatabase = await openLegacyDatabase(factory, databaseName);
@@ -1141,7 +1204,7 @@ test("IndexedDB v2 migration persists model selections and a v3 timeline exactly
     ],
     documents: [
       {
-        format_version: 3,
+        format_version: SESSION_DOCUMENT_FORMAT_VERSION,
         session_id: "legacy-session",
         project_id: "legacy-project",
         input_draft: "session draft",
@@ -1188,6 +1251,102 @@ test("IndexedDB v2 migration persists model selections and a v3 timeline exactly
     expectedState.documents,
   );
   await verificationComplete;
+});
+
+test("IndexedDB v3 timeline migration persists file-change tool names exactly once", async () => {
+  const factory = new IDBFactory();
+  const databaseName =
+    `researchbox-timeline-migration-${crypto.randomUUID()}`;
+  const legacyDatabase = await openLegacyDatabase(factory, databaseName);
+  const timestamp = "2026-07-22T00:00:00.000Z";
+  const transaction = legacyDatabase.transaction(
+    ["meta", "projects", "sessions", "session_documents"],
+    "readwrite",
+  );
+  const completion = transactionComplete(transaction);
+  transaction.objectStore("meta").put({
+    key: "catalog",
+    schema_version: 3,
+    state_revision: 20,
+    active_project_id: "legacy-project",
+    active_session_id: "legacy-session",
+  });
+  transaction.objectStore("projects").put({
+    project_id: "legacy-project",
+    name: "Legacy project",
+    created_at: timestamp,
+    updated_at: timestamp,
+    last_session_id: "legacy-session",
+    new_chat_draft: "",
+    new_chat_model: createDefaultModelSelection(),
+  });
+  transaction.objectStore("sessions").put({
+    session_id: "legacy-session",
+    project_id: "legacy-project",
+    title: "Existing chat",
+    title_is_custom: false,
+    created_at: timestamp,
+    updated_at: timestamp,
+    selected_model: createDefaultModelSelection(),
+  });
+  transaction.objectStore("session_documents").put({
+    format_version: 3,
+    session_id: "legacy-session",
+    project_id: "legacy-project",
+    input_draft: "unfinished prompt",
+    timeline: createVersionThreeFileChangeTimeline(timestamp),
+  });
+  await completion;
+  legacyDatabase.close();
+
+  const database = new ResearchBoxDatabase(factory, databaseName);
+  const store = new IndexedDbProjectStore(database);
+  const migrated = await store.load();
+  assert.ok(migrated);
+  assert.equal(migrated.state_revision, 21);
+  assert.equal(
+    migrated.documents[0].format_version,
+    SESSION_DOCUMENT_FORMAT_VERSION,
+  );
+  assert.equal(
+    migrated.documents[0].timeline[2].file_change.tool_name,
+    "write_file",
+  );
+  database.close();
+
+  const reopenedDatabase = new ResearchBoxDatabase(factory, databaseName);
+  const reopenedStore = new IndexedDbProjectStore(reopenedDatabase);
+  assert.deepEqual(await reopenedStore.load(), migrated);
+
+  const connection = await reopenedDatabase.open();
+  const verification = connection.transaction(
+    ["meta", "session_documents"],
+    "readonly",
+  );
+  const verificationComplete = transactionComplete(verification);
+  assert.equal(
+    (
+      await requestValue(
+        verification.objectStore("meta").get("catalog"),
+      )
+    ).state_revision,
+    21,
+  );
+  const persistedDocument = await requestValue(
+    verification
+      .objectStore("session_documents")
+      .get("legacy-session"),
+  );
+  assert.equal(
+    persistedDocument.format_version,
+    SESSION_DOCUMENT_FORMAT_VERSION,
+  );
+  assert.equal(
+    persistedDocument.timeline[2].file_change.tool_name,
+    "write_file",
+  );
+  await verificationComplete;
+  reopenedDatabase.close();
 });
 
 test("IndexedDB draft writes validate their target ownership", async () => {
@@ -1445,10 +1604,14 @@ test("IndexedDB v4 workspace markers gain explicit content storage state", async
 
   const database = new ResearchBoxDatabase(factory, databaseName);
   const connection = await database.open();
-  assert.equal(connection.version, 8);
+  assert.equal(connection.version, 9);
   assert.equal(connection.objectStoreNames.contains("opfs_files"), true);
   assert.equal(
     connection.objectStoreNames.contains("file_change_quarantines"),
+    true,
+  );
+  assert.equal(
+    connection.objectStoreNames.contains("file_path_tombstones"),
     true,
   );
   const verification = connection.transaction(
@@ -1456,6 +1619,7 @@ test("IndexedDB v4 workspace markers gain explicit content storage state", async
       "project_filesystems",
       "opfs_files",
       "file_change_quarantines",
+      "file_path_tombstones",
     ],
     "readonly",
   );
@@ -1471,6 +1635,12 @@ test("IndexedDB v4 workspace markers gain explicit content storage state", async
       .objectStore("file_change_quarantines")
       .indexNames],
     ["by_change", "by_project", "by_workspace"],
+  );
+  assert.deepEqual(
+    [...verification
+      .objectStore("file_path_tombstones")
+      .indexNames],
+    ["by_project"],
   );
   assert.deepEqual(
     await requestValue(
@@ -1885,14 +2055,14 @@ test("a blocked IndexedDB upgrade can be retried without leaking its late connec
 
   legacyDatabase.close();
   const connection = await database.open();
-  assert.equal(connection.version, 8);
+  assert.equal(connection.version, 9);
 
   database.close();
   await Promise.resolve();
   await deleteDatabase(factory, databaseName);
 });
 
-test("IndexedDB v7 databases gain receipt quarantine storage", async () => {
+test("IndexedDB v7 databases gain receipt quarantine and path tombstone storage", async () => {
   const factory = new IDBFactory();
   const databaseName = `researchbox-v7-quarantine-${crypto.randomUUID()}`;
   const legacyDatabase = await openVersionSevenWithoutQuarantineDatabase(
@@ -1903,13 +2073,17 @@ test("IndexedDB v7 databases gain receipt quarantine storage", async () => {
 
   const database = new ResearchBoxDatabase(factory, databaseName);
   const connection = await database.open();
-  assert.equal(connection.version, 8);
+  assert.equal(connection.version, 9);
   assert.equal(
     connection.objectStoreNames.contains("file_change_quarantines"),
     true,
   );
+  assert.equal(
+    connection.objectStoreNames.contains("file_path_tombstones"),
+    true,
+  );
   const verification = connection.transaction(
-    "file_change_quarantines",
+    ["file_change_quarantines", "file_path_tombstones"],
     "readonly",
   );
   const verificationComplete = transactionComplete(verification);
@@ -1919,6 +2093,13 @@ test("IndexedDB v7 databases gain receipt quarantine storage", async () => {
   assert.equal(quarantineStore.indexNames.contains("by_project"), true);
   assert.equal(quarantineStore.indexNames.contains("by_workspace"), true);
   assert.equal(quarantineStore.indexNames.contains("by_change"), true);
+  assert.equal(
+    verification
+      .objectStore("file_path_tombstones")
+      .indexNames
+      .contains("by_project"),
+    true,
+  );
   await verificationComplete;
   database.close();
 });
@@ -2013,7 +2194,7 @@ function createState() {
     ],
     documents: [
       {
-        format_version: 3,
+        format_version: SESSION_DOCUMENT_FORMAT_VERSION,
         session_id: "session-1",
         project_id: "project-1",
         input_draft: "",
@@ -2083,6 +2264,64 @@ function createMigratedTimeline(timestamp) {
   ];
 }
 
+function createVersionThreeFileChangeTimeline(timestamp) {
+  const runId = "legacy:legacy-session:run:0";
+  return [
+    {
+      type: "user_message",
+      entry_id: "legacy-user",
+      run_id: runId,
+      created_at: timestamp,
+      content: "Create a note",
+    },
+    {
+      type: "assistant_message",
+      entry_id: "legacy-assistant",
+      run_id: runId,
+      created_at: timestamp,
+      status: "complete",
+      api: "mock",
+      provider: "researchbox",
+      model: "researchbox-mock",
+      usage: emptyUsage(),
+      stop_reason: "tool_use",
+      blocks: [
+        {
+          type: "tool_call",
+          block_id: "legacy-tool-block",
+          tool_call_id: "legacy-write",
+          tool_name: "write_file",
+          arguments: {
+            path: "/notes/note.md",
+            content: "# Note",
+          },
+        },
+      ],
+    },
+    {
+      type: "tool_result",
+      entry_id: "legacy-result",
+      run_id: runId,
+      created_at: timestamp,
+      tool_call_block_id: "legacy-tool-block",
+      tool_call_id: "legacy-write",
+      tool_name: "write_file",
+      content: '{"path":"/notes/note.md"}',
+      is_error: false,
+      summary: "Created · +1 −0",
+      file_change: {
+        change_id: "legacy-change",
+        tool_call_id: "legacy-write",
+        path: "/notes/note.md",
+        change_kind: "created",
+        additions: 1,
+        deletions: 0,
+        byte_size: 6,
+      },
+    },
+  ];
+}
+
 function createDefaultModelSelection() {
   return {
     provider_id: "researchbox",
@@ -2134,6 +2373,89 @@ function emptyUsage() {
       total: 0,
     },
   };
+}
+
+function failNextMarkerPublication(database) {
+  const originalOpen = database.open.bind(database);
+  let failurePending = true;
+  database.open = async () => {
+    const connection = await originalOpen();
+    return new Proxy(connection, {
+      get(target, property) {
+        if (property !== "transaction") {
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function"
+            ? value.bind(target)
+            : value;
+        }
+        return (storeNames, mode) => {
+          const transaction = target.transaction(storeNames, mode);
+          if (
+            !failurePending ||
+            mode !== "readwrite" ||
+            !includesStore(storeNames, "project_filesystems")
+          ) {
+            return transaction;
+          }
+          return new Proxy(transaction, {
+            get(transactionTarget, transactionProperty) {
+              if (transactionProperty !== "objectStore") {
+                const value = Reflect.get(
+                  transactionTarget,
+                  transactionProperty,
+                  transactionTarget,
+                );
+                return typeof value === "function"
+                  ? value.bind(transactionTarget)
+                  : value;
+              }
+              return (storeName) => {
+                const store = transactionTarget.objectStore(storeName);
+                if (storeName !== "project_filesystems") return store;
+                return new Proxy(store, {
+                  get(storeTarget, storeProperty) {
+                    if (storeProperty === "put") {
+                      return () => {
+                        failurePending = false;
+                        throw new Error(
+                          "injected marker publication failure",
+                        );
+                      };
+                    }
+                    const value = Reflect.get(
+                      storeTarget,
+                      storeProperty,
+                      storeTarget,
+                    );
+                    return typeof value === "function"
+                      ? value.bind(storeTarget)
+                      : value;
+                  },
+                });
+              };
+            },
+            set(transactionTarget, property, value) {
+              return Reflect.set(
+                transactionTarget,
+                property,
+                value,
+                transactionTarget,
+              );
+            },
+          });
+        };
+      },
+    });
+  };
+  return () => {
+    database.open = originalOpen;
+  };
+}
+
+function includesStore(storeNames, expected) {
+  return typeof storeNames === "string"
+    ? storeNames === expected
+    : [...storeNames].includes(expected);
 }
 
 function requestValue(request) {

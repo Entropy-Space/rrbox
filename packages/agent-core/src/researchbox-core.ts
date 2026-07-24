@@ -1347,6 +1347,7 @@ export class ResearchBoxCore {
         change_id: change.change_id,
         path: change.path,
         change_kind: change.change_kind,
+        tool_name: change.tool_name,
         workspace_revision: result.workspace_revision,
         reverted_at_workspace_revision:
           result.reverted_at_workspace_revision,
@@ -1954,6 +1955,7 @@ function workspaceChangeSummary(
   return {
     change_id: record.change_id,
     tool_call_id: record.tool_call_id,
+    tool_name: record.tool_name,
     path: record.path,
     change_kind: record.change_kind,
     additions: record.additions,
@@ -1985,14 +1987,9 @@ type WorkspaceChangeInspection = {
   revert_status: WorkspaceChangeDetails["revert_status"];
 };
 
-type WorkspacePathState =
-  | {
-      kind: "file";
-      content: string;
-      path_revision: number;
-      workspace_revision: number;
-    }
-  | { kind: "missing" | "directory" | "obstructed" };
+type WorkspacePathState = Awaited<
+  ReturnType<WorkspaceController["getPathState"]>
+>;
 
 const WORKSPACE_CHANGE_INSPECTION_ATTEMPTS = 8;
 
@@ -2012,27 +2009,7 @@ async function inspectWorkspaceChange(
       initial.workspace_revision,
     );
 
-    let pathState: WorkspacePathState;
-    try {
-      const current = await workspace.read(initial.change.path);
-      pathState = {
-        kind: "file",
-        content: current.content,
-        path_revision: current.path_revision,
-        workspace_revision: current.workspace_revision,
-      };
-    } catch (error) {
-      if (!(error instanceof VfsError)) throw error;
-      if (error.code === "not_found") {
-        pathState = { kind: "missing" };
-      } else if (error.code === "is_directory") {
-        pathState = { kind: "directory" };
-      } else if (error.code === "not_directory") {
-        pathState = { kind: "obstructed" };
-      } else {
-        throw error;
-      }
-    }
+    const pathState = await workspace.getPathState(initial.change.path);
 
     const confirmed = await workspace.getChange(changeId);
     if (!confirmed.change) throw new WorkspaceChangeNotFoundError(changeId);
@@ -2048,11 +2025,9 @@ async function inspectWorkspaceChange(
     ) {
       throw new Error("The workspace change receipt was mutated.");
     }
-    const observedRevision =
-      pathState.kind === "file"
-        ? pathState.workspace_revision
-        : initial.workspace_revision;
-    if (confirmed.workspace_revision !== observedRevision) continue;
+    if (confirmed.workspace_revision !== pathState.workspace_revision) {
+      continue;
+    }
 
     const currentContent =
       pathState.kind === "file" ? pathState.content : null;
@@ -2079,8 +2054,14 @@ function classifyWorkspaceChangeRevert(
   if (change.reverted_at_workspace_revision !== null) {
     return "already_reverted";
   }
+  if (change.applied_workspace_revision === null) return "conflict";
+  if (change.change_kind === "deleted") {
+    return pathState.kind === "missing" &&
+      pathState.path_revision === change.applied_workspace_revision
+      ? "available"
+      : "conflict";
+  }
   return pathState.kind === "file" &&
-    change.applied_workspace_revision !== null &&
     pathState.path_revision === change.applied_workspace_revision &&
     pathState.content === change.after_content
     ? "available"
@@ -2208,7 +2189,12 @@ class WorkspaceChangeConflictError extends Error {
 }
 
 function workspaceChangeActivitySummary(change: WorkspaceChangeSummary): string {
-  const verb = change.change_kind === "created" ? "Created" : "Updated";
+  const verb =
+    change.change_kind === "created"
+      ? "Created"
+      : change.change_kind === "updated"
+        ? "Updated"
+        : "Deleted";
   return `${verb} · +${change.additions} −${change.deletions}`;
 }
 
@@ -2236,7 +2222,11 @@ function workspaceChangeToolResult(
 function isMutationToolName(
   toolName: string,
 ): toolName is WorkspaceChangeRecord["tool_name"] {
-  return toolName === "write_file" || toolName === "replace_text";
+  return (
+    toolName === "write_file" ||
+    toolName === "replace_text" ||
+    toolName === "remove_file"
+  );
 }
 
 function repairInterruptedSessions(state: ProjectStoreState): boolean {

@@ -7,7 +7,8 @@ remote hosts.
 
 ## Current vertical slice
 
-- ChatGPT-style responsive conversation viewer
+- ChatGPT-style responsive conversation viewer with pauseable streaming
+  auto-follow and an accessible jump-to-latest control
 - Persistent projects, submitted chats, and project/session input drafts
 - One virtual new-chat state per project; a session is created on first send
 - Keyboard-accessible search across saved chats in every project

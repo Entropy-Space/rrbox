@@ -1194,6 +1194,15 @@ textarea:focus-visible {
   scrollbar-gutter: stable;
 }
 
+.message-list:focus-visible {
+  outline: 2px solid #2f7ff7;
+  outline-offset: -3px;
+}
+
+.message-list-content {
+  display: flow-root;
+}
+
 .message-row {
   display: flex;
   width: min(100%, 760px);
@@ -1763,6 +1772,34 @@ textarea:focus-visible {
     #fff 20px,
     #fff 100%
   );
+}
+
+.jump-to-latest {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  left: 50%;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  cursor: pointer;
+  transform: translate(-50%, -62%);
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--canvas);
+  color: var(--muted-strong);
+  box-shadow: 0 5px 18px rgba(0, 0, 0, 0.11);
+  transition:
+    background 130ms ease,
+    color 130ms ease,
+    transform 130ms ease;
+}
+
+.jump-to-latest:hover {
+  transform: translate(-50%, -68%);
+  background: var(--soft);
+  color: var(--ink);
 }
 
 .composer {

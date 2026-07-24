@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  ArrowDown,
   ArrowUp,
   Check,
   ChevronLeft,
@@ -59,6 +60,7 @@ import {
   type AssistantTurnPresentation,
 } from "./timeline-rendering.ts";
 import { useAgentSession } from "./use-agent-session.ts";
+import { useConversationScroll } from "./use-conversation-scroll.ts";
 import {
   useWorkspaceChangeReview,
   type WorkspaceChangeReviewView,
@@ -137,7 +139,6 @@ export function ResearchBoxViewer({
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const [isMobileViewport, setMobileViewport] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
-  const conversationEndRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const focusComposerAfterSearchRef = useRef(false);
   const workspaceHeadingRef = useRef<HTMLHeadingElement | null>(null);
@@ -162,13 +163,21 @@ export function ResearchBoxViewer({
   const activeRunId = coreState.is_running
     ? coreState.timeline.at(-1)?.run_id ?? null
     : null;
-
-  useEffect(() => {
-    conversationEndRef.current?.scrollIntoView({
-      behavior: coreState.is_running ? "smooth" : "auto",
-      block: "end",
-    });
-  }, [coreState.timeline, coreState.is_running]);
+  const {
+    messageListRef,
+    conversationContentRef,
+    conversationEndRef,
+    showJumpToLatest,
+    handleConversationScroll,
+    handleConversationKeyDown,
+    handleConversationClickCapture,
+    handleJumpToLatest,
+    interruptJumpToLatest,
+  } = useConversationScroll({
+    activeProjectId: coreState.active_project_id,
+    activeSessionId: coreState.active_session_id,
+    timeline: coreState.timeline,
+  });
 
   useEffect(() => {
     const mediaQuery = window.matchMedia(MOBILE_NAVIGATION_QUERY);
@@ -476,27 +485,59 @@ export function ResearchBoxViewer({
                 onSelectPrompt={submitDraft}
               />
             ) : (
-              <div className="message-list" aria-live="polite">
-                {timelineRows.map((row) =>
-                  row.type === "user" ? (
-                    <UserMessageRow
-                      key={row.entry.entry_id}
-                      content={row.entry.content}
-                    />
-                  ) : (
-                    <AssistantRunRow
-                      key={`${row.run_id}:${row.entries[0]?.entry_id ?? "empty"}`}
-                      entries={row.entries}
-                      isRunActive={row.run_id === activeRunId}
-                      onReviewWorkspaceChange={openWorkspaceChangeReview}
-                    />
-                  ),
-                )}
-                <div ref={conversationEndRef} />
+              <div
+                ref={messageListRef}
+                id="researchbox-message-list"
+                className="message-list"
+                role="log"
+                aria-label="Conversation messages"
+                aria-live="polite"
+                aria-relevant="additions text"
+                tabIndex={0}
+                onScroll={handleConversationScroll}
+                onKeyDown={handleConversationKeyDown}
+                onClickCapture={handleConversationClickCapture}
+                onPointerDown={interruptJumpToLatest}
+                onWheel={interruptJumpToLatest}
+              >
+                <div
+                  ref={conversationContentRef}
+                  className="message-list-content"
+                >
+                  {timelineRows.map((row) =>
+                    row.type === "user" ? (
+                      <UserMessageRow
+                        key={row.entry.entry_id}
+                        content={row.entry.content}
+                      />
+                    ) : (
+                      <AssistantRunRow
+                        key={`${row.run_id}:${row.entries[0]?.entry_id ?? "empty"}`}
+                        entries={row.entries}
+                        isRunActive={row.run_id === activeRunId}
+                        onReviewWorkspaceChange={
+                          openWorkspaceChangeReview
+                        }
+                      />
+                    ),
+                  )}
+                  <div ref={conversationEndRef} />
+                </div>
               </div>
             )}
 
             <div className="composer-region">
+              {showJumpToLatest && (
+                <button
+                  className="jump-to-latest"
+                  type="button"
+                  aria-label="Jump to latest message"
+                  aria-controls="researchbox-message-list"
+                  onClick={handleJumpToLatest}
+                >
+                  <ArrowDown size={17} aria-hidden="true" />
+                </button>
+              )}
               {visibleCoreStatus && (
                 <div
                   className={`status-banner ${coreState.core_lifecycle}`}

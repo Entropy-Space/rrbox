@@ -180,3 +180,57 @@ test("keeps assistant Markdown rendering inert and source preserving", async () 
     /dangerouslySetInnerHTML|rehypeRaw|rehype-raw/,
   );
 });
+
+test("gives readers control of conversation scrolling during streaming", async () => {
+  const [viewer, controller, helpers, styles] = await Promise.all([
+    readFile(
+      new URL(
+        "../../../packages/viewer/src/ResearchBoxViewer.tsx",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+    readFile(
+      new URL(
+        "../../../packages/viewer/src/use-conversation-scroll.ts",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+    readFile(
+      new URL(
+        "../../../packages/viewer/src/conversation-scroll.ts",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  const scrollSources = `${viewer}\n${controller}`;
+
+  assert.match(viewer, /id="researchbox-message-list"/);
+  assert.match(viewer, /role="log"/);
+  assert.match(viewer, /aria-label="Conversation messages"/);
+  assert.match(viewer, /tabIndex=\{0\}/);
+  assert.match(viewer, /onScroll=\{handleConversationScroll\}/);
+  assert.match(viewer, /onKeyDown=\{handleConversationKeyDown\}/);
+  assert.match(
+    viewer,
+    /onClickCapture=\{handleConversationClickCapture\}/,
+  );
+  assert.match(viewer, /aria-label="Jump to latest message"/);
+  assert.match(viewer, /aria-controls="researchbox-message-list"/);
+  assert.match(controller, /"timeline_changed"/);
+  assert.match(controller, /"conversation_changed"/);
+  assert.match(controller, /"layout_change_requested"/);
+  assert.match(controller, /new ResizeObserver\(remeasure\)/);
+  assert.match(controller, /focus\(\{ preventScroll: true \}\)/);
+  assert.doesNotMatch(
+    scrollSources,
+    /behavior:\s*coreState\.is_running\s*\?\s*"smooth"/,
+  );
+  assert.match(helpers, /CONVERSATION_END_THRESHOLD_PX = 64/);
+  assert.match(helpers, /conversationGeneration !==/);
+  assert.match(styles, /\.jump-to-latest\s*\{/);
+  assert.match(styles, /\.message-list:focus-visible\s*\{/);
+});

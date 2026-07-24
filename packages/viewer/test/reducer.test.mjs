@@ -692,10 +692,10 @@ test("a newer workspace change carries forward an invalidated selected-file refr
   assert.equal(state.selected_file?.content, "after");
 });
 
-test("same-project snapshots preserve workspace navigation", () => {
+test("equal and older same-project snapshots preserve workspace navigation", () => {
   let state = coreReducer(
     initialAgentSessionState,
-    event("ready", { state: snapshot("p1", "s1", 1) }),
+    event("ready", { state: snapshot("p1", "s1", 1, "", 2) }),
   );
   state = {
     ...state,
@@ -705,12 +705,25 @@ test("same-project snapshots preserve workspace navigation", () => {
     pending_fs_read: {
       request_id: "read-pending",
       path: "/src/agent.ts",
-      expected_workspace_revision: 0,
+      expected_workspace_revision: 2,
       request_kind: "workspace_refresh",
     },
   };
 
-  const renamed = snapshot("p1", "s1", 2);
+  const equalRevision = snapshot("p1", "s1", 2, "", 2);
+  equalRevision.projects[0].name = "Renamed";
+  equalRevision.files = [fileEntry("README.md")];
+  state = coreReducer(
+    state,
+    event("state_snapshot", { state: equalRevision }),
+  );
+
+  assert.equal(state.current_path, "/src");
+  assert.equal(state.files[0].name, "agent.ts");
+  assert.equal(state.selected_file?.path, "/src/agent.ts");
+  assert.equal(state.pending_fs_read?.request_id, "read-pending");
+
+  const renamed = snapshot("p1", "s1", 3, "", 1);
   renamed.projects[0].name = "Renamed";
   renamed.files = [fileEntry("README.md")];
   state = coreReducer(state, event("state_snapshot", { state: renamed }));
@@ -727,6 +740,50 @@ test("same-project snapshots preserve workspace navigation", () => {
   assert.equal(state.current_path, "/");
   assert.equal(state.selected_file, null);
   assert.equal(state.pending_fs_read, null);
+});
+
+test("a newer same-project snapshot replaces stale workspace navigation", () => {
+  let state = coreReducer(
+    initialAgentSessionState,
+    event("ready", { state: snapshot("p1", "s1", 1, "", 1) }),
+  );
+  state = {
+    ...state,
+    current_path: "/src",
+    files: [fileEntry("agent.ts")],
+    selected_file: { path: "/src/agent.ts", content: "stale source" },
+    pending_fs_list: {
+      request_id: "list-pending",
+      path: "/src",
+      expected_workspace_revision: 1,
+      request_kind: "workspace_refresh",
+    },
+    pending_fs_read: {
+      request_id: "read-pending",
+      path: "/src/agent.ts",
+      expected_workspace_revision: 1,
+      request_kind: "workspace_refresh",
+    },
+    pending_workspace_refresh: {
+      workspace_revision: 1,
+      changed_paths: ["/src/agent.ts"],
+    },
+  };
+
+  const authoritative = snapshot("p1", "s1", 2, "", 2);
+  authoritative.files = [fileEntry("README.md")];
+  state = coreReducer(
+    state,
+    event("state_snapshot", { state: authoritative }),
+  );
+
+  assert.equal(state.workspace_revision, 2);
+  assert.equal(state.current_path, "/");
+  assert.equal(state.files[0].name, "README.md");
+  assert.equal(state.selected_file, null);
+  assert.equal(state.pending_fs_list, null);
+  assert.equal(state.pending_fs_read, null);
+  assert.equal(state.pending_workspace_refresh, null);
 });
 
 test("draft acknowledgements are scoped and only confirm the latest exact value", () => {
@@ -991,12 +1048,18 @@ function event(type, payload, requestId) {
   };
 }
 
-function snapshot(projectId, sessionId, revision, inputDraft = "") {
+function snapshot(
+  projectId,
+  sessionId,
+  revision,
+  inputDraft = "",
+  workspaceRevision = 0,
+) {
   const timestamp = "2026-07-22T00:00:00.000Z";
   return {
     state_revision: revision,
     catalog_revision: revision,
-    workspace_revision: 0,
+    workspace_revision: workspaceRevision,
     projects: [
       {
         project_id: projectId,

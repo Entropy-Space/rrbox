@@ -3,8 +3,10 @@ import {
   compareVfsEntries,
   compareWorkspaceChanges,
   createVfsWriteResult,
+  incrementWorkspaceRevision,
   normalizeFilePath,
   normalizePath,
+  normalizeWorkspaceChangeTimestamp,
   normalizeVfsSeedFiles,
   VfsError,
   WorkspaceBackendError,
@@ -12,13 +14,20 @@ import {
   type VfsRemoveOptions,
   type VfsSeedFile,
   type VfsWriteOptions,
-  type VfsWriteResult,
   type Workspace,
   type WorkspaceBackend,
   type WorkspaceChangeRecord,
+  type WorkspaceChangesResult,
+  type WorkspaceListResult,
+  type WorkspaceReadResult,
+  type WorkspaceRemoveResult,
+  type WorkspaceWriteResult,
 } from "@researchbox/vfs";
 import {
   databaseStores,
+  hasCompleteProjectFileSystemMetadata,
+  type ProjectFileSystemRecord,
+  repairProjectFileSystemRecord,
   requestResult,
   ResearchBoxDatabase,
   transactionDone,
@@ -28,11 +37,6 @@ type FileRecord = {
   project_id: string;
   path: string;
   content: string;
-};
-
-type ProjectFileSystemRecord = {
-  project_id: string;
-  incarnation_id: string;
 };
 
 type WorkspaceChangeStorageRecord = Omit<
@@ -72,13 +76,36 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
       databaseStores.project_filesystems,
     );
     try {
-      const existing = await requestResult(workspaceStore.get(projectId));
-      if (existing !== undefined) {
+      const storedMarker = (await requestResult(
+        workspaceStore.get(projectId),
+      )) as Partial<ProjectFileSystemRecord> | undefined;
+      let existing: ProjectFileSystemRecord | undefined;
+      if (storedMarker !== undefined) {
+        if (hasCompleteProjectFileSystemMetadata(storedMarker)) {
+          existing = storedMarker;
+        } else {
+          const changes = (await requestResult(
+            transaction
+              .objectStore(databaseStores.file_changes)
+              .index("by_project")
+              .getAll(projectId),
+          )) as WorkspaceChangeStorageRecord[];
+          existing = repairProjectFileSystemRecord(
+            {
+              ...storedMarker,
+              project_id: projectId,
+            },
+            changes,
+          );
+        }
+      }
+      if (existing?.lifecycle_status === "active") {
         throw new WorkspaceBackendError(
           "already_exists",
           `Project filesystem already exists: ${projectId}`,
         );
       }
+      const workspaceRevision = existing?.workspace_revision ?? 0;
       const fileStore = transaction.objectStore(databaseStores.files);
       const changeStore = transaction.objectStore(databaseStores.file_changes);
       const [fileKeys, changeKeys] = await Promise.all([
@@ -90,6 +117,9 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
       workspaceStore.put({
         project_id: projectId,
         incarnation_id: incarnationId,
+        workspace_revision: workspaceRevision,
+        last_change_at: null,
+        lifecycle_status: "active",
       } satisfies ProjectFileSystemRecord);
       for (const { path, content } of this.seedFiles) {
         fileStore.put({
@@ -112,7 +142,10 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
   async open(projectId: string): Promise<Workspace> {
     const database = await this.database.open();
     const transaction = database.transaction(
-      databaseStores.project_filesystems,
+      [
+        databaseStores.project_filesystems,
+        databaseStores.file_changes,
+      ],
       "readwrite",
     );
     const completion = transactionDone(transaction);
@@ -127,14 +160,33 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
           `Project filesystem does not exist: ${projectId}`,
         );
       }
-      const existingIncarnationId = readIncarnationId(record);
-      const incarnationId = existingIncarnationId ?? crypto.randomUUID();
-      if (existingIncarnationId === null) {
-        store.put({
-          project_id: projectId,
-          incarnation_id: incarnationId,
-        } satisfies ProjectFileSystemRecord);
+      let repaired: ProjectFileSystemRecord;
+      if (hasCompleteProjectFileSystemMetadata(record)) {
+        repaired = record;
+      } else {
+        const changes = (await requestResult(
+          transaction
+            .objectStore(databaseStores.file_changes)
+            .index("by_project")
+            .getAll(projectId),
+        )) as WorkspaceChangeStorageRecord[];
+        repaired = repairProjectFileSystemRecord(
+          {
+            ...record,
+            project_id: projectId,
+          },
+          changes,
+        );
+        store.put(repaired);
       }
+      if (repaired.lifecycle_status === "deleted") {
+        await completion;
+        throw new WorkspaceBackendError(
+          "not_found",
+          `Project filesystem does not exist: ${projectId}`,
+        );
+      }
+      const incarnationId = repaired.incarnation_id;
       await completion;
       return new IndexedDbWorkspace(
         this.database,
@@ -157,22 +209,58 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
       "readwrite",
     );
     const completion = transactionDone(transaction);
+    const workspaceStore = transaction.objectStore(
+      databaseStores.project_filesystems,
+    );
     const fileStore = transaction.objectStore(databaseStores.files);
     const changeStore = transaction.objectStore(databaseStores.file_changes);
+    const markerRequest = workspaceStore.get(projectId);
     const fileKeysRequest = fileStore.index("by_project").getAllKeys(projectId);
-    const changeKeysRequest = changeStore
+    const changesRequest = changeStore
       .index("by_project")
-      .getAllKeys(projectId);
-    const [fileKeys, changeKeys] = await Promise.all([
-      requestResult(fileKeysRequest),
-      requestResult(changeKeysRequest),
-    ]);
-    for (const key of fileKeys) fileStore.delete(key);
-    for (const key of changeKeys) changeStore.delete(key);
-    transaction
-      .objectStore(databaseStores.project_filesystems)
-      .delete(projectId);
-    await completion;
+      .getAll(projectId);
+    try {
+      const [storedMarker, fileKeys, changes] = await Promise.all([
+        requestResult(markerRequest) as Promise<
+          Partial<ProjectFileSystemRecord> | undefined
+        >,
+        requestResult(fileKeysRequest),
+        requestResult(changesRequest) as Promise<
+          WorkspaceChangeStorageRecord[]
+        >,
+      ]);
+      for (const key of fileKeys) fileStore.delete(key);
+      for (const change of changes) {
+        changeStore.delete([projectId, change.change_id]);
+      }
+      if (storedMarker !== undefined) {
+        const markerWasComplete =
+          hasCompleteProjectFileSystemMetadata(storedMarker);
+        const marker = markerWasComplete
+          ? storedMarker
+          : repairProjectFileSystemRecord(
+              {
+                ...storedMarker,
+                project_id: projectId,
+              },
+              changes,
+            );
+        if (marker.lifecycle_status === "active") {
+          workspaceStore.put({
+            ...marker,
+            workspace_revision: incrementWorkspaceRevision(
+              marker.workspace_revision,
+            ),
+            lifecycle_status: "deleted",
+          } satisfies ProjectFileSystemRecord);
+        } else if (!markerWasComplete) {
+          workspaceStore.put(marker);
+        }
+      }
+      await completion;
+    } catch (error) {
+      return abortTransaction(transaction, completion, error);
+    }
   }
 }
 
@@ -191,9 +279,9 @@ class IndexedDbWorkspace implements Workspace {
     this.incarnationId = incarnationId;
   }
 
-  async list(path: string): Promise<VfsEntry[]> {
+  async list(path: string): Promise<WorkspaceListResult> {
     const normalizedPath = normalizePath(path);
-    const records = await this.loadProjectFiles();
+    const { marker, records } = await this.loadProjectFiles();
     if (records.some((record) => record.path === normalizedPath)) {
       throw new VfsError(
         "not_directory",
@@ -222,14 +310,22 @@ class IndexedDbWorkspace implements Workspace {
             },
       );
     }
-    return [...entries.values()].sort(compareVfsEntries);
+    return {
+      workspace_revision: marker.workspace_revision,
+      entries: [...entries.values()].sort(compareVfsEntries),
+    };
   }
 
-  async read(path: string): Promise<string> {
+  async read(path: string): Promise<WorkspaceReadResult> {
     const normalizedPath = normalizeFilePath(path);
-    const records = await this.loadProjectFiles();
+    const { marker, records } = await this.loadProjectFiles();
     const record = records.find((candidate) => candidate.path === normalizedPath);
-    if (record) return record.content;
+    if (record) {
+      return {
+        workspace_revision: marker.workspace_revision,
+        content: record.content,
+      };
+    }
     if (records.some((candidate) => candidate.path.startsWith(`${normalizedPath}/`))) {
       throw new VfsError("is_directory", `Path is a directory: ${normalizedPath}`);
     }
@@ -240,7 +336,7 @@ class IndexedDbWorkspace implements Workspace {
     path: string,
     content: string,
     options?: VfsWriteOptions,
-  ): Promise<VfsWriteResult> {
+  ): Promise<WorkspaceWriteResult> {
     const normalizedPath = normalizeFilePath(path);
     const database = await this.database.open();
     const transaction = database.transaction(
@@ -255,7 +351,7 @@ class IndexedDbWorkspace implements Workspace {
     const store = transaction.objectStore(databaseStores.files);
 
     try {
-      await assertActiveProjectFileSystem(
+      const marker = await assertActiveProjectFileSystem(
         transaction,
         this.projectId,
         this.incarnationId,
@@ -267,13 +363,24 @@ class IndexedDbWorkspace implements Workspace {
       const beforeContent =
         records.find((record) => record.path === normalizedPath)?.content ?? null;
       assertVfsWriteExpectation(normalizedPath, beforeContent, options);
+      const change =
+        options?.change === undefined || beforeContent === content
+          ? options?.change
+          : normalizeWorkspaceChangeTimestamp(
+              options.change,
+              marker.last_change_at,
+            );
       const result = createVfsWriteResult(
         normalizedPath,
         beforeContent,
         content,
-        options?.change,
+        change,
       );
+      let workspaceRevision = marker.workspace_revision;
       if (result.change_kind !== "unchanged") {
+        workspaceRevision = incrementWorkspaceRevision(
+          marker.workspace_revision,
+        );
         store.put({
           project_id: this.projectId,
           path: normalizedPath,
@@ -299,15 +406,29 @@ class IndexedDbWorkspace implements Workspace {
             } satisfies WorkspaceChangeStorageRecord),
           );
         }
+        transaction
+          .objectStore(databaseStores.project_filesystems)
+          .put({
+            ...marker,
+            workspace_revision: workspaceRevision,
+            last_change_at:
+              result.change?.created_at ?? marker.last_change_at,
+          } satisfies ProjectFileSystemRecord);
       }
       await completion;
-      return result;
+      return {
+        workspace_revision: workspaceRevision,
+        result,
+      };
     } catch (error) {
       return abortTransaction(transaction, completion, error);
     }
   }
 
-  async remove(path: string, options?: VfsRemoveOptions): Promise<void> {
+  async remove(
+    path: string,
+    options?: VfsRemoveOptions,
+  ): Promise<WorkspaceRemoveResult> {
     const normalizedPath = normalizeFilePath(path);
     const database = await this.database.open();
     const transaction = database.transaction(
@@ -318,7 +439,7 @@ class IndexedDbWorkspace implements Workspace {
     const store = transaction.objectStore(databaseStores.files);
 
     try {
-      await assertActiveProjectFileSystem(
+      const marker = await assertActiveProjectFileSystem(
         transaction,
         this.projectId,
         this.incarnationId,
@@ -352,13 +473,25 @@ class IndexedDbWorkspace implements Workspace {
         );
       }
       store.delete([this.projectId, normalizedPath]);
+      const workspaceRevision = incrementWorkspaceRevision(
+        marker.workspace_revision,
+      );
+      transaction
+        .objectStore(databaseStores.project_filesystems)
+        .put({
+          ...marker,
+          workspace_revision: workspaceRevision,
+        } satisfies ProjectFileSystemRecord);
       await completion;
+      return {
+        workspace_revision: workspaceRevision,
+      };
     } catch (error) {
       return abortTransaction(transaction, completion, error);
     }
   }
 
-  async listChanges(): Promise<WorkspaceChangeRecord[]> {
+  async listChanges(): Promise<WorkspaceChangesResult> {
     const database = await this.database.open();
     const transaction = database.transaction(
       [databaseStores.project_filesystems, databaseStores.file_changes],
@@ -366,7 +499,7 @@ class IndexedDbWorkspace implements Workspace {
     );
     const completion = transactionDone(transaction);
     try {
-      await assertActiveProjectFileSystem(
+      const marker = await assertActiveProjectFileSystem(
         transaction,
         this.projectId,
         this.incarnationId,
@@ -378,15 +511,21 @@ class IndexedDbWorkspace implements Workspace {
           .getAll(this.projectId),
       )) as WorkspaceChangeStorageRecord[];
       await completion;
-      return records
-        .sort(compareWorkspaceChanges)
-        .map(toWorkspaceChangeRecord);
+      return {
+        workspace_revision: marker.workspace_revision,
+        changes: records
+          .sort(compareWorkspaceChanges)
+          .map(toWorkspaceChangeRecord),
+      };
     } catch (error) {
       return abortTransaction(transaction, completion, error);
     }
   }
 
-  private async loadProjectFiles(): Promise<FileRecord[]> {
+  private async loadProjectFiles(): Promise<{
+    marker: ProjectFileSystemRecord;
+    records: FileRecord[];
+  }> {
     const database = await this.database.open();
     const transaction = database.transaction(
       [databaseStores.project_filesystems, databaseStores.files],
@@ -394,7 +533,7 @@ class IndexedDbWorkspace implements Workspace {
     );
     const completion = transactionDone(transaction);
     try {
-      await assertActiveProjectFileSystem(
+      const marker = await assertActiveProjectFileSystem(
         transaction,
         this.projectId,
         this.incarnationId,
@@ -406,7 +545,7 @@ class IndexedDbWorkspace implements Workspace {
           .getAll(this.projectId),
       )) as FileRecord[];
       await completion;
-      return records;
+      return { marker, records };
     } catch (error) {
       return abortTransaction(transaction, completion, error);
     }
@@ -441,11 +580,17 @@ async function assertActiveProjectFileSystem(
   transaction: IDBTransaction,
   projectId: string,
   incarnationId: string,
-): Promise<void> {
+): Promise<ProjectFileSystemRecord> {
   const record = (await requestResult(
     transaction.objectStore(databaseStores.project_filesystems).get(projectId),
   )) as Partial<ProjectFileSystemRecord> | undefined;
   if (record === undefined) {
+    throw new VfsError(
+      "not_found",
+      `Project filesystem no longer exists: ${projectId}`,
+    );
+  }
+  if (record.lifecycle_status === "deleted") {
     throw new VfsError(
       "not_found",
       `Project filesystem no longer exists: ${projectId}`,
@@ -457,6 +602,13 @@ async function assertActiveProjectFileSystem(
       `Project filesystem handle is stale: ${projectId}`,
     );
   }
+  if (!hasCompleteProjectFileSystemMetadata(record)) {
+    throw new VfsError(
+      "conflict",
+      `Project filesystem metadata is incomplete; reopen it: ${projectId}`,
+    );
+  }
+  return record;
 }
 
 function readIncarnationId(

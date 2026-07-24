@@ -70,12 +70,15 @@ test("IndexedDB project state and files survive reopening the database", async (
   const secondProvider = new IndexedDbWorkspaceBackend(secondDatabase, {});
   assert.deepEqual(await secondStore.load(), expectedState);
   assert.equal(
-    await (await secondProvider.open("project-1")).read("/notes.txt"),
+    (await (await secondProvider.open("project-1")).read("/notes.txt")).content,
     "persisted",
   );
 
   await secondProvider.create("project-2");
-  assert.deepEqual(await (await secondProvider.open("project-2")).list("/"), []);
+  assert.deepEqual(
+    (await (await secondProvider.open("project-2")).list("/")).entries,
+    [],
+  );
   await assert.rejects(
     secondProvider.create("project-2"),
     /already exists/,
@@ -131,11 +134,13 @@ test("IndexedDB atomically persists file writes and workspace change receipts", 
   const firstProvider = new IndexedDbWorkspaceBackend(firstDatabase, {});
   const filesystem = await firstProvider.create("project-1");
 
-  const created = await filesystem.write(
+  const createdWrite = await filesystem.write(
     "/notes.txt",
     "alpha\nbeta\n",
     { change: workspaceChangeMetadata("change-1", "write_file") },
   );
+  const created = createdWrite.result;
+  assert.equal(createdWrite.workspace_revision, 1);
   assert.equal(created.change_kind, "created");
   assert.deepEqual(
     {
@@ -146,7 +151,7 @@ test("IndexedDB atomically persists file writes and workspace change receipts", 
     { additions: 2, deletions: 0, byte_size: 11 },
   );
 
-  const updated = await filesystem.write(
+  const updatedWrite = await filesystem.write(
     "/notes.txt",
     "alpha\ngamma\n",
     {
@@ -154,6 +159,8 @@ test("IndexedDB atomically persists file writes and workspace change receipts", 
       change: workspaceChangeMetadata("change-2", "replace_text"),
     },
   );
+  const updated = updatedWrite.result;
+  assert.equal(updatedWrite.workspace_revision, 2);
   assert.equal(updated.change_kind, "updated");
   assert.deepEqual(
     {
@@ -164,11 +171,13 @@ test("IndexedDB atomically persists file writes and workspace change receipts", 
     { additions: 1, deletions: 1, byte_size: 12 },
   );
 
-  const unchanged = await filesystem.write(
+  const unchangedWrite = await filesystem.write(
     "/notes.txt",
     "alpha\ngamma\n",
     { change: workspaceChangeMetadata("change-3", "write_file") },
   );
+  const unchanged = unchangedWrite.result;
+  assert.equal(unchangedWrite.workspace_revision, 2);
   assert.equal(unchanged.change_kind, "unchanged");
   assert.equal(unchanged.change, null);
   firstDatabase.close();
@@ -179,15 +188,20 @@ test("IndexedDB atomically persists file writes and workspace change receipts", 
     {},
   );
   const reopened = await reopenedProvider.open("project-1");
-  assert.equal(await reopened.read("/notes.txt"), "alpha\ngamma\n");
+  assert.deepEqual(await reopened.read("/notes.txt"), {
+    workspace_revision: 2,
+    content: "alpha\ngamma\n",
+  });
   assert.deepEqual(
-    (await reopened.listChanges()).map((change) => ({
-      change_id: change.change_id,
-      path: change.path,
-      change_kind: change.change_kind,
-      before_content: change.before_content,
-      after_content: change.after_content,
-    })),
+    (await reopened.listChanges()).changes.map(
+      (change) => ({
+        change_id: change.change_id,
+        path: change.path,
+        change_kind: change.change_kind,
+        before_content: change.before_content,
+        after_content: change.after_content,
+      }),
+    ),
     [
       {
         change_id: "change-1",
@@ -216,8 +230,14 @@ test("IndexedDB atomically persists file writes and workspace change receipts", 
 
   await reopenedProvider.delete("project-1");
   const recreated = await reopenedProvider.create("project-1");
-  assert.deepEqual(await recreated.list("/"), []);
-  assert.deepEqual(await recreated.listChanges(), []);
+  assert.deepEqual(await recreated.list("/"), {
+    workspace_revision: 3,
+    entries: [],
+  });
+  assert.deepEqual(await recreated.listChanges(), {
+    workspace_revision: 3,
+    changes: [],
+  });
   reopenedDatabase.close();
 });
 
@@ -252,16 +272,45 @@ test("concurrent IndexedDB compare-and-swap writes allow one winner", async () =
   );
   const rejection = results.find((result) => result.status === "rejected");
   assert.equal(rejection.reason.code, "conflict");
-  assert.ok(["first", "second"].includes(await filesystem.read("/notes.txt")));
-  assert.equal((await filesystem.listChanges()).length, 1);
+  const winningRead = await filesystem.read("/notes.txt");
+  assert.ok(["first", "second"].includes(winningRead.content));
+  assert.equal(winningRead.workspace_revision, 1);
+  assert.equal((await filesystem.listChanges()).changes.length, 1);
 
   const winner = await filesystem.read("/notes.txt");
   await assert.rejects(
     filesystem.remove("/notes.txt", { expected_content: "original" }),
     /changed before it could be removed/,
   );
-  await filesystem.remove("/notes.txt", { expected_content: winner });
+  const removed = await filesystem.remove("/notes.txt", {
+    expected_content: winner.content,
+  });
+  assert.equal(removed.workspace_revision, 2);
   await assert.rejects(filesystem.read("/notes.txt"), /File not found/);
+  database.close();
+});
+
+test("IndexedDB listings pair one atomic revision with their contents", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-versioned-list-${crypto.randomUUID()}`,
+  );
+  const provider = new IndexedDbWorkspaceBackend(database, {});
+  const workspace = await provider.create("project-1");
+  const operations = [];
+
+  for (let index = 0; index < 8; index += 1) {
+    operations.push(workspace.write(`/file-${index}.txt`, `${index}`));
+    operations.push(workspace.list("/"));
+  }
+
+  const results = await Promise.all(operations);
+  for (const result of results) {
+    if (!("entries" in result)) continue;
+    assert.equal(result.entries.length, result.workspace_revision);
+  }
+  assert.equal((await workspace.list("/")).workspace_revision, 8);
   database.close();
 });
 
@@ -306,8 +355,8 @@ test("stale IndexedDB handles cannot mutate a deleted or recreated project", asy
     stale.listChanges(),
     (error) => error.code === "conflict",
   );
-  assert.equal(await current.read("/current.txt"), "current");
-  assert.deepEqual(await current.listChanges(), []);
+  assert.equal((await current.read("/current.txt")).content, "current");
+  assert.deepEqual((await current.listChanges()).changes, []);
   database.close();
 });
 
@@ -575,7 +624,10 @@ test("IndexedDB v1 projects gain filesystem markers during migration", async () 
   const provider = new IndexedDbWorkspaceBackend(database, {});
   const filesystem = await provider.open("legacy-project");
 
-  assert.deepEqual(await filesystem.list("/"), []);
+  assert.deepEqual(await filesystem.list("/"), {
+    workspace_revision: 0,
+    entries: [],
+  });
   database.close();
 });
 
@@ -606,7 +658,10 @@ test("IndexedDB v2 filesystem markers gain stable incarnation ids", async () => 
   const database = new ResearchBoxDatabase(factory, databaseName);
   const provider = new IndexedDbWorkspaceBackend(database, {});
   const filesystem = await provider.open("legacy-project");
-  assert.equal(await filesystem.read("/legacy.txt"), "legacy");
+  assert.deepEqual(await filesystem.read("/legacy.txt"), {
+    workspace_revision: 0,
+    content: "legacy",
+  });
 
   const connection = await database.open();
   const verification = connection.transaction(
@@ -620,12 +675,223 @@ test("IndexedDB v2 filesystem markers gain stable incarnation ids", async () => 
   await verificationComplete;
   assert.equal(typeof marker.incarnation_id, "string");
   assert.notEqual(marker.incarnation_id, "");
+  assert.equal(marker.workspace_revision, 0);
+  assert.equal(marker.last_change_at, null);
+  assert.equal(marker.lifecycle_status, "active");
 
   const secondHandle = await provider.open("legacy-project");
   await secondHandle.write("/legacy.txt", "updated", {
     expected_content: "legacy",
   });
-  assert.equal(await filesystem.read("/legacy.txt"), "updated");
+  assert.deepEqual(await filesystem.read("/legacy.txt"), {
+    workspace_revision: 1,
+    content: "updated",
+  });
+  database.close();
+});
+
+test("IndexedDB v3 workspace markers gain durable revision metadata", async () => {
+  const factory = new IDBFactory();
+  const databaseName = `researchbox-revision-migration-${crypto.randomUUID()}`;
+  const legacyDatabase = await openVersionThreeDatabase(
+    factory,
+    databaseName,
+  );
+  const transaction = legacyDatabase.transaction(
+    ["project_filesystems", "file_changes"],
+    "readwrite",
+  );
+  const completion = transactionComplete(transaction);
+  transaction.objectStore("project_filesystems").put({
+    project_id: "legacy-project",
+    incarnation_id: "stable-incarnation",
+  });
+  const changes = transaction.objectStore("file_changes");
+  changes.put(
+    storedWorkspaceChange(
+      "legacy-project",
+      "later-change",
+      "2026-07-24T00:00:00.010Z",
+    ),
+  );
+  changes.put(
+    storedWorkspaceChange(
+      "legacy-project",
+      "earlier-change",
+      "2026-07-24T00:00:00.005Z",
+    ),
+  );
+  changes.put(
+    storedWorkspaceChange(
+      "legacy-project",
+      "tied-change",
+      "2026-07-24T00:00:00.010Z",
+    ),
+  );
+  changes.put(
+    storedWorkspaceChange(
+      "legacy-project",
+      "invalid-change",
+      "not-a-timestamp",
+    ),
+  );
+  await completion;
+  legacyDatabase.close();
+
+  const database = new ResearchBoxDatabase(factory, databaseName);
+  const provider = new IndexedDbWorkspaceBackend(database, {});
+  const workspace = await provider.open("legacy-project");
+  assert.deepEqual(await workspace.list("/"), {
+    workspace_revision: 4,
+    entries: [],
+  });
+
+  const connection = await database.open();
+  const verification = connection.transaction(
+    "project_filesystems",
+    "readonly",
+  );
+  const verificationComplete = transactionComplete(verification);
+  const marker = await requestValue(
+    verification.objectStore("project_filesystems").get("legacy-project"),
+  );
+  await verificationComplete;
+  assert.deepEqual(marker, {
+    project_id: "legacy-project",
+    incarnation_id: "stable-incarnation",
+    workspace_revision: 4,
+    last_change_at: "2026-07-24T00:00:00.010Z",
+    lifecycle_status: "active",
+  });
+
+  database.close();
+  const reopenedDatabase = new ResearchBoxDatabase(factory, databaseName);
+  const reopened = await new IndexedDbWorkspaceBackend(
+    reopenedDatabase,
+    {},
+  ).open("legacy-project");
+  assert.equal((await reopened.list("/")).workspace_revision, 4);
+  reopenedDatabase.close();
+});
+
+test("current IndexedDB markers lazily repair revision metadata", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-revision-repair-${crypto.randomUUID()}`,
+  );
+  const provider = new IndexedDbWorkspaceBackend(database, {});
+  const originalHandle = await provider.create("project-1");
+  const write = await originalHandle.write("/notes.txt", "persisted", {
+    change: workspaceChangeMetadata("repair-change", "write_file"),
+  });
+  const expectedTimestamp = write.result.change.created_at;
+
+  const connection = await database.open();
+  const readMarker = connection.transaction(
+    "project_filesystems",
+    "readonly",
+  );
+  const readMarkerComplete = transactionComplete(readMarker);
+  const originalMarker = await requestValue(
+    readMarker.objectStore("project_filesystems").get("project-1"),
+  );
+  await readMarkerComplete;
+
+  const damage = connection.transaction("project_filesystems", "readwrite");
+  const damageComplete = transactionComplete(damage);
+  damage.objectStore("project_filesystems").put({
+    project_id: "project-1",
+    incarnation_id: originalMarker.incarnation_id,
+  });
+  await damageComplete;
+
+  const repairedHandle = await provider.open("project-1");
+  assert.deepEqual(await repairedHandle.read("/notes.txt"), {
+    workspace_revision: 1,
+    content: "persisted",
+  });
+  assert.deepEqual(await originalHandle.read("/notes.txt"), {
+    workspace_revision: 1,
+    content: "persisted",
+  });
+
+  const verification = connection.transaction(
+    "project_filesystems",
+    "readonly",
+  );
+  const verificationComplete = transactionComplete(verification);
+  const repairedMarker = await requestValue(
+    verification.objectStore("project_filesystems").get("project-1"),
+  );
+  await verificationComplete;
+  assert.deepEqual(repairedMarker, {
+    project_id: "project-1",
+    incarnation_id: originalMarker.incarnation_id,
+    workspace_revision: 1,
+    last_change_at: expectedTimestamp,
+    lifecycle_status: "active",
+  });
+  database.close();
+});
+
+test("deleted IndexedDB markers without a revision fail closed", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-deleted-marker-repair-${crypto.randomUUID()}`,
+  );
+  const provider = new IndexedDbWorkspaceBackend(database, {});
+  await provider.create("project-1");
+  await provider.delete("project-1");
+
+  const connection = await database.open();
+  const readMarker = connection.transaction(
+    "project_filesystems",
+    "readonly",
+  );
+  const readMarkerComplete = transactionComplete(readMarker);
+  const tombstone = await requestValue(
+    readMarker.objectStore("project_filesystems").get("project-1"),
+  );
+  await readMarkerComplete;
+
+  const damage = connection.transaction("project_filesystems", "readwrite");
+  const damageComplete = transactionComplete(damage);
+  damage.objectStore("project_filesystems").put({
+    project_id: "project-1",
+    incarnation_id: tombstone.incarnation_id,
+    lifecycle_status: "deleted",
+  });
+  await damageComplete;
+
+  for (const operation of [
+    () => provider.open("project-1"),
+    () => provider.create("project-1"),
+    () => provider.delete("project-1"),
+  ]) {
+    await assert.rejects(
+      operation(),
+      (error) =>
+        error.name === "ProjectFileSystemMetadataError" &&
+        /no recoverable revision/.test(error.message),
+    );
+  }
+
+  const verifyDamage = connection.transaction(
+    "project_filesystems",
+    "readonly",
+  );
+  const verifyDamageComplete = transactionComplete(verifyDamage);
+  const damagedTombstone = await requestValue(
+    verifyDamage.objectStore("project_filesystems").get("project-1"),
+  );
+  await verifyDamageComplete;
+  assert.deepEqual(damagedTombstone, {
+    project_id: "project-1",
+    incarnation_id: tombstone.incarnation_id,
+    lifecycle_status: "deleted",
+  });
   database.close();
 });
 
@@ -646,7 +912,10 @@ test("current IndexedDB markers missing incarnation ids are repaired lazily", as
   await damageComplete;
 
   const repairedHandle = await provider.open("project-1");
-  assert.equal(await repairedHandle.read("/notes.txt"), "persisted");
+  assert.deepEqual(await repairedHandle.read("/notes.txt"), {
+    workspace_revision: 0,
+    content: "persisted",
+  });
   await assert.rejects(
     oldHandle.read("/notes.txt"),
     (error) => error.code === "conflict",
@@ -663,6 +932,9 @@ test("current IndexedDB markers missing incarnation ids are repaired lazily", as
   await verificationComplete;
   assert.equal(typeof marker.incarnation_id, "string");
   assert.notEqual(marker.incarnation_id, "");
+  assert.equal(marker.workspace_revision, 0);
+  assert.equal(marker.last_change_at, null);
+  assert.equal(marker.lifecycle_status, "active");
   database.close();
 });
 
@@ -679,7 +951,7 @@ test("a blocked IndexedDB upgrade can be retried without leaking its late connec
 
   legacyDatabase.close();
   const connection = await database.open();
-  assert.equal(connection.version, 3);
+  assert.equal(connection.version, 4);
 
   database.close();
   await Promise.resolve();
@@ -723,11 +995,11 @@ test("concurrent IndexedDB writes preserve file and directory path invariants", 
   );
 
   if (results[0].status === "fulfilled") {
-    assert.equal(await filesystem.read("/a"), "root file");
+    assert.equal((await filesystem.read("/a")).content, "root file");
     await assert.rejects(filesystem.read("/a/b"), /File not found/);
   } else {
     await assert.rejects(filesystem.read("/a"), /Path is a directory/);
-    assert.equal(await filesystem.read("/a/b"), "nested file");
+    assert.equal((await filesystem.read("/a/b")).content, "nested file");
   }
 
   database.close();
@@ -867,6 +1139,21 @@ function workspaceChangeMetadata(changeId, toolName) {
   };
 }
 
+function storedWorkspaceChange(projectId, changeId, createdAt) {
+  return {
+    project_id: projectId,
+    ...workspaceChangeMetadata(changeId, "write_file"),
+    created_at: createdAt,
+    path: `/${changeId}.txt`,
+    change_kind: "created",
+    before_content: null,
+    after_content: changeId,
+    additions: 1,
+    deletions: 0,
+    byte_size: changeId.length,
+  };
+}
+
 function emptyUsage() {
   return {
     input: 0,
@@ -936,6 +1223,37 @@ function openVersionTwoDatabase(factory, databaseName) {
         keyPath: ["project_id", "path"],
       });
       files.createIndex("by_project", "project_id", { unique: false });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function openVersionThreeDatabase(factory, databaseName) {
+  return new Promise((resolve, reject) => {
+    const request = factory.open(databaseName, 3);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      database.createObjectStore("meta", { keyPath: "key" });
+      database.createObjectStore("projects", { keyPath: "project_id" });
+      const sessions = database.createObjectStore("sessions", {
+        keyPath: "session_id",
+      });
+      sessions.createIndex("by_project", "project_id", { unique: false });
+      database.createObjectStore("session_documents", {
+        keyPath: "session_id",
+      });
+      database.createObjectStore("project_filesystems", {
+        keyPath: "project_id",
+      });
+      const files = database.createObjectStore("files", {
+        keyPath: ["project_id", "path"],
+      });
+      files.createIndex("by_project", "project_id", { unique: false });
+      const changes = database.createObjectStore("file_changes", {
+        keyPath: ["project_id", "change_id"],
+      });
+      changes.createIndex("by_project", "project_id", { unique: false });
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);

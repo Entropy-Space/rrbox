@@ -504,6 +504,19 @@ test("validates workspace change identity and numeric fields", () => {
       ),
     /additions must be a non-negative number/,
   );
+
+  assert.throws(
+    () =>
+      parseCoreEvent(
+        coreEvent("files_snapshot", {
+          project_id: "project-1",
+          path: "/",
+          workspace_revision: Number.MAX_SAFE_INTEGER + 1,
+          files: [],
+        }, "filesystem-request"),
+      ),
+    /workspace_revision must be a safe integer/,
+  );
 });
 
 test("validates provider inventories and active ownership", () => {

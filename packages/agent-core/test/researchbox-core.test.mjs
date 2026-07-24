@@ -1230,8 +1230,11 @@ test("workspace mutation tools persist receipts and emit live change events", as
   );
 
   const workspace = await provider.open(initial.active_project_id);
-  assert.equal(await workspace.read("/notes/agent-note.md"), finalContent);
-  const changes = await workspace.listChanges();
+  assert.equal(
+    (await workspace.read("/notes/agent-note.md")).content,
+    finalContent,
+  );
+  const { changes } = await workspace.listChanges();
   assert.equal(changes.length, 2);
   assert.deepEqual(
     changes.map((change) => ({
@@ -1325,6 +1328,7 @@ test("workspace mutation tools persist receipts and emit live change events", as
   const reloadedEvents = [];
   const reloaded = createCore(store, provider, reloadedEvents);
   await reloaded.handle(createCommand("bootstrap", {}));
+  assert.equal(latestState(reloadedEvents).workspace_revision, 2);
   assert.equal(
     latestState(reloadedEvents).timeline.filter(
       (entry) => entry.type === "tool_result",
@@ -1337,7 +1341,41 @@ test("workspace mutation tools persist receipts and emit live change events", as
     ),
     true,
   );
-  assert.equal(await workspace.read("/notes/agent-note.md"), finalContent);
+  assert.equal(
+    (await workspace.read("/notes/agent-note.md")).content,
+    finalContent,
+  );
+});
+
+test("core snapshots use backend revisions for unjournaled mutations", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+  const projectId = latestState(events).active_project_id;
+  const workspace = await provider.open(projectId);
+
+  const write = await workspace.write("/temporary.txt", "temporary");
+  assert.equal(write.workspace_revision, 1);
+  const remove = await workspace.remove("/temporary.txt", {
+    expected_content: "temporary",
+  });
+  assert.equal(remove.workspace_revision, 2);
+  assert.deepEqual(await workspace.listChanges(), {
+    workspace_revision: 2,
+    changes: [],
+  });
+
+  const reloadedEvents = [];
+  const reloaded = createCore(store, provider, reloadedEvents);
+  await reloaded.handle(createCommand("bootstrap", {}));
+  const snapshot = latestState(reloadedEvents);
+  assert.equal(snapshot.workspace_revision, 2);
+  assert.equal(
+    snapshot.files.some((entry) => entry.path === "/temporary.txt"),
+    false,
+  );
 });
 
 test("reload recovers a committed mutation from its durable receipt", async () => {
@@ -1414,7 +1452,11 @@ test("reload recovers a committed mutation from its durable receipt", async () =
     },
   );
   assert.equal(
-    await (await provider.open(initial.active_project_id)).read("/recovered.txt"),
+    (
+      await (await provider.open(initial.active_project_id)).read(
+        "/recovered.txt",
+      )
+    ).content,
     "committed before reload\n",
   );
 });
@@ -1465,13 +1507,18 @@ test("reload matches a legacy mutation receipt by migrated message identity", as
 
   const workspace = await provider.open(initial.active_project_id);
   const listChanges = workspace.listChanges.bind(workspace);
-  workspace.listChanges = async () =>
-    (await listChanges()).map((record) => ({
-      ...record,
-      tool_call_block_id: null,
-      legacy_message_id: assistant.entry_id,
-      assistant_message_index: 999,
-    }));
+  workspace.listChanges = async () => {
+    const journal = await listChanges();
+    return {
+      ...journal,
+      changes: journal.changes.map((record) => ({
+        ...record,
+        tool_call_block_id: null,
+        legacy_message_id: assistant.entry_id,
+        assistant_message_index: 999,
+      })),
+    };
+  };
 
   const reloaded = createCore(store, provider, []);
   await reloaded.handle(createCommand("bootstrap", {}));
@@ -1615,7 +1662,7 @@ test("reload never reuses an old receipt for a repeated provider tool id", async
   );
 
   const workspace = await provider.open(initial.active_project_id);
-  const changes = await workspace.listChanges();
+  const { changes } = await workspace.listChanges();
   assert.equal(changes.length, 1);
   assert.equal(changes[0].assistant_message_index, 1);
 
@@ -1665,7 +1712,7 @@ test("reload never reuses an old receipt for a repeated provider tool id", async
   assert.equal(repeatedResult.tool_call_block_id, repeatedCall.block_id);
   assert.equal(repeatedResult.is_error, true);
   assert.equal(repeatedResult.file_change, undefined);
-  assert.equal(await workspace.read("/same.txt"), "same content\n");
+  assert.equal((await workspace.read("/same.txt")).content, "same content\n");
 });
 
 test("replace_text rejects overlapping matches without changing the file", async () => {
@@ -1710,8 +1757,8 @@ test("replace_text rejects overlapping matches without changing the file", async
     }),
   );
 
-  assert.equal(await workspace.read("/overlap.txt"), "aaa");
-  assert.deepEqual(await workspace.listChanges(), []);
+  assert.equal((await workspace.read("/overlap.txt")).content, "aaa");
+  assert.deepEqual((await workspace.listChanges()).changes, []);
   const toolResult = (await store.load()).documents[0].timeline.find(
     (entry) => entry.type === "tool_result",
   );

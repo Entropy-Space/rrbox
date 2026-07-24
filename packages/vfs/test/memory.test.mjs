@@ -24,7 +24,7 @@ test("lists a deterministic file and directory view", async () => {
     "/src/index.ts": "export {};",
   });
 
-  assert.deepEqual(await filesystem.list("/"), [
+  assert.deepEqual((await filesystem.list("/")).entries, [
     { name: "src", path: "/src", kind: "directory", size: 0 },
     { name: "README.md", path: "/README.md", kind: "file", size: 5 },
   ]);
@@ -74,16 +74,21 @@ test("reads and overwrites text files", async () => {
   await filesystem.write("/notes/today.md", "first");
   await filesystem.write("/notes/today.md", "second");
 
-  assert.equal(await filesystem.read("/notes/today.md"), "second");
+  assert.equal(
+    (await filesystem.read("/notes/today.md")).content,
+    "second",
+  );
 });
 
 test("returns atomic write results and records compact workspace changes", async () => {
   const filesystem = new MemoryWorkspace();
-  const created = await filesystem.write(
+  const createdWrite = await filesystem.write(
     "/notes/today.md",
     "alpha\nbeta\n",
     { change: changeMetadata("change-1", "write_file") },
   );
+  const created = createdWrite.result;
+  assert.equal(createdWrite.workspace_revision, 1);
   assert.deepEqual(created, {
     path: "/notes/today.md",
     change_kind: "created",
@@ -101,13 +106,18 @@ test("returns atomic write results and records compact workspace changes", async
     },
   });
   created.change.path = "/tampered.txt";
-  assert.equal((await filesystem.listChanges())[0].path, "/notes/today.md");
+  assert.equal(
+    (await filesystem.listChanges()).changes[0].path,
+    "/notes/today.md",
+  );
 
-  const updated = await filesystem.write(
+  const updatedWrite = await filesystem.write(
     "/notes/today.md",
     "alpha\ngamma\n",
     { change: changeMetadata("change-2", "replace_text") },
   );
+  const updated = updatedWrite.result;
+  assert.equal(updatedWrite.workspace_revision, 2);
   assert.equal(updated.change_kind, "updated");
   assert.deepEqual(
     {
@@ -118,15 +128,19 @@ test("returns atomic write results and records compact workspace changes", async
     { additions: 1, deletions: 1, byte_size: 12 },
   );
 
-  const unchanged = await filesystem.write(
+  const unchangedWrite = await filesystem.write(
     "/notes/today.md",
     "alpha\ngamma\n",
     { change: changeMetadata("change-3", "write_file") },
   );
+  const unchanged = unchangedWrite.result;
+  assert.equal(unchangedWrite.workspace_revision, 2);
   assert.equal(unchanged.change_kind, "unchanged");
   assert.equal(unchanged.change, null);
   assert.deepEqual(
-    (await filesystem.listChanges()).map((change) => change.change_id),
+    (await filesystem.listChanges()).changes.map(
+      (change) => change.change_id,
+    ),
     ["change-1", "change-2"],
   );
 });
@@ -140,7 +154,7 @@ test("compare-and-swap writes reject stale content without mutation", async () =
     }),
     (error) => error instanceof VfsError && error.code === "conflict",
   );
-  assert.equal(await filesystem.read("/notes.txt"), "original");
+  assert.equal((await filesystem.read("/notes.txt")).content, "original");
 
   await filesystem.write("/notes.txt", "updated", {
     expected_content: "original",
@@ -173,7 +187,11 @@ test("only one concurrent compare-and-swap write can commit", async () => {
     results.filter((result) => result.status === "rejected").length,
     1,
   );
-  assert.ok(["first", "second"].includes(await filesystem.read("/notes.txt")));
+  assert.ok(
+    ["first", "second"].includes(
+      (await filesystem.read("/notes.txt")).content,
+    ),
+  );
 });
 
 test("duplicate workspace change ids roll back the file mutation", async () => {
@@ -189,7 +207,7 @@ test("duplicate workspace change ids roll back the file mutation", async () => {
     filesystem.read("/second.txt"),
     (error) => error instanceof VfsError && error.code === "not_found",
   );
-  assert.equal((await filesystem.listChanges()).length, 1);
+  assert.equal((await filesystem.listChanges()).changes.length, 1);
 });
 
 test("guarded removal cannot delete a changed file or a directory", async () => {
@@ -201,7 +219,10 @@ test("guarded removal cannot delete a changed file or a directory", async () => 
     filesystem.remove("/notes/today.md", { expected_content: "stale" }),
     (error) => error instanceof VfsError && error.code === "conflict",
   );
-  assert.equal(await filesystem.read("/notes/today.md"), "current");
+  assert.equal(
+    (await filesystem.read("/notes/today.md")).content,
+    "current",
+  );
   await assert.rejects(
     filesystem.remove("/notes"),
     (error) => error instanceof VfsError && error.code === "is_directory",

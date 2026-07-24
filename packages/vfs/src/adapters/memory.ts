@@ -3,21 +3,29 @@ import {
   compareVfsEntries,
   compareWorkspaceChanges,
   createVfsWriteResult,
+  incrementWorkspaceRevision,
   normalizeFilePath,
   normalizePath,
+  normalizeWorkspaceChangeTimestamp,
   normalizeVfsSeedFiles,
   VfsError,
   type VfsEntry,
   type VfsRemoveOptions,
   type VfsWriteOptions,
-  type VfsWriteResult,
   type Workspace,
   type WorkspaceChangeRecord,
+  type WorkspaceChangesResult,
+  type WorkspaceListResult,
+  type WorkspaceReadResult,
+  type WorkspaceRemoveResult,
+  type WorkspaceWriteResult,
 } from "../filesystem.ts";
 
 export class MemoryWorkspace implements Workspace {
   private readonly files = new Map<string, string>();
   private readonly changes = new Map<string, WorkspaceChangeRecord>();
+  private workspaceRevision = 0;
+  private lastChangeAt: string | null = null;
 
   constructor(seed: Record<string, string> = {}) {
     for (const { path, content } of normalizeVfsSeedFiles(seed)) {
@@ -25,7 +33,7 @@ export class MemoryWorkspace implements Workspace {
     }
   }
 
-  async list(path: string): Promise<VfsEntry[]> {
+  async list(path: string): Promise<WorkspaceListResult> {
     const normalizedPath = normalizePath(path);
     if (this.files.has(normalizedPath)) {
       throw new VfsError(
@@ -64,13 +72,21 @@ export class MemoryWorkspace implements Workspace {
       }
     }
 
-    return [...entries.values()].sort(compareVfsEntries);
+    return {
+      workspace_revision: this.workspaceRevision,
+      entries: [...entries.values()].sort(compareVfsEntries),
+    };
   }
 
-  async read(path: string): Promise<string> {
+  async read(path: string): Promise<WorkspaceReadResult> {
     const normalizedPath = normalizeFilePath(path);
     const content = this.files.get(normalizedPath);
-    if (content !== undefined) return content;
+    if (content !== undefined) {
+      return {
+        workspace_revision: this.workspaceRevision,
+        content,
+      };
+    }
     if (this.hasDescendants(normalizedPath)) {
       throw new VfsError("is_directory", `Path is a directory: ${normalizedPath}`);
     }
@@ -81,33 +97,56 @@ export class MemoryWorkspace implements Workspace {
     path: string,
     content: string,
     options?: VfsWriteOptions,
-  ): Promise<VfsWriteResult> {
+  ): Promise<WorkspaceWriteResult> {
     const normalizedPath = normalizeFilePath(path);
     this.assertWritablePath(normalizedPath);
     const beforeContent = this.files.get(normalizedPath) ?? null;
     assertVfsWriteExpectation(normalizedPath, beforeContent, options);
+    const change =
+      options?.change === undefined
+        ? undefined
+        : normalizeWorkspaceChangeTimestamp(
+            options.change,
+            this.lastChangeAt,
+          );
     const result = createVfsWriteResult(
       normalizedPath,
       beforeContent,
       content,
-      options?.change,
+      change,
     );
-    if (result.change_kind === "unchanged") return result;
+    if (result.change_kind === "unchanged") {
+      return {
+        workspace_revision: this.workspaceRevision,
+        result,
+      };
+    }
     if (result.change && this.changes.has(result.change.change_id)) {
       throw new VfsError(
         "conflict",
         `Workspace change already exists: ${result.change.change_id}`,
       );
     }
+    const workspaceRevision = incrementWorkspaceRevision(
+      this.workspaceRevision,
+    );
 
     this.files.set(normalizedPath, content);
     if (result.change) {
       this.changes.set(result.change.change_id, { ...result.change });
+      this.lastChangeAt = result.change.created_at;
     }
-    return result;
+    this.workspaceRevision = workspaceRevision;
+    return {
+      workspace_revision: this.workspaceRevision,
+      result,
+    };
   }
 
-  async remove(path: string, options?: VfsRemoveOptions): Promise<void> {
+  async remove(
+    path: string,
+    options?: VfsRemoveOptions,
+  ): Promise<WorkspaceRemoveResult> {
     const normalizedPath = normalizeFilePath(path);
     const content = this.files.get(normalizedPath);
     if (content === undefined) {
@@ -128,13 +167,23 @@ export class MemoryWorkspace implements Workspace {
         `File changed before it could be removed: ${normalizedPath}`,
       );
     }
+    const workspaceRevision = incrementWorkspaceRevision(
+      this.workspaceRevision,
+    );
     this.files.delete(normalizedPath);
+    this.workspaceRevision = workspaceRevision;
+    return {
+      workspace_revision: this.workspaceRevision,
+    };
   }
 
-  async listChanges(): Promise<WorkspaceChangeRecord[]> {
-    return [...this.changes.values()]
-      .sort(compareWorkspaceChanges)
-      .map((change) => ({ ...change }));
+  async listChanges(): Promise<WorkspaceChangesResult> {
+    return {
+      workspace_revision: this.workspaceRevision,
+      changes: [...this.changes.values()]
+        .sort(compareWorkspaceChanges)
+        .map((change) => ({ ...change })),
+    };
   }
 
   private assertWritablePath(normalizedPath: string): void {

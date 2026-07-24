@@ -1364,7 +1364,8 @@ async function reconcileWorkspaceChanges(
   const changesByProject = new Map<string, WorkspaceChangeRecord[]>();
   for (const project of state.projects) {
     const workspace = await workspaceBackend.open(project.project_id);
-    changesByProject.set(project.project_id, await workspace.listChanges());
+    const journal = await workspace.listChanges();
+    changesByProject.set(project.project_id, journal.changes);
   }
 
   let reconciled = false;

@@ -982,7 +982,9 @@ function applySnapshot(
   requestId?: string,
 ): AgentSessionState {
   const preserveWorkspace =
-    state.is_ready && state.active_project_id === snapshot.active_project_id;
+    state.is_ready &&
+    state.active_project_id === snapshot.active_project_id &&
+    snapshot.workspace_revision <= state.workspace_revision;
   const scopeChanged =
     state.active_project_id !== snapshot.active_project_id ||
     state.active_session_id !== snapshot.active_session_id;

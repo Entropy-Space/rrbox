@@ -59,6 +59,30 @@ export type VfsSeedFile = {
   content: string;
 };
 
+export type WorkspaceListResult = {
+  workspace_revision: number;
+  entries: VfsEntry[];
+};
+
+export type WorkspaceReadResult = {
+  workspace_revision: number;
+  content: string;
+};
+
+export type WorkspaceWriteResult = {
+  workspace_revision: number;
+  result: VfsWriteResult;
+};
+
+export type WorkspaceRemoveResult = {
+  workspace_revision: number;
+};
+
+export type WorkspaceChangesResult = {
+  workspace_revision: number;
+  changes: WorkspaceChangeRecord[];
+};
+
 export class VfsError extends Error {
   public readonly code: VfsErrorCode;
 
@@ -70,8 +94,8 @@ export class VfsError extends Error {
 }
 
 export interface WorkspaceReader {
-  list(path: string): Promise<VfsEntry[]>;
-  read(path: string): Promise<string>;
+  list(path: string): Promise<WorkspaceListResult>;
+  read(path: string): Promise<WorkspaceReadResult>;
 }
 
 export interface WorkspaceWriter {
@@ -79,12 +103,15 @@ export interface WorkspaceWriter {
     path: string,
     content: string,
     options?: VfsWriteOptions,
-  ): Promise<VfsWriteResult>;
-  remove(path: string, options?: VfsRemoveOptions): Promise<void>;
+  ): Promise<WorkspaceWriteResult>;
+  remove(
+    path: string,
+    options?: VfsRemoveOptions,
+  ): Promise<WorkspaceRemoveResult>;
 }
 
 export interface WorkspaceChangeJournal {
-  listChanges(): Promise<WorkspaceChangeRecord[]>;
+  listChanges(): Promise<WorkspaceChangesResult>;
 }
 
 /**
@@ -95,9 +122,17 @@ export interface WorkspaceChangeJournal {
  * physical representation or metadata when the host filesystem cannot do so.
  * The native on-disk representation is not part of this contract.
  *
- * Implementations must commit a changed file and its optional change receipt
- * atomically. They must also provide exact compare-and-swap behavior through
- * `expected_content`; these guarantees are not optional backend capabilities.
+ * A project's first workspace incarnation starts at revision zero; replacement
+ * incarnations continue that project id's sequence, with lifecycle deletion
+ * reserving their baseline revision. Every changed write or successful removal
+ * increments the revision exactly once; unchanged and failed operations do not
+ * increment it. Each operation returns the revision that was observed or
+ * committed atomically with its result.
+ *
+ * Implementations must commit a changed file, its optional change receipt,
+ * receipt clock, and revision atomically. They must also provide exact
+ * compare-and-swap behavior through `expected_content`; these guarantees are
+ * not optional backend capabilities.
  */
 export interface Workspace
   extends WorkspaceReader,
@@ -136,6 +171,51 @@ export function compareWorkspaceChanges(
   return left.created_at === right.created_at
     ? compareVfsStrings(left.change_id, right.change_id)
     : compareVfsStrings(left.created_at, right.created_at);
+}
+
+export function normalizeWorkspaceChangeTimestamp(
+  change: WorkspaceChangeMetadata,
+  lastChangeAt: string | null,
+): WorkspaceChangeMetadata {
+  const candidate = Date.parse(change.created_at);
+  const requestedTimestamp = Number.isFinite(candidate)
+    ? candidate
+    : Date.now();
+  const previous = lastChangeAt === null ? NaN : Date.parse(lastChangeAt);
+  const timestamp = Math.max(
+    requestedTimestamp,
+    Number.isFinite(previous) ? previous + 1 : requestedTimestamp,
+  );
+  return {
+    ...change,
+    created_at: new Date(timestamp).toISOString(),
+  };
+}
+
+export function incrementWorkspaceRevision(revision: number): number {
+  if (!Number.isSafeInteger(revision) || revision < 0) {
+    throw new VfsError("conflict", "Workspace revision is invalid.");
+  }
+  if (revision === Number.MAX_SAFE_INTEGER) {
+    throw new VfsError("conflict", "Workspace revision is exhausted.");
+  }
+  return revision + 1;
+}
+
+export function offsetWorkspaceRevision(
+  revision: number,
+  offset: number,
+): number {
+  if (
+    !Number.isSafeInteger(revision) ||
+    revision < 0 ||
+    !Number.isSafeInteger(offset) ||
+    offset < 0 ||
+    revision > Number.MAX_SAFE_INTEGER - offset
+  ) {
+    throw new VfsError("conflict", "Workspace revision is invalid.");
+  }
+  return revision + offset;
 }
 
 export function createVfsWriteResult(

@@ -94,7 +94,10 @@ IndexedDB database. A new chat remains project-scoped draft state until its
 first prompt; its selected model, staged user timeline entry, session, and
 cleared project draft commit atomically before model transport starts. Existing
 chats retain their own model selection. File mutations use compare-and-swap
-writes; the file and its receipt share one IndexedDB transaction.
+writes; file content, an optional receipt, the durable workspace revision, and
+the monotonic receipt clock share one IndexedDB transaction. Version-4 storage
+backfills legacy workspace revisions from receipt counts, which preserves the
+only revision baseline recoverable from older databases.
 
 Provider discovery starts independently from workspace ownership. A browser
 runtime coordinator exposes provider catalog snapshots immediately, routes
@@ -109,4 +112,9 @@ Optional OPFS, native-folder, and iOS backends can implement the same structural
 workspace capabilities. ZIP is a portable import/export codec rather than a
 live filesystem backend. Workspace paths are case-sensitive Unicode logical
 paths; native adapters may encode their physical names to preserve collisions
-that the host filesystem cannot represent directly.
+that the host filesystem cannot represent directly. Every workspace operation
+returns a durable content revision from the same atomic read or mutation;
+revisions include unjournaled writes and removals and therefore are not derived
+from change-receipt count. Recreating a deleted project id continues its
+sequence through a durable tombstone instead of resetting cached content to an
+apparently older revision.

@@ -32,9 +32,11 @@ The viewer and core worker exchange only protocol-v7 JSON values. A
 identifies that project's single virtual new chat, while incremental run events
 always identify a durable session. Filesystem and draft acknowledgements use a
 required request identifier, while authoritative snapshots use a monotonic
-state revision. Workspace reads also carry a project-scoped
-`workspace_revision`; mutation events identify the changed path so the viewer
-can refresh its directory and selected file without accepting stale responses.
+state revision. Every workspace operation also carries a project-scoped
+`workspace_revision` captured atomically with the data it read or the mutation
+it committed. This is a backend content version, independent from the number
+of change receipts. Mutation events identify the changed path so the viewer can
+refresh its directory and selected file without accepting stale responses.
 Together these prevent late work from replacing a newer project, chat, draft,
 or file-navigation result. The core and LLM workers use a separate protocol-v4
 JSON contract so provider discovery, full conversation requests, provider I/O,
@@ -145,7 +147,15 @@ The workspace contract is split into structural `WorkspaceReader`,
 `WorkspaceWriter`, and `WorkspaceChangeJournal` capabilities so consumers
 depend only on operations they use. Compare-and-swap writes and atomic
 file-plus-receipt commits are mandatory semantics, not optional capability
-flags.
+flags. A project id's first workspace starts at revision zero; replacements
+continue the same sequence so cached content can never mistake a new
+incarnation for older data. Deleting an active workspace reserves exactly one
+revision for its possible replacement, while repeated idempotent deletion does
+not. Each changed write or successful removal increments exactly once, while
+unchanged and failed operations do not. Initial seeds form the first
+revision-zero baseline. A deleted marker whose revision is missing or invalid
+cannot be reconstructed after its files and receipts have been cleared, so a
+durable backend must fail closed instead of resetting that project sequence.
 
 - memory: implemented deterministic test backend
 - IndexedDB: implemented durable browser backend
@@ -160,6 +170,9 @@ of the portable contract. Logical paths are case-sensitive Unicode and preserve
 distinct normalization forms. Native backends must use an encoded physical
 representation or metadata where a host filesystem cannot preserve that
 namespace exactly; their on-disk representation is not a public contract.
+Deleted workspace markers retain only the next project-scoped revision so
+reusing an identifier cannot move the viewer's cache backwards; file content
+and change receipts are still removed.
 Backend-specific optional behavior must be added through explicit capability
 interfaces rather than runtime checks inside the agent core. All concrete
 backends run the same shared conformance suite.

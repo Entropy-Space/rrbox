@@ -1257,8 +1257,8 @@ function requireNonNegativeInteger(
   field: string,
 ): number {
   const candidate = requireNonNegativeNumber(value, field);
-  if (!Number.isInteger(candidate)) {
-    throw new Error(`${field} must be an integer.`);
+  if (!Number.isSafeInteger(candidate)) {
+    throw new Error(`${field} must be a safe integer.`);
   }
   return candidate;
 }

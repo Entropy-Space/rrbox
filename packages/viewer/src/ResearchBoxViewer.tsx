@@ -48,9 +48,14 @@ import {
 } from "./timeline-rendering.ts";
 import { useAgentSession } from "./use-agent-session.ts";
 import { WorkspaceSidebar } from "./WorkspaceSidebar.tsx";
+import {
+  useWorkspaceTransfer,
+  type WorkspaceTransferAdapter,
+} from "./workspace-transfer.ts";
 
 export type ResearchBoxViewerProps = {
   createWorker: () => Worker;
+  workspaceTransferAdapter?: WorkspaceTransferAdapter;
 };
 
 const suggestions = [
@@ -76,7 +81,10 @@ const suggestions = [
   },
 ];
 
-export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
+export function ResearchBoxViewer({
+  createWorker,
+  workspaceTransferAdapter,
+}: ResearchBoxViewerProps) {
   const {
     coreState,
     transportError,
@@ -90,6 +98,8 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
     renameProject,
     deleteProject,
     selectProject,
+    importProject,
+    exportWorkspace,
     selectNewChat,
     selectModel,
     refreshProvider,
@@ -145,11 +155,41 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
     [selectNewChat],
   );
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
+  const isWorkspaceTransferDisabled =
+    !coreState.is_ready ||
+    isManagementPending ||
+    isInputDraftPending ||
+    coreState.is_running ||
+    coreState.pending_prompt !== null ||
+    coreState.pending_fs_list !== null ||
+    coreState.pending_fs_read !== null ||
+    coreState.pending_workspace_refresh !== null ||
+    refreshingProviderIds.size > 0;
+  const {
+    notice: workspaceTransferNotice,
+    isPending: isWorkspaceTransferPending,
+    importWorkspace,
+    exportProjectWorkspace,
+    cancelWorkspaceTransfer,
+    consumeImportFocusSuppression,
+  } = useWorkspaceTransfer({
+    adapter: workspaceTransferAdapter,
+    importProject,
+    exportWorkspace,
+    isDisabled: isWorkspaceTransferDisabled,
+  });
+  const isSidebarPending =
+    isManagementPending ||
+    isInputDraftPending ||
+    coreState.is_running ||
+    coreState.pending_prompt !== null ||
+    isWorkspaceTransferPending;
 
   useEffect(() => {
-    if (!coreState.is_ready) return;
+    if (!coreState.is_ready || consumeImportFocusSuppression()) return;
     composerRef.current?.focus();
   }, [
+    consumeImportFocusSuppression,
     coreState.active_project_id,
     coreState.active_session_id,
     coreState.is_ready,
@@ -208,17 +248,27 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
         sessions={coreState.sessions}
         activeProjectId={coreState.active_project_id}
         activeSessionId={coreState.active_session_id}
-        isPending={
-          isManagementPending ||
-          isInputDraftPending ||
-          coreState.is_running ||
-          coreState.pending_prompt !== null
+        isPending={isSidebarPending}
+        isWorkspaceTransferDisabled={
+          isWorkspaceTransferDisabled || isWorkspaceTransferPending
         }
         onClose={closeSidebar}
         onCreateProject={createProject}
         onRenameProject={renameProject}
         onDeleteProject={deleteProject}
         onSelectProject={selectProject}
+        onImportProject={
+          workspaceTransferAdapter ? importWorkspace : undefined
+        }
+        onExportProject={
+          workspaceTransferAdapter ? exportProjectWorkspace : undefined
+        }
+        workspaceTransferNotice={
+          workspaceTransferAdapter ? workspaceTransferNotice : null
+        }
+        onCancelWorkspaceTransfer={
+          workspaceTransferAdapter ? cancelWorkspaceTransfer : undefined
+        }
         onSelectNewChat={selectNewChatAndFocus}
         onRenameSession={renameSession}
         onDeleteSession={deleteSession}
@@ -248,7 +298,8 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
                 !coreState.is_ready ||
                 coreState.is_running ||
                 isManagementPending ||
-                coreState.pending_prompt !== null
+                coreState.pending_prompt !== null ||
+                isWorkspaceTransferPending
               }
               onSelect={selectModel}
               onRefresh={refreshProvider}
@@ -284,7 +335,11 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
           <div className="conversation-column">
             {!hasConversation ? (
               <EmptyConversation
-                isReady={coreState.is_ready && isActiveModelReady}
+                isReady={
+                  coreState.is_ready &&
+                  isActiveModelReady &&
+                  !isWorkspaceTransferPending
+                }
                 onSelectPrompt={submitDraft}
               />
             ) : (
@@ -326,7 +381,11 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
                   rows={1}
                   aria-label="Message ResearchBox"
                   placeholder="Message ResearchBox"
-                  disabled={!coreState.is_ready || isManagementPending}
+                  disabled={
+                    !coreState.is_ready ||
+                    isManagementPending ||
+                    isWorkspaceTransferPending
+                  }
                   onChange={(event) => updateInputDraft(event.target.value)}
                   onKeyDown={handleComposerKeyDown}
                 />
@@ -366,6 +425,7 @@ export function ResearchBoxViewer({ createWorker }: ResearchBoxViewerProps) {
                           !coreState.is_ready ||
                           !isActiveModelReady ||
                           isManagementPending ||
+                          isWorkspaceTransferPending ||
                           coreState.pending_prompt !== null
                         }
                       >

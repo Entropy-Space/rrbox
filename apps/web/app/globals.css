@@ -200,6 +200,12 @@ textarea:focus-visible {
   background: var(--sidebar-hover);
 }
 
+.section-label .section-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .entity-list {
   display: grid;
   gap: 1px;
@@ -1680,6 +1686,38 @@ textarea:focus-visible {
   border-color: #f0caca;
   background: #fff6f6;
   color: #923a3a;
+}
+
+.sidebar .status-banner:focus-visible {
+  outline: 2px solid #2f7ff7;
+  outline-offset: 2px;
+}
+
+.sidebar .status-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar .status-banner > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sidebar .status-banner-action {
+  min-height: 26px;
+  flex: 0 0 auto;
+  padding: 0 8px;
+  cursor: pointer;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.sidebar .status-banner-action:hover {
+  background: rgba(120, 90, 25, 0.08);
 }
 
 .workspace-panel {

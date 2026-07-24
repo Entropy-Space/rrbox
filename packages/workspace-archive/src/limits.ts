@@ -4,6 +4,11 @@ import {
   type WorkspaceArchiveOptions,
 } from "./types.ts";
 
+export type {
+  WorkspaceArchiveLimits,
+  WorkspaceArchiveOptions,
+} from "./types.ts";
+
 const MEBIBYTE = 1024 * 1024;
 
 export const DEFAULT_WORKSPACE_ARCHIVE_LIMITS: Readonly<WorkspaceArchiveLimits> =

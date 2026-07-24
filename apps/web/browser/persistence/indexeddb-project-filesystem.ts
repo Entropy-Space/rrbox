@@ -1,6 +1,7 @@
 import {
   assertVfsWriteExpectation,
   compareVfsEntries,
+  compareVfsStrings,
   compareWorkspaceChanges,
   createVfsWriteResult,
   incrementWorkspaceRevision,
@@ -21,6 +22,8 @@ import {
   type WorkspaceCreateOptions,
   type WorkspaceChangeRecord,
   type WorkspaceChangesResult,
+  type WorkspaceFilesSnapshotOptions,
+  type WorkspaceFilesSnapshotResult,
   type WorkspaceListResult,
   type WorkspaceReadResult,
   type WorkspaceRemoveResult,
@@ -222,6 +225,13 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
   }
 
   async delete(projectId: string): Promise<void> {
+    return this.deleteWorkspace(projectId);
+  }
+
+  private async deleteWorkspace(
+    projectId: string,
+    expectedIncarnationId?: string,
+  ): Promise<void> {
     const database = await this.database.open();
     const transaction = database.transaction(
       [
@@ -278,6 +288,14 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
           assertIndexedDbContentStorage(marker);
         }
       }
+      if (
+        expectedIncarnationId !== undefined &&
+        (marker?.lifecycle_status !== "active" ||
+          marker.incarnation_id !== expectedIncarnationId)
+      ) {
+        await completion;
+        return;
+      }
       for (const key of fileKeys) fileStore.delete(key);
       for (const change of changes) {
         changeStore.delete([projectId, change.change_id]);
@@ -320,6 +338,54 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
       await completion;
     } catch (error) {
       return abortTransaction(transaction, completion, error);
+    }
+  }
+
+  async reconcileOrphanedWorkspaces(
+    retainedProjectIds: readonly string[],
+  ): Promise<void> {
+    const retained = new Set(retainedProjectIds);
+    const database = await this.database.open();
+    const transaction = database.transaction(
+      databaseStores.project_filesystems,
+      "readonly",
+    );
+    const completion = transactionDone(transaction);
+    let orphanedWorkspaces: Array<{
+      project_id: string;
+      incarnation_id: string;
+    }>;
+    try {
+      const records = (await requestResult(
+        transaction
+          .objectStore(databaseStores.project_filesystems)
+          .getAll(),
+      )) as Array<Partial<ProjectFileSystemRecord>>;
+      orphanedWorkspaces = records
+        .filter(
+          (record): record is Partial<ProjectFileSystemRecord> & {
+            project_id: string;
+            incarnation_id: string;
+          } =>
+            typeof record.project_id === "string" &&
+            typeof record.incarnation_id === "string" &&
+            record.lifecycle_status !== "deleted" &&
+            !retained.has(record.project_id),
+        )
+        .map((record) => ({
+          project_id: record.project_id,
+          incarnation_id: record.incarnation_id,
+        }));
+      await completion;
+    } catch (error) {
+      return abortTransaction(transaction, completion, error);
+    }
+
+    for (const orphan of orphanedWorkspaces) {
+      await this.deleteWorkspace(
+        orphan.project_id,
+        orphan.incarnation_id,
+      );
     }
   }
 }
@@ -390,6 +456,19 @@ class IndexedDbWorkspace implements Workspace {
       throw new VfsError("is_directory", `Path is a directory: ${normalizedPath}`);
     }
     throw new VfsError("not_found", `File not found: ${normalizedPath}`);
+  }
+
+  async readFilesSnapshot(
+    options?: WorkspaceFilesSnapshotOptions,
+  ): Promise<WorkspaceFilesSnapshotResult> {
+    const { marker, records } = await this.loadProjectFiles(options?.signal);
+    throwIfAborted(options?.signal);
+    return {
+      workspace_revision: marker.workspace_revision,
+      files: records
+        .map(({ path, content }) => ({ path, content }))
+        .sort((left, right) => compareVfsStrings(left.path, right.path)),
+    };
   }
 
   async write(
@@ -582,16 +661,26 @@ class IndexedDbWorkspace implements Workspace {
     }
   }
 
-  private async loadProjectFiles(): Promise<{
+  private async loadProjectFiles(signal?: AbortSignal): Promise<{
     marker: ProjectFileSystemRecord;
     records: FileRecord[];
   }> {
+    throwIfAborted(signal);
     const database = await this.database.open();
+    throwIfAborted(signal);
     const transaction = database.transaction(
       [databaseStores.project_filesystems, databaseStores.files],
       "readonly",
     );
     const completion = transactionDone(transaction);
+    const abort = () => {
+      try {
+        transaction.abort();
+      } catch {
+        // The transaction already completed or aborted.
+      }
+    };
+    signal?.addEventListener("abort", abort, { once: true });
     try {
       const marker = await assertActiveProjectFileSystem(
         transaction,
@@ -605,9 +694,16 @@ class IndexedDbWorkspace implements Workspace {
           .getAll(this.projectId),
       )) as FileRecord[];
       await completion;
+      throwIfAborted(signal);
       return { marker, records };
     } catch (error) {
-      return abortTransaction(transaction, completion, error);
+      return abortTransaction(
+        transaction,
+        completion,
+        signal?.aborted ? abortReason(signal) : error,
+      );
+    } finally {
+      signal?.removeEventListener("abort", abort);
     }
   }
 }
@@ -741,4 +837,14 @@ async function abortTransaction(
   }
   await completion.catch(() => undefined);
   throw error;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw abortReason(signal);
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ??
+    new DOMException("The workspace snapshot was aborted.", "AbortError");
 }

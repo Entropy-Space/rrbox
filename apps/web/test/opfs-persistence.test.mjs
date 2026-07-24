@@ -7,6 +7,7 @@ import {
   defineDurableWorkspaceBackendConformance,
   defineWorkspaceBackendConformance,
 } from "@researchbox/vfs-testkit";
+import { capturePortableWorkspace } from "@researchbox/workspace-archive/snapshot";
 import {
   BrowserWorkspaceBackend,
   databaseStores,
@@ -46,6 +47,100 @@ const opfsConformance = {
 
 defineWorkspaceBackendConformance(opfsConformance);
 defineDurableWorkspaceBackendConformance(opfsConformance);
+
+test("OPFS export captures metadata once and reads each immutable object once", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-opfs-bulk-snapshot-${crypto.randomUUID()}`,
+  );
+  const objects = new MemoryWorkspaceObjectStore();
+  const backend = new OpfsWorkspaceBackend(database, objects, {});
+  const initialFiles = Array.from({ length: 64 }, (_, index) => ({
+    path: `/nested/${index.toString().padStart(2, "0")}/file.txt`,
+    content: `content-${index}`,
+  }));
+  const workspace = await backend.create("project-1", {
+    initial_files: initialFiles,
+  });
+  workspace.list = async () => {
+    throw new Error("Bulk capture must not traverse OPFS listings.");
+  };
+  workspace.read = async () => {
+    throw new Error("Bulk capture must not reload OPFS metadata per file.");
+  };
+
+  const captured = await capturePortableWorkspace(workspace);
+
+  assert.equal(captured.workspace_revision, 0);
+  assert.deepEqual(captured.snapshot.files, initialFiles);
+  assert.equal(objects.read_attempts, initialFiles.length);
+  database.close();
+});
+
+test("OPFS orphan reconciliation keeps retained workspaces and schedules cleanup", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-opfs-orphans-${crypto.randomUUID()}`,
+  );
+  const objects = new MemoryWorkspaceObjectStore();
+  const backend = new OpfsWorkspaceBackend(database, objects, {});
+  const retained = await backend.create("retained");
+  const orphan = await backend.create("orphan");
+  await retained.write("/kept.txt", "kept");
+  await orphan.write("/removed.txt", "removed");
+  const orphanStorageId = (
+    await readWorkspaceStorageState(database, "orphan")
+  ).marker.opfs_storage_id;
+
+  await backend.reconcileOrphanedWorkspaces(["retained"]);
+  await backend.reconcileOrphanedWorkspaces(["retained"]);
+
+  assert.equal(
+    (await (await backend.open("retained")).read("/kept.txt")).content,
+    "kept",
+  );
+  await assert.rejects(
+    backend.open("orphan"),
+    (error) => error?.code === "not_found",
+  );
+  assert.equal(objects.storages.has(orphanStorageId), false);
+  const recreated = await backend.create("orphan", {
+    initial_files: [],
+  });
+  assert.equal((await recreated.list("/")).workspace_revision, 2);
+  database.close();
+});
+
+test("browser storage delegates orphan reconciliation to its selected backend", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-browser-orphans-${crypto.randomUUID()}`,
+  );
+  let probes = 0;
+  const backend = new BrowserWorkspaceBackend(
+    database,
+    {},
+    async () => {
+      probes += 1;
+      throw new DOMException("unavailable", "NotSupportedError");
+    },
+  );
+  await backend.create("retained");
+  await backend.create("orphan");
+
+  await backend.reconcileOrphanedWorkspaces(["retained"]);
+
+  assert.equal(probes, 1);
+  await backend.open("retained");
+  await assert.rejects(
+    backend.open("orphan"),
+    (error) => error?.code === "not_found",
+  );
+  database.close();
+});
 
 test("browser storage selects OPFS after one successful root probe", async () => {
   const factory = new IDBFactory();
@@ -645,6 +740,7 @@ test("OPFS deletion commits even when namespace cleanup fails", async () => {
 class MemoryWorkspaceObjectStore {
   storages = new Map();
   write_attempts = 0;
+  read_attempts = 0;
   fail_before_write_attempt = null;
   fail_after_write_attempt = null;
   delete_failures_remaining = 0;
@@ -675,6 +771,7 @@ class MemoryWorkspaceObjectStore {
   }
 
   async read(storageId, contentId) {
+    this.read_attempts += 1;
     const content = this.storages.get(storageId)?.get(contentId);
     if (content === undefined) {
       throw new Error(`Missing workspace object: ${storageId}/${contentId}`);

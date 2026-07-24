@@ -19,6 +19,49 @@ defineWorkspaceBackendConformance({
   },
 });
 
+test("memory orphan reconciliation preserves retained workspaces and tombstones", async () => {
+  const backend = new MemoryWorkspaceBackend(
+    (initialFiles) => new MemoryWorkspace(initialFiles),
+  );
+  const retained = await backend.create("retained");
+  const orphan = await backend.create("orphan");
+  await retained.write("/kept.txt", "kept");
+  await orphan.write("/removed.txt", "removed");
+
+  await backend.reconcileOrphanedWorkspaces(["retained"]);
+  await backend.reconcileOrphanedWorkspaces(["retained"]);
+
+  assert.equal(
+    (await (await backend.open("retained")).read("/kept.txt")).content,
+    "kept",
+  );
+  await assert.rejects(
+    backend.open("orphan"),
+    (error) => error?.code === "not_found",
+  );
+  const recreated = await backend.create("orphan", {
+    initial_files: [],
+  });
+  assert.equal((await recreated.list("/")).workspace_revision, 2);
+});
+
+test("memory backend forwards revision-stable bulk snapshots", async () => {
+  const backend = new MemoryWorkspaceBackend(
+    (initialFiles) => new MemoryWorkspace(initialFiles),
+  );
+  const first = await backend.create("project");
+  await first.write("/first.txt", "first");
+  await backend.delete("project");
+  const recreated = await backend.create("project", {
+    initial_files: [{ path: "/second.txt", content: "second" }],
+  });
+
+  assert.deepEqual(await recreated.readFilesSnapshot(), {
+    workspace_revision: 2,
+    files: [{ path: "/second.txt", content: "second" }],
+  });
+});
+
 test("lists a deterministic file and directory view", async () => {
   const filesystem = new MemoryWorkspace({
     "/README.md": "hello",

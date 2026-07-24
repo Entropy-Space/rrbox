@@ -1,10 +1,12 @@
 import {
   incrementWorkspaceRevision,
+  isWorkspaceFilesSnapshotReader,
   normalizeVfsInitialFiles,
   offsetWorkspaceRevision,
   VfsError,
   type VfsSeedFile,
   type Workspace,
+  type WorkspaceFilesSnapshotReader,
 } from "./filesystem.ts";
 
 export type WorkspaceBackendErrorCode =
@@ -81,6 +83,29 @@ export interface WorkspaceBackend {
   delete(projectId: string): Promise<void>;
 }
 
+/**
+ * Optional lifecycle repair for durable backends that can enumerate their
+ * active project workspaces.
+ *
+ * A successful call removes every active workspace whose project id is absent
+ * from `retainedProjectIds`. Deleted tombstones may be preserved so workspace
+ * revision sequences remain monotonic if an id is reused.
+ */
+export interface WorkspaceOrphanReconciler {
+  reconcileOrphanedWorkspaces(
+    retainedProjectIds: readonly string[],
+  ): Promise<void>;
+}
+
+export function isWorkspaceOrphanReconciler(
+  backend: WorkspaceBackend,
+): backend is WorkspaceBackend & WorkspaceOrphanReconciler {
+  return (
+    typeof (backend as Partial<WorkspaceOrphanReconciler>)
+      .reconcileOrphanedWorkspaces === "function"
+  );
+}
+
 type MemoryWorkspaceRecord = {
   workspace: Workspace;
   revisionOffset: number;
@@ -152,15 +177,19 @@ export class MemoryWorkspaceBackend implements WorkspaceBackend {
     return this.enqueue(async () => {
       const record = this.workspaces.get(projectId);
       if (!record) return;
-      const listing = await record.workspace.list("/");
-      record.localRevision = listing.workspace_revision;
-      const currentRevision = offsetWorkspaceRevision(
-        listing.workspace_revision,
-        record.revisionOffset,
-      );
-      const tombstoneRevision = incrementWorkspaceRevision(currentRevision);
-      this.workspaces.delete(projectId);
-      this.tombstoneRevisions.set(projectId, tombstoneRevision);
+      await this.deleteRecord(projectId, record);
+    });
+  }
+
+  reconcileOrphanedWorkspaces(
+    retainedProjectIds: readonly string[],
+  ): Promise<void> {
+    const retained = new Set(retainedProjectIds);
+    return this.enqueue(async () => {
+      for (const [projectId, record] of this.workspaces) {
+        if (retained.has(projectId)) continue;
+        await this.deleteRecord(projectId, record);
+      }
     });
   }
 
@@ -168,7 +197,7 @@ export class MemoryWorkspaceBackend implements WorkspaceBackend {
     projectId: string,
     record: MemoryWorkspaceRecord,
   ): Workspace {
-    return {
+    const handle: Workspace & Partial<WorkspaceFilesSnapshotReader> = {
       list: (path) =>
         this.runOnRecord(projectId, record, async () =>
           this.withRevisionOffset(
@@ -206,6 +235,31 @@ export class MemoryWorkspaceBackend implements WorkspaceBackend {
             await record.workspace.listChanges(),
           )),
     };
+    const filesystem = record.workspace;
+    if (isWorkspaceFilesSnapshotReader(filesystem)) {
+      handle.readFilesSnapshot = (options) =>
+        this.runOnRecord(projectId, record, async () =>
+          this.withRevisionOffset(
+            record,
+            await filesystem.readFilesSnapshot(options),
+          ));
+    }
+    return handle;
+  }
+
+  private async deleteRecord(
+    projectId: string,
+    record: MemoryWorkspaceRecord,
+  ): Promise<void> {
+    const listing = await record.workspace.list("/");
+    record.localRevision = listing.workspace_revision;
+    const currentRevision = offsetWorkspaceRevision(
+      listing.workspace_revision,
+      record.revisionOffset,
+    );
+    const tombstoneRevision = incrementWorkspaceRevision(currentRevision);
+    this.workspaces.delete(projectId);
+    this.tombstoneRevisions.set(projectId, tombstoneRevision);
   }
 
   private runOnRecord<T>(

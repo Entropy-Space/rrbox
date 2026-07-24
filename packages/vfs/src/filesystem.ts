@@ -73,6 +73,15 @@ export type WorkspaceReadResult = {
   content: string;
 };
 
+export type WorkspaceFilesSnapshotResult = {
+  workspace_revision: number;
+  files: VfsSeedFile[];
+};
+
+export type WorkspaceFilesSnapshotOptions = {
+  signal?: AbortSignal;
+};
+
 export type WorkspaceWriteResult = {
   workspace_revision: number;
   result: VfsWriteResult;
@@ -100,6 +109,29 @@ export class VfsError extends Error {
 export interface WorkspaceReader {
   list(path: string): Promise<WorkspaceListResult>;
   read(path: string): Promise<WorkspaceReadResult>;
+}
+
+/**
+ * Optional bulk-read capability for backends that can capture every file and
+ * the corresponding revision in one stable operation.
+ *
+ * Implementations must return caller-owned file objects whose contents all
+ * belong to `workspace_revision`. They must reject stale or deleted workspace
+ * handles with the same `VfsError` semantics as ordinary reads.
+ */
+export interface WorkspaceFilesSnapshotReader {
+  readFilesSnapshot(
+    options?: WorkspaceFilesSnapshotOptions,
+  ): Promise<WorkspaceFilesSnapshotResult>;
+}
+
+export function isWorkspaceFilesSnapshotReader(
+  reader: WorkspaceReader,
+): reader is WorkspaceReader & WorkspaceFilesSnapshotReader {
+  return (
+    typeof (reader as Partial<WorkspaceFilesSnapshotReader>)
+      .readFilesSnapshot === "function"
+  );
 }
 
 export interface WorkspaceWriter {

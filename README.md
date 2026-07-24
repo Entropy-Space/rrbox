@@ -25,8 +25,8 @@ remote hosts.
 - Versioned timeline checkpoints that restore the supported text and tool
   surface back into Pi messages after reload
 - Interactive workspace browser and text-file preview
-- Deterministic, content-only workspace archive codec; browser import/export UI
-  is not exposed yet
+- Deterministic, content-only workspace archive import and export for browser
+  projects
 
 ## Repository structure
 
@@ -131,6 +131,12 @@ and therefore are not derived from change-receipt count. Recreating a deleted
 project id continues its sequence through a durable tombstone instead of
 resetting cached content to an apparently older revision.
 
+Archive export uses each browser backend's revision-stable bulk snapshot
+capability, avoiding recursive listings and repeated full-project reads. On
+startup, browser storage also reconciles active workspace records against the
+persisted project catalog, removing crash-orphaned content while preserving
+revision tombstones.
+
 Workspace archive format v1 stores `researchbox-workspace.json` at the ZIP root
 and UTF-8 file payloads below `workspace/`. Equivalent snapshots produce
 byte-identical archives: entries are path-sorted, uncompressed (ZIP STORE), and
@@ -144,5 +150,8 @@ Decoding returns sorted files suitable for
 form the new workspace's revision-zero baseline and create no change receipts,
 regardless of the source revision. An explicit `initial_files: []` creates an
 empty baseline; omitting `initial_files` retains the backend's configured
-default seed. The codec package is implemented, but the browser UI does not yet
-offer import or export controls.
+default seed. The browser UI exposes Import beside the Projects heading and
+Export in each project menu. The import picker, core export capture, and
+archive-worker phases are cancellable, and the web composition uses a
+conservative 16 MiB archive/content ceiling for iOS and other
+memory-constrained browsers.

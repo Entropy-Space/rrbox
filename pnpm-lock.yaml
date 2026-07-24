@@ -62,6 +62,9 @@ importers:
       '@researchbox/viewer':
         specifier: workspace:*
         version: link:../../packages/viewer
+      '@researchbox/workspace-archive':
+        specifier: workspace:*
+        version: link:../../packages/workspace-archive
       next:
         specifier: 16.2.6
         version: 16.2.6(@babel/core@7.29.7)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
@@ -123,6 +126,9 @@ importers:
       '@researchbox/vfs':
         specifier: workspace:*
         version: link:../vfs
+      '@researchbox/workspace-archive':
+        specifier: workspace:*
+        version: link:../workspace-archive
 
   packages/model-transport: {}
 

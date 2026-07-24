@@ -21,12 +21,20 @@ import {
   type ToolResultEntry,
   type ViewerCommand,
   type WorkspaceChangeSummary,
+  type WorkspaceTransferFile,
 } from "@researchbox/protocol";
-import type {
-  VfsEntry,
-  WorkspaceBackend,
-  WorkspaceChangeRecord,
+import {
+  isWorkspaceOrphanReconciler,
+  type VfsSeedFile,
+  type VfsEntry,
+  type WorkspaceBackend,
+  type WorkspaceChangeRecord,
 } from "@researchbox/vfs";
+import {
+  capturePortableWorkspace,
+  normalizePortableWorkspaceSnapshot,
+  type WorkspaceArchiveOptions,
+} from "@researchbox/workspace-archive/snapshot";
 import {
   SessionRuntime,
   stagePrompt,
@@ -61,6 +69,7 @@ export type ResearchBoxCoreOptions = {
   providers?: ModelProviderDefinition[];
   systemPrompt: string;
   eventSink: CoreEventSink;
+  workspaceTransferOptions?: WorkspaceArchiveOptions;
 } & WorkspaceBackendOption;
 
 export type AgentCoreOptions = ResearchBoxCoreOptions;
@@ -74,12 +83,17 @@ export class ResearchBoxCore {
   private readonly defaultModelSelection: ModelSelection;
   private readonly systemPrompt: string;
   private readonly eventSink: CoreEventSink;
+  private readonly workspaceTransferOptions: WorkspaceArchiveOptions | undefined;
   private readonly workspaces = new Map<string, WorkspaceController>();
   private state: ProjectStoreState | null = null;
   private workspace: WorkspaceController | null = null;
   private runtime: SessionRuntime | null = null;
   private initialization: Promise<void> | null = null;
   private mutationTail: Promise<void> = Promise.resolve();
+  private readonly workspaceExportControllers = new Map<
+    string,
+    AbortController
+  >();
   private providerRefreshObserverStarted = false;
 
   constructor(options: ResearchBoxCoreOptions) {
@@ -101,9 +115,43 @@ export class ResearchBoxCore {
       });
     this.systemPrompt = options.systemPrompt;
     this.eventSink = options.eventSink;
+    this.workspaceTransferOptions = snapshotWorkspaceTransferOptions(
+      options.workspaceTransferOptions,
+    );
   }
 
   async handle(command: ViewerCommand): Promise<void> {
+    if (command.type === "workspace_export_cancel") {
+      this.cancelWorkspaceExport(command);
+      return;
+    }
+    if (command.type === "workspace_export") {
+      // The active request owns the only terminal event for this correlation id.
+      if (this.workspaceExportControllers.has(command.request_id)) return;
+      const captureController = new AbortController();
+      this.workspaceExportControllers.set(
+        command.request_id,
+        captureController,
+      );
+      try {
+        await this.ensureInitialized();
+        if (captureController.signal.aborted) {
+          this.emitWorkspaceExportCanceled(command);
+          return;
+        }
+        await this.enqueueMutation(() =>
+          this.exportWorkspace(command, captureController),
+        );
+      } finally {
+        if (
+          this.workspaceExportControllers.get(command.request_id) ===
+          captureController
+        ) {
+          this.workspaceExportControllers.delete(command.request_id);
+        }
+      }
+      return;
+    }
     await this.ensureInitialized();
     switch (command.type) {
       case "bootstrap":
@@ -157,6 +205,10 @@ export class ResearchBoxCore {
 
   private async initialize(): Promise<void> {
     const loaded = await this.projectStore.load();
+    await reconcileOrphanedWorkspaces(
+      this.workspaceBackend,
+      loaded?.projects.map((project) => project.project_id) ?? [],
+    );
     if (loaded) {
       this.state = loaded;
       const reconciledChanges = await reconcileWorkspaceChanges(
@@ -195,13 +247,22 @@ export class ResearchBoxCore {
           | "abort"
           | "prompt"
           | "fs_list"
-          | "fs_read";
+          | "fs_read"
+          | "workspace_export"
+          | "workspace_export_cancel";
       }
     >,
   ): Promise<void> {
     switch (command.type) {
       case "project_create":
         await this.createProject(command.payload.name, command.request_id);
+        return;
+      case "project_import":
+        await this.importProject(
+          command.payload.name,
+          command.payload.files,
+          command.request_id,
+        );
         return;
       case "project_update":
         await this.updateProject(
@@ -377,6 +438,45 @@ export class ResearchBoxCore {
     const normalizedName = this.validateName(name, "project", requestId);
     if (!normalizedName) return;
     if (!this.ensureManagementIdle(requestId)) return;
+    await this.createProjectWorkspace(normalizedName, requestId);
+  }
+
+  private async importProject(
+    name: string,
+    files: WorkspaceTransferFile[],
+    requestId: string,
+  ): Promise<void> {
+    const normalizedName = this.validateName(name, "project", requestId);
+    if (!normalizedName) return;
+    if (!this.ensureManagementIdle(requestId)) return;
+
+    let initialFiles: VfsSeedFile[];
+    try {
+      initialFiles = normalizePortableWorkspaceSnapshot(
+        { files },
+        this.workspaceTransferOptions,
+      ).files;
+    } catch (error) {
+      this.emitError(
+        "invalid_workspace_import",
+        toErrorMessage(error, "The imported workspace is invalid."),
+        requestId,
+      );
+      return;
+    }
+
+    await this.createProjectWorkspace(
+      normalizedName,
+      requestId,
+      initialFiles,
+    );
+  }
+
+  private async createProjectWorkspace(
+    normalizedName: string,
+    requestId: string,
+    initialFiles?: readonly VfsSeedFile[],
+  ): Promise<void> {
     await this.stopActiveRun();
 
     const draft = cloneProjectStoreState(this.requireState());
@@ -388,8 +488,22 @@ export class ResearchBoxCore {
     draft.active_project_id = project.project_id;
     draft.active_session_id = null;
 
-    await this.workspaceBackend.create(project.project_id);
+    const createdWorkspace = await this.workspaceBackend.create(
+      project.project_id,
+      initialFiles === undefined
+        ? undefined
+        : { initial_files: initialFiles },
+    );
+    let initialWorkspaceState: {
+      files: FileEntry[];
+      workspace_revision: number;
+    };
     try {
+      const initialListing = await createdWorkspace.list("/");
+      initialWorkspaceState = {
+        files: mapEntries(initialListing.entries),
+        workspace_revision: initialListing.workspace_revision,
+      };
       await this.commitDraft(draft);
     } catch (error) {
       await this.workspaceBackend
@@ -397,8 +511,12 @@ export class ResearchBoxCore {
         .catch(() => undefined);
       throw error;
     }
+    this.workspaces.set(
+      project.project_id,
+      new WorkspaceController(createdWorkspace),
+    );
     await this.activateSelection();
-    await this.emitStateSnapshot(requestId);
+    await this.emitStateSnapshot(requestId, initialWorkspaceState);
   }
 
   private async updateProject(
@@ -813,13 +931,7 @@ export class ResearchBoxCore {
   private async activateSelection(): Promise<void> {
     const state = this.requireState();
     const projectId = state.active_project_id;
-    let workspace = this.workspaces.get(projectId);
-    if (!workspace) {
-      workspace = new WorkspaceController(
-        await this.workspaceBackend.open(projectId),
-      );
-      this.workspaces.set(projectId, workspace);
-    }
+    const workspace = await this.getWorkspaceController(projectId);
     const sessionId = state.active_session_id;
     const nextRuntime =
       sessionId === null
@@ -848,6 +960,18 @@ export class ResearchBoxCore {
     this.runtime?.dispose();
     this.workspace = workspace;
     this.runtime = nextRuntime;
+  }
+
+  private async getWorkspaceController(
+    projectId: string,
+  ): Promise<WorkspaceController> {
+    let workspace = this.workspaces.get(projectId);
+    if (workspace) return workspace;
+    workspace = new WorkspaceController(
+      await this.workspaceBackend.open(projectId),
+    );
+    this.workspaces.set(projectId, workspace);
+    return workspace;
   }
 
   private async checkpointActiveSession(
@@ -925,28 +1049,42 @@ export class ResearchBoxCore {
     }
   }
 
-  private async emitStateSnapshot(requestId?: string): Promise<void> {
+  private async emitStateSnapshot(
+    requestId?: string,
+    cachedWorkspaceState?: {
+      files: FileEntry[];
+      workspace_revision: number;
+    },
+  ): Promise<void> {
     this.emit(
       "state_snapshot",
-      { state: await this.createCoreState() },
+      { state: await this.createCoreState(cachedWorkspaceState) },
       requestId,
     );
   }
 
-  private async createCoreState(): Promise<CoreStateSnapshot> {
+  private async createCoreState(cachedWorkspaceState?: {
+    files: FileEntry[];
+    workspace_revision: number;
+  }): Promise<CoreStateSnapshot> {
     let files: FileEntry[];
     let workspaceRevision: number;
-    while (true) {
-      const projectId = this.requireState().active_project_id;
-      const workspace = this.requireWorkspace();
-      const listing = await workspace.list("/");
-      files = mapEntries(listing.entries);
-      workspaceRevision = listing.workspace_revision;
-      if (
-        this.requireWorkspace() === workspace &&
-        this.requireState().active_project_id === projectId
-      ) {
-        break;
+    if (cachedWorkspaceState) {
+      files = cachedWorkspaceState.files.map((entry) => ({ ...entry }));
+      workspaceRevision = cachedWorkspaceState.workspace_revision;
+    } else {
+      while (true) {
+        const projectId = this.requireState().active_project_id;
+        const workspace = this.requireWorkspace();
+        const listing = await workspace.list("/");
+        files = mapEntries(listing.entries);
+        workspaceRevision = listing.workspace_revision;
+        if (
+          this.requireWorkspace() === workspace &&
+          this.requireState().active_project_id === projectId
+        ) {
+          break;
+        }
       }
     }
 
@@ -1017,6 +1155,74 @@ export class ResearchBoxCore {
     } catch (error) {
       this.emitFileError("fs_list_failed", error, command.request_id);
     }
+  }
+
+  private async exportWorkspace(
+    command: Extract<ViewerCommand, { type: "workspace_export" }>,
+    captureController: AbortController,
+  ): Promise<void> {
+    if (captureController.signal.aborted) {
+      this.emitWorkspaceExportCanceled(command);
+      return;
+    }
+    const projectId = command.payload.project_id;
+    const project = this.getProject(projectId, command.request_id);
+    if (!project) return;
+    if (!this.ensureWorkspaceTransferIdle(command.request_id)) return;
+
+    try {
+      const workspace = await this.getWorkspaceController(projectId);
+      const captured = await capturePortableWorkspace(
+        workspace,
+        this.workspaceTransferOptions,
+        captureController.signal,
+      );
+      this.emit(
+        "workspace_export_snapshot",
+        {
+          project_id: projectId,
+          project_name: project.name,
+          workspace_revision: captured.workspace_revision,
+          files: captured.snapshot.files.map(({ path, content }) => ({
+            path,
+            content,
+          })),
+        },
+        command.request_id,
+      );
+    } catch (error) {
+      if (captureController.signal.aborted) {
+        this.emitWorkspaceExportCanceled(command);
+        return;
+      }
+      this.emitError(
+        "workspace_export_failed",
+        toErrorMessage(error, "The workspace could not be exported."),
+        command.request_id,
+        projectId,
+      );
+    }
+  }
+
+  private emitWorkspaceExportCanceled(
+    command: Extract<ViewerCommand, { type: "workspace_export" }>,
+  ): void {
+    this.emitError(
+      "workspace_export_cancelled",
+      "The workspace export was canceled.",
+      command.request_id,
+      command.payload.project_id,
+    );
+  }
+
+  private cancelWorkspaceExport(
+    command: Extract<ViewerCommand, { type: "workspace_export_cancel" }>,
+  ): void {
+    this.workspaceExportControllers
+      .get(command.payload.target_request_id)
+      ?.abort(
+        new DOMException("The workspace export was canceled.", "AbortError"),
+      );
   }
 
   private async readFile(
@@ -1221,6 +1427,19 @@ export class ResearchBoxCore {
     return false;
   }
 
+  private ensureWorkspaceTransferIdle(requestId: string): boolean {
+    if (!this.runtime?.is_running) return true;
+    const state = this.requireState();
+    this.emitError(
+      "run_in_progress",
+      "Wait for the current response to finish before exporting a workspace.",
+      requestId,
+      state.active_project_id,
+      state.active_session_id ?? undefined,
+    );
+    return false;
+  }
+
   private enqueueMutation<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.mutationTail.then(operation, operation);
     this.mutationTail = result.then(
@@ -1399,6 +1618,14 @@ async function reconcileWorkspaceChanges(
     }
   }
   return reconciled;
+}
+
+async function reconcileOrphanedWorkspaces(
+  workspaceBackend: WorkspaceBackend,
+  retainedProjectIds: readonly string[],
+): Promise<void> {
+  if (!isWorkspaceOrphanReconciler(workspaceBackend)) return;
+  await workspaceBackend.reconcileOrphanedWorkspaces(retainedProjectIds);
 }
 
 function workspaceChangeSummary(
@@ -1643,4 +1870,13 @@ function capitalize(value: string): string {
 
 function toErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
+}
+
+function snapshotWorkspaceTransferOptions(
+  options: WorkspaceArchiveOptions | undefined,
+): WorkspaceArchiveOptions | undefined {
+  if (!options) return undefined;
+  return options.limits
+    ? { limits: { ...options.limits } }
+    : {};
 }

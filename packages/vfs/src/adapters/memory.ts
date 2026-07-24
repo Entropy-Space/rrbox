@@ -1,6 +1,7 @@
 import {
   assertVfsWriteExpectation,
   compareVfsEntries,
+  compareVfsStrings,
   compareWorkspaceChanges,
   createVfsWriteResult,
   incrementWorkspaceRevision,
@@ -17,6 +18,8 @@ import {
   type Workspace,
   type WorkspaceChangeRecord,
   type WorkspaceChangesResult,
+  type WorkspaceFilesSnapshotOptions,
+  type WorkspaceFilesSnapshotResult,
   type WorkspaceListResult,
   type WorkspaceReadResult,
   type WorkspaceRemoveResult,
@@ -96,6 +99,18 @@ export class MemoryWorkspace implements Workspace {
       throw new VfsError("is_directory", `Path is a directory: ${normalizedPath}`);
     }
     throw new VfsError("not_found", `File not found: ${normalizedPath}`);
+  }
+
+  async readFilesSnapshot(
+    options?: WorkspaceFilesSnapshotOptions,
+  ): Promise<WorkspaceFilesSnapshotResult> {
+    throwIfAborted(options?.signal);
+    return {
+      workspace_revision: this.workspaceRevision,
+      files: [...this.files]
+        .map(([path, content]) => ({ path, content }))
+        .sort((left, right) => compareVfsStrings(left.path, right.path)),
+    };
   }
 
   async write(
@@ -219,3 +234,9 @@ export class MemoryWorkspace implements Workspace {
 
 /** @deprecated Use `MemoryWorkspace`. */
 export { MemoryWorkspace as MemoryFileSystem };
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw signal.reason ??
+    new DOMException("The workspace snapshot was aborted.", "AbortError");
+}

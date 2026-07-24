@@ -1,10 +1,15 @@
-export const PROTOCOL_VERSION = 7 as const;
+export const PROTOCOL_VERSION = 8 as const;
 
 export type FileEntry = {
   name: string;
   path: string;
   kind: "file" | "directory";
   size: number;
+};
+
+export type WorkspaceTransferFile = {
+  path: string;
+  content: string;
 };
 
 export type WorkspaceChangeSummary = {
@@ -184,6 +189,10 @@ type CommandEnvelope<TType extends string, TPayload extends object> = {
 export type ViewerCommand =
   | CommandEnvelope<"bootstrap", Record<string, never>>
   | CommandEnvelope<"project_create", { name: string }>
+  | CommandEnvelope<
+      "project_import",
+      { name: string; files: WorkspaceTransferFile[] }
+    >
   | CommandEnvelope<"project_update", { project_id: string; name: string }>
   | CommandEnvelope<"project_delete", { project_id: string }>
   | CommandEnvelope<"project_select", { project_id: string }>
@@ -221,6 +230,11 @@ export type ViewerCommand =
   | CommandEnvelope<
       "abort",
       { project_id: string; session_id: string }
+    >
+  | CommandEnvelope<"workspace_export", { project_id: string }>
+  | CommandEnvelope<
+      "workspace_export_cancel",
+      { target_request_id: string }
     >
   | CommandEnvelope<"fs_list", { project_id: string; path: string }>
   | CommandEnvelope<"fs_read", { project_id: string; path: string }>;
@@ -309,6 +323,15 @@ export type CoreEvent =
       "input_draft_saved",
       { project_id: string; session_id: string | null; input_draft: string }
     >
+  | CorrelatedEventEnvelope<
+      "workspace_export_snapshot",
+      {
+        project_id: string;
+        project_name: string;
+        workspace_revision: number;
+        files: WorkspaceTransferFile[];
+      }
+    >
   | EventEnvelope<
       "error",
       {
@@ -352,6 +375,12 @@ export function parseViewerCommand(value: unknown): ViewerCommand {
     case "project_create":
       return commandEnvelope("project_create", requestId, {
         name: requireString(payload, "name"),
+      });
+    case "project_import":
+      assertExactKeys(payload, ["name", "files"], "project_import payload");
+      return commandEnvelope("project_import", requestId, {
+        name: requireString(payload, "name"),
+        files: parseWorkspaceTransferFiles(payload.files),
       });
     case "project_update":
       return commandEnvelope("project_update", requestId, {
@@ -413,6 +442,24 @@ export function parseViewerCommand(value: unknown): ViewerCommand {
       return commandEnvelope("abort", requestId, {
         project_id: requireString(payload, "project_id"),
         session_id: requireString(payload, "session_id"),
+      });
+    case "workspace_export":
+      assertExactKeys(
+        payload,
+        ["project_id"],
+        "workspace_export payload",
+      );
+      return commandEnvelope("workspace_export", requestId, {
+        project_id: requireString(payload, "project_id"),
+      });
+    case "workspace_export_cancel":
+      assertExactKeys(
+        payload,
+        ["target_request_id"],
+        "workspace_export_cancel payload",
+      );
+      return commandEnvelope("workspace_export_cancel", requestId, {
+        target_request_id: requireString(payload, "target_request_id"),
       });
     case "fs_list":
       return commandEnvelope("fs_list", requestId, {
@@ -609,6 +656,26 @@ export function parseCoreEvent(value: unknown): CoreEvent {
         },
         requireEventRequestId(requestId, "input_draft_saved"),
       );
+    case "workspace_export_snapshot":
+      assertExactKeys(
+        payload,
+        ["project_id", "project_name", "workspace_revision", "files"],
+        "workspace_export_snapshot payload",
+      );
+      return eventEnvelope(
+        "workspace_export_snapshot",
+        eventId,
+        {
+          project_id: requireString(payload, "project_id"),
+          project_name: requireString(payload, "project_name"),
+          workspace_revision: requireNonNegativeInteger(
+            payload,
+            "workspace_revision",
+          ),
+          files: parseWorkspaceTransferFiles(payload.files),
+        },
+        requireEventRequestId(requestId, "workspace_export_snapshot"),
+      );
     case "error": {
       const projectId = optionalString(payload, "project_id");
       const sessionId = optionalString(payload, "session_id");
@@ -638,12 +705,46 @@ export function parseCoreEvent(value: unknown): CoreEvent {
 
 function requireEventRequestId(
   requestId: string | undefined,
-  eventType: "files_snapshot" | "file_content" | "input_draft_saved",
+  eventType:
+    | "files_snapshot"
+    | "file_content"
+    | "input_draft_saved"
+    | "workspace_export_snapshot",
 ): string {
   if (requestId === undefined) {
     throw new Error(`${eventType} events require request_id.`);
   }
   return requestId;
+}
+
+export function parseWorkspaceTransferFiles(
+  value: unknown,
+): WorkspaceTransferFile[] {
+  if (!Array.isArray(value)) {
+    throw new Error("Workspace transfer files must be an array.");
+  }
+  assertJsonValue(value, "Workspace transfer files", new Set<object>());
+
+  const paths = new Set<string>();
+  return value.map((candidate, index) => {
+    if (!isRecord(candidate)) {
+      throw new Error(`Workspace transfer file ${index} must be an object.`);
+    }
+    assertExactKeys(
+      candidate,
+      ["path", "content"],
+      `Workspace transfer file ${index}`,
+    );
+    const path = requireString(candidate, "path");
+    if (paths.has(path)) {
+      throw new Error(`Duplicate workspace transfer path: ${path}`);
+    }
+    paths.add(path);
+    return {
+      path,
+      content: requireString(candidate, "content", true),
+    };
+  });
 }
 
 function commandEnvelope<T extends ViewerCommand["type"]>(
@@ -1231,6 +1332,25 @@ function requireArray(
   const candidate = value[field];
   if (!Array.isArray(candidate)) throw new Error(`${field} must be an array.`);
   return candidate;
+}
+
+function assertExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+  label: string,
+): void {
+  const keys = Object.keys(value);
+  if (
+    keys.length === expected.length &&
+    expected.every((key) =>
+      Object.prototype.hasOwnProperty.call(value, key),
+    )
+  ) {
+    return;
+  }
+  throw new Error(
+    `${label} must contain exactly: ${expected.join(", ")}.`,
+  );
 }
 
 function requireBoolean(

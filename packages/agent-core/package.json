@@ -12,6 +12,7 @@
     "@researchbox/model-transport": "workspace:*",
     "@researchbox/project-store": "workspace:*",
     "@researchbox/protocol": "workspace:*",
-    "@researchbox/vfs": "workspace:*"
+    "@researchbox/vfs": "workspace:*",
+    "@researchbox/workspace-archive": "workspace:*"
   }
 }

@@ -27,7 +27,14 @@ apps/web
                   └─ same-origin bridge → localhost:4141/v1
 ```
 
-The viewer and core worker exchange only protocol-v7 JSON values. A
+Browser-only workspace transfer stays beside that JSON boundary:
+
+```text
+packages/viewer → browser workspace adapter → browser/archive.worker.ts
+                                              └─ packages/workspace-archive
+```
+
+The viewer and core worker exchange only protocol-v8 JSON values. A
 `project_id` plus nullable `session_id` scopes the active composer: `null`
 identifies that project's single virtual new chat, while incremental run events
 always identify a durable session. Filesystem and draft acknowledgements use a
@@ -166,6 +173,20 @@ revision-zero baseline. A deleted marker whose revision is missing or invalid
 cannot be reconstructed after its files and receipts have been cleared, so a
 durable backend must fail closed instead of resetting that project sequence.
 
+Memory, IndexedDB, and OPFS also expose the optional
+`WorkspaceFilesSnapshotReader` capability. It returns all files with one
+coherent revision, so archive export avoids recursive directory traversal and
+per-file metadata reloads. Snapshot cancellation is checked before and after
+storage work; IndexedDB aborts its read transaction and OPFS checks between
+immutable-object reads.
+
+Backends that can enumerate lifecycle records expose
+`WorkspaceOrphanReconciler`. Core startup passes the complete persisted project
+set before opening any workspace. The browser backends then delete active
+workspaces absent from that set while retaining revision tombstones. This
+repairs a process stop between workspace creation and project publication, as
+well as a stop between project deletion and workspace cleanup.
+
 - memory: implemented deterministic test backend
 - IndexedDB: implemented durable metadata, journal, and fallback content backend
 - OPFS: implemented immutable content backend with resumable IndexedDB migration
@@ -213,8 +234,32 @@ Decoded files are intended for import as a new workspace:
 `initial_files`, including an empty array, replace a backend's configured seed
 and form a revision-zero baseline without change receipts. Omitting the field
 retains the configured seed. Import never resumes the source revision or
-history. The package foundation is implemented; browser import/export controls
-are not yet wired.
+history.
+
+The versioned viewer/core protocol keeps this boundary ZIP-neutral: export
+returns a revision-stable JSON snapshot of `{ path, content }` records, and
+import sends a validated snapshot when creating a new project. The browser
+composition alone owns file picking, downloads, and ZIP bytes. It performs
+archive encoding and decoding in a short-lived worker so binary buffers never
+enter the core protocol and synchronous codec work never blocks the viewer. A
+two-minute worker watchdog covers archive work. User-visible cancellation
+covers the import picker, archive worker, and core export capture through a
+correlated JSON command. Blob URLs remain alive long enough for WebKit to
+consume a download.
+
+Because JSON text crosses the archive worker, viewer, and core realms, the web
+composition uses a stricter ceiling than the portable codec: 16 MiB each for
+the stored archive and aggregate file content, 8 MiB per file, and 2,048 files.
+Validation in the ZIP-free core path computes UTF-8 sizes without retaining a
+second encoded copy; ZIP hashing processes fixed-size blocks and a bounded
+padding tail.
+
+An import validates and snapshots the new revision-zero workspace before
+publishing its project record. A project-store failure deletes that workspace,
+and the successful correlated response uses the already-validated snapshot so
+a later listing fault cannot turn a durable import into a reported failure.
+If the process stops between the two durable commits, startup orphan
+reconciliation removes the unpublished workspace.
 
 The browser probes an actual temporary OPFS writable stream before selecting
 the hybrid backend, so engines that expose an OPFS root without writable

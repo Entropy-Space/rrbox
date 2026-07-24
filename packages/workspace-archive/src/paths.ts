@@ -15,7 +15,7 @@ const textEncoder = new TextEncoder();
 
 export type ValidatedPortableFile = VfsSeedFile & {
   archive_path: string;
-  bytes: Uint8Array;
+  byte_size: number;
 };
 
 export type ValidatedPortableSnapshot = {
@@ -87,14 +87,12 @@ export function validatePortableWorkspaceSnapshot(
       limits.max_total_content_bytes,
       "Workspace content",
     );
-    const bytes = textEncoder.encode(candidate.content);
-
     paths.add(path);
     files.push({
       path,
       content: candidate.content,
       archive_path: toWorkspaceArchivePath(path),
-      bytes,
+      byte_size: byteSize,
     });
   }
 

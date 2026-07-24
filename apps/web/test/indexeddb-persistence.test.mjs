@@ -5,6 +5,7 @@ import {
   defineDurableWorkspaceBackendConformance,
   defineWorkspaceBackendConformance,
 } from "@researchbox/vfs-testkit";
+import { capturePortableWorkspace } from "@researchbox/workspace-archive/snapshot";
 import {
   IndexedDbWorkspaceBackend,
   IndexedDbProjectStore,
@@ -36,6 +37,94 @@ const indexedDbConformance = {
 
 defineWorkspaceBackendConformance(indexedDbConformance);
 defineDurableWorkspaceBackendConformance(indexedDbConformance);
+
+test("IndexedDB export captures all files with one bulk read", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-bulk-snapshot-${crypto.randomUUID()}`,
+  );
+  const backend = new IndexedDbWorkspaceBackend(database, {});
+  const initialFiles = Array.from({ length: 64 }, (_, index) => ({
+    path: `/nested/${index.toString().padStart(2, "0")}/file.txt`,
+    content: `content-${index}`,
+  }));
+  const workspace = await backend.create("project-1", {
+    initial_files: initialFiles,
+  });
+  workspace.list = async () => {
+    throw new Error("Bulk capture must not traverse IndexedDB listings.");
+  };
+  workspace.read = async () => {
+    throw new Error("Bulk capture must not reload IndexedDB for each file.");
+  };
+
+  const captured = await capturePortableWorkspace(workspace);
+
+  assert.equal(captured.workspace_revision, 0);
+  assert.deepEqual(captured.snapshot.files, initialFiles);
+  database.close();
+});
+
+test("IndexedDB bulk snapshots keep file content and revision coherent", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-coherent-snapshot-${crypto.randomUUID()}`,
+  );
+  const backend = new IndexedDbWorkspaceBackend(database, {
+    "/value.txt": "before",
+  });
+  const workspace = await backend.create("project-1");
+
+  const snapshotPromise = workspace.readFilesSnapshot();
+  const writePromise = workspace.write("/value.txt", "after");
+  const [snapshot, write] = await Promise.all([
+    snapshotPromise,
+    writePromise,
+  ]);
+  const value = snapshot.files.find(
+    (file) => file.path === "/value.txt",
+  )?.content;
+
+  assert.equal(write.workspace_revision, 1);
+  assert.ok(
+    (snapshot.workspace_revision === 0 && value === "before") ||
+      (snapshot.workspace_revision === 1 && value === "after"),
+    `Revision ${snapshot.workspace_revision} must match its captured content.`,
+  );
+  database.close();
+});
+
+test("IndexedDB orphan reconciliation deletes only unknown active workspaces", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-orphan-reconciliation-${crypto.randomUUID()}`,
+  );
+  const backend = new IndexedDbWorkspaceBackend(database, {});
+  const retained = await backend.create("retained");
+  const orphan = await backend.create("orphan");
+  await retained.write("/kept.txt", "kept");
+  await orphan.write("/removed.txt", "removed");
+
+  await backend.reconcileOrphanedWorkspaces(["retained"]);
+  await backend.reconcileOrphanedWorkspaces(["retained"]);
+
+  assert.equal(
+    (await (await backend.open("retained")).read("/kept.txt")).content,
+    "kept",
+  );
+  await assert.rejects(
+    backend.open("orphan"),
+    (error) => error?.code === "not_found",
+  );
+  const recreated = await backend.create("orphan", {
+    initial_files: [],
+  });
+  assert.equal((await recreated.list("/")).workspace_revision, 2);
+  database.close();
+});
 
 test("IndexedDB project state and files survive reopening the database", async () => {
   const factory = new IDBFactory();

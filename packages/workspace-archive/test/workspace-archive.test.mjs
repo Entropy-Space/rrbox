@@ -16,6 +16,7 @@ import {
   decodeWorkspaceArchive,
   encodeWorkspaceArchive,
   exportWorkspaceArchive,
+  normalizePortableWorkspaceSnapshot,
 } from "../src/index.ts";
 import { canonicalZipByteSize } from "../src/zip-layout.ts";
 import { utf8ByteLengthOfWellFormedString } from "../src/paths.ts";
@@ -124,6 +125,35 @@ test("round-trips UTF-8 text and preserves distinct Unicode spellings", () => {
   );
 });
 
+test("normalizes portable snapshots without exposing ZIP internals", () => {
+  const source = {
+    files: [
+      { path: "/z.txt", content: "last" },
+      { path: "/a.txt", content: "first" },
+    ],
+  };
+
+  const normalized = normalizePortableWorkspaceSnapshot(source);
+  assert.deepEqual(normalized, {
+    files: [
+      { path: "/a.txt", content: "first" },
+      { path: "/z.txt", content: "last" },
+    ],
+  });
+  assert.notEqual(normalized.files, source.files);
+  assert.notEqual(normalized.files[0], source.files[1]);
+  assert.throws(
+    () =>
+      normalizePortableWorkspaceSnapshot({
+        files: [
+          { path: "/a", content: "file" },
+          { path: "/a/b.txt", content: "child" },
+        ],
+      }),
+    archiveError("invalid_input"),
+  );
+});
+
 test("matches fixed SHA-256, CRC-32, and empty-archive byte vectors", () => {
   const emptyArchive = encodeWorkspaceArchive({ files: [] });
   assert.equal(
@@ -198,6 +228,81 @@ test("retries capture when the workspace revision changes", async () => {
     },
     workspace_revision: 1,
   });
+});
+
+test("prefers a revision-stable bulk workspace snapshot", async () => {
+  let listCalls = 0;
+  let readCalls = 0;
+  const sourceFiles = [
+    { path: "/z.txt", content: "last" },
+    { path: "/a.txt", content: "first" },
+  ];
+  const reader = {
+    async list() {
+      listCalls += 1;
+      throw new Error("The bulk snapshot should replace directory traversal.");
+    },
+    async read() {
+      readCalls += 1;
+      throw new Error("The bulk snapshot should replace individual reads.");
+    },
+    async readFilesSnapshot() {
+      return {
+        workspace_revision: 7,
+        files: sourceFiles,
+      };
+    },
+  };
+
+  const captured = await capturePortableWorkspace(reader);
+  sourceFiles[0].content = "mutated after capture";
+
+  assert.deepEqual(captured, {
+    snapshot: {
+      files: [
+        { path: "/a.txt", content: "first" },
+        { path: "/z.txt", content: "last" },
+      ],
+    },
+    workspace_revision: 7,
+  });
+  assert.equal(listCalls, 0);
+  assert.equal(readCalls, 0);
+});
+
+test("propagates capture cancellation to the bulk snapshot reader", async () => {
+  const controller = new AbortController();
+  let receivedSignal;
+  const reader = {
+    async list() {
+      throw new Error("Unexpected list");
+    },
+    async read() {
+      throw new Error("Unexpected read");
+    },
+    readFilesSnapshot(options) {
+      receivedSignal = options.signal;
+      return new Promise((resolve, reject) => {
+        options.signal.addEventListener(
+          "abort",
+          () => reject(options.signal.reason),
+          { once: true },
+        );
+      });
+    },
+  };
+  const capture = capturePortableWorkspace(
+    reader,
+    undefined,
+    controller.signal,
+  );
+  controller.abort(new DOMException("Canceled by the caller.", "AbortError"));
+
+  await assert.rejects(
+    capture,
+    (error) => error?.name === "AbortError",
+  );
+  assert.equal(receivedSignal, controller.signal);
 });
 
 test("retries capture when a concurrent shape change makes a read fail", async () => {

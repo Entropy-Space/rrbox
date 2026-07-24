@@ -31,86 +31,34 @@ const SHA256_ROUND_CONSTANTS = new Uint32Array([
 const CRC32_TABLE = createCrc32Table();
 
 export function sha256Hex(bytes: Uint8Array): string {
-  const bitLength = bytes.byteLength * 8;
-  const paddedLength = Math.ceil((bytes.byteLength + 9) / 64) * 64;
-  const padded = new Uint8Array(paddedLength);
-  padded.set(bytes);
-  padded[bytes.byteLength] = 0x80;
-
-  const view = new DataView(padded.buffer);
-  const highBits = Math.floor(bitLength / 0x1_0000_0000);
-  const lowBits = bitLength >>> 0;
-  view.setUint32(paddedLength - 8, highBits, false);
-  view.setUint32(paddedLength - 4, lowBits, false);
-
   const state = new Uint32Array(SHA256_INITIAL_STATE);
   const schedule = new Uint32Array(64);
-  for (let offset = 0; offset < paddedLength; offset += 64) {
-    for (let index = 0; index < 16; index += 1) {
-      schedule[index] = view.getUint32(offset + index * 4, false);
-    }
-    for (let index = 16; index < schedule.length; index += 1) {
-      const previous = schedule[index - 15] ?? 0;
-      const earlier = schedule[index - 2] ?? 0;
-      const sigma0 =
-        rotateRight(previous, 7) ^
-        rotateRight(previous, 18) ^
-        (previous >>> 3);
-      const sigma1 =
-        rotateRight(earlier, 17) ^
-        rotateRight(earlier, 19) ^
-        (earlier >>> 10);
-      schedule[index] = (
-        (schedule[index - 16] ?? 0) +
-        sigma0 +
-        (schedule[index - 7] ?? 0) +
-        sigma1
-      ) >>> 0;
-    }
+  const completeByteLength = bytes.byteLength - (bytes.byteLength % 64);
+  const sourceView = new DataView(
+    bytes.buffer,
+    bytes.byteOffset,
+    completeByteLength,
+  );
+  for (let offset = 0; offset < completeByteLength; offset += 64) {
+    processSha256Block(state, schedule, sourceView, offset);
+  }
 
-    let a = state[0] ?? 0;
-    let b = state[1] ?? 0;
-    let c = state[2] ?? 0;
-    let d = state[3] ?? 0;
-    let e = state[4] ?? 0;
-    let f = state[5] ?? 0;
-    let g = state[6] ?? 0;
-    let h = state[7] ?? 0;
+  const remainingByteLength = bytes.byteLength - completeByteLength;
+  const tailByteLength = remainingByteLength + 9 <= 64 ? 64 : 128;
+  const tail = new Uint8Array(tailByteLength);
+  tail.set(bytes.subarray(completeByteLength));
+  tail[remainingByteLength] = 0x80;
 
-    for (let index = 0; index < 64; index += 1) {
-      const sum1 =
-        rotateRight(e, 6) ^ rotateRight(e, 11) ^ rotateRight(e, 25);
-      const choice = (e & f) ^ (~e & g);
-      const temporary1 = (
-        h +
-        sum1 +
-        choice +
-        (SHA256_ROUND_CONSTANTS[index] ?? 0) +
-        (schedule[index] ?? 0)
-      ) >>> 0;
-      const sum0 =
-        rotateRight(a, 2) ^ rotateRight(a, 13) ^ rotateRight(a, 22);
-      const majority = (a & b) ^ (a & c) ^ (b & c);
-      const temporary2 = (sum0 + majority) >>> 0;
-
-      h = g;
-      g = f;
-      f = e;
-      e = (d + temporary1) >>> 0;
-      d = c;
-      c = b;
-      b = a;
-      a = (temporary1 + temporary2) >>> 0;
-    }
-
-    state[0] = ((state[0] ?? 0) + a) >>> 0;
-    state[1] = ((state[1] ?? 0) + b) >>> 0;
-    state[2] = ((state[2] ?? 0) + c) >>> 0;
-    state[3] = ((state[3] ?? 0) + d) >>> 0;
-    state[4] = ((state[4] ?? 0) + e) >>> 0;
-    state[5] = ((state[5] ?? 0) + f) >>> 0;
-    state[6] = ((state[6] ?? 0) + g) >>> 0;
-    state[7] = ((state[7] ?? 0) + h) >>> 0;
+  const bitLength = bytes.byteLength * 8;
+  const tailView = new DataView(tail.buffer);
+  tailView.setUint32(
+    tailByteLength - 8,
+    Math.floor(bitLength / 0x1_0000_0000),
+    false,
+  );
+  tailView.setUint32(tailByteLength - 4, bitLength >>> 0, false);
+  for (let offset = 0; offset < tailByteLength; offset += 64) {
+    processSha256Block(state, schedule, tailView, offset);
   }
 
   return [...state]
@@ -128,6 +76,79 @@ export function crc32(bytes: Uint8Array): number {
 
 function rotateRight(value: number, shift: number): number {
   return (value >>> shift) | (value << (32 - shift));
+}
+
+function processSha256Block(
+  state: Uint32Array,
+  schedule: Uint32Array,
+  view: DataView,
+  offset: number,
+): void {
+  for (let index = 0; index < 16; index += 1) {
+    schedule[index] = view.getUint32(offset + index * 4, false);
+  }
+  for (let index = 16; index < schedule.length; index += 1) {
+    const previous = schedule[index - 15] ?? 0;
+    const earlier = schedule[index - 2] ?? 0;
+    const sigma0 =
+      rotateRight(previous, 7) ^
+      rotateRight(previous, 18) ^
+      (previous >>> 3);
+    const sigma1 =
+      rotateRight(earlier, 17) ^
+      rotateRight(earlier, 19) ^
+      (earlier >>> 10);
+    schedule[index] = (
+      (schedule[index - 16] ?? 0) +
+      sigma0 +
+      (schedule[index - 7] ?? 0) +
+      sigma1
+    ) >>> 0;
+  }
+
+  let a = state[0] ?? 0;
+  let b = state[1] ?? 0;
+  let c = state[2] ?? 0;
+  let d = state[3] ?? 0;
+  let e = state[4] ?? 0;
+  let f = state[5] ?? 0;
+  let g = state[6] ?? 0;
+  let h = state[7] ?? 0;
+
+  for (let index = 0; index < 64; index += 1) {
+    const sum1 =
+      rotateRight(e, 6) ^ rotateRight(e, 11) ^ rotateRight(e, 25);
+    const choice = (e & f) ^ (~e & g);
+    const temporary1 = (
+      h +
+      sum1 +
+      choice +
+      (SHA256_ROUND_CONSTANTS[index] ?? 0) +
+      (schedule[index] ?? 0)
+    ) >>> 0;
+    const sum0 =
+      rotateRight(a, 2) ^ rotateRight(a, 13) ^ rotateRight(a, 22);
+    const majority = (a & b) ^ (a & c) ^ (b & c);
+    const temporary2 = (sum0 + majority) >>> 0;
+
+    h = g;
+    g = f;
+    f = e;
+    e = (d + temporary1) >>> 0;
+    d = c;
+    c = b;
+    b = a;
+    a = (temporary1 + temporary2) >>> 0;
+  }
+
+  state[0] = ((state[0] ?? 0) + a) >>> 0;
+  state[1] = ((state[1] ?? 0) + b) >>> 0;
+  state[2] = ((state[2] ?? 0) + c) >>> 0;
+  state[3] = ((state[3] ?? 0) + d) >>> 0;
+  state[4] = ((state[4] ?? 0) + e) >>> 0;
+  state[5] = ((state[5] ?? 0) + f) >>> 0;
+  state[6] = ((state[6] ?? 0) + g) >>> 0;
+  state[7] = ((state[7] ?? 0) + h) >>> 0;
 }
 
 function createCrc32Table(): Uint32Array {

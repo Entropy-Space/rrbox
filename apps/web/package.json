@@ -16,6 +16,7 @@
     "@researchbox/runtime-browser": "workspace:*",
     "@researchbox/vfs": "workspace:*",
     "@researchbox/viewer": "workspace:*",
+    "@researchbox/workspace-archive": "workspace:*",
     "next": "16.2.6",
     "react": "19.2.6",
     "react-dom": "19.2.6"

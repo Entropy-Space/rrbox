@@ -16,6 +16,7 @@ import {
 } from "./persistence";
 import { researchBoxSeedFiles } from "./seed-files";
 import { researchBoxMockModel, researchBoxSystemPrompt } from "./mock-model";
+import { BROWSER_WORKSPACE_ARCHIVE_OPTIONS } from "./workspace-transfer-limits.ts";
 
 const host = self as unknown as WorkerHost;
 const providers = [
@@ -78,6 +79,7 @@ startBrowserRuntime({
       model: researchBoxMockModel,
       systemPrompt: researchBoxSystemPrompt,
       eventSink,
+      workspaceTransferOptions: BROWSER_WORKSPACE_ARCHIVE_OPTIONS,
     });
   },
 });

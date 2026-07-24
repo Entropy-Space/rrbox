@@ -7,14 +7,16 @@ import {
   MoreHorizontal,
   Plus,
   SquarePen,
+  Upload,
 } from "lucide-react";
 import type { ProjectSummary, SessionSummary } from "@researchbox/protocol";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ManagementDialog,
   type ManagementDialogResult,
   type ManagementDialogState,
 } from "./ManagementDialog.tsx";
+import type { WorkspaceTransferNotice } from "./workspace-transfer.ts";
 
 export function WorkspaceSidebar({
   isOpen,
@@ -23,11 +25,16 @@ export function WorkspaceSidebar({
   activeProjectId,
   activeSessionId,
   isPending,
+  isWorkspaceTransferDisabled,
   onClose,
   onCreateProject,
   onRenameProject,
   onDeleteProject,
   onSelectProject,
+  onImportProject,
+  onExportProject,
+  workspaceTransferNotice,
+  onCancelWorkspaceTransfer,
   onSelectNewChat,
   onRenameSession,
   onDeleteSession,
@@ -39,11 +46,16 @@ export function WorkspaceSidebar({
   activeProjectId: string | null;
   activeSessionId: string | null;
   isPending: boolean;
+  isWorkspaceTransferDisabled: boolean;
   onClose: () => void;
   onCreateProject: (name: string) => void;
   onRenameProject: (projectId: string, name: string) => void;
   onDeleteProject: (projectId: string) => void;
   onSelectProject: (projectId: string) => void;
+  onImportProject?: () => void | Promise<void>;
+  onExportProject?: (projectId: string) => void | Promise<void>;
+  workspaceTransferNotice: WorkspaceTransferNotice | null;
+  onCancelWorkspaceTransfer?: () => void;
   onSelectNewChat: (projectId?: string) => void;
   onRenameSession: (projectId: string, sessionId: string, title: string) => void;
   onDeleteSession: (projectId: string, sessionId: string) => void;
@@ -52,6 +64,35 @@ export function WorkspaceSidebar({
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [dialog, setDialog] = useState<ManagementDialogState | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const workspaceTransferStatusRef = useRef<HTMLDivElement | null>(null);
+  const workspaceTransferReturnFocusRef =
+    useRef<WorkspaceTransferFocusRequest | null>(null);
+  const scheduleWorkspaceTransferFocusRestore = useCallback(
+    (focusRequest: WorkspaceTransferFocusRequest) => {
+      window.requestAnimationFrame(() => {
+        if (workspaceTransferReturnFocusRef.current !== focusRequest) return;
+        const { target } = focusRequest;
+        if (!target.isConnected) {
+          workspaceTransferReturnFocusRef.current = null;
+          return;
+        }
+        if (isDisabledButton(target)) return;
+
+        workspaceTransferReturnFocusRef.current = null;
+        const activeElement = document.activeElement;
+        if (
+          activeElement !== null &&
+          activeElement !== document.body &&
+          activeElement !== workspaceTransferStatusRef.current &&
+          activeElement !== target
+        ) {
+          return;
+        }
+        target.focus({ preventScroll: true });
+      });
+    },
+    [],
+  );
   const activeSessions = useMemo(
     () => sessions.filter((session) => session.project_id === activeProjectId),
     [activeProjectId, sessions],
@@ -106,6 +147,31 @@ export function WorkspaceSidebar({
     return () => document.removeEventListener("keydown", closeOnEscape);
   }, [isOpen, onClose, openMenu]);
 
+  useEffect(() => {
+    if (workspaceTransferNotice?.kind !== "progress") return;
+    const activeElement = document.activeElement;
+    const returnFocusTarget =
+      workspaceTransferReturnFocusRef.current?.target ?? null;
+    if (
+      activeElement !== null &&
+      activeElement !== document.body &&
+      activeElement !== workspaceTransferStatusRef.current &&
+      activeElement !== returnFocusTarget
+    ) {
+      return;
+    }
+    workspaceTransferStatusRef.current?.focus({ preventScroll: true });
+  }, [workspaceTransferNotice?.kind, workspaceTransferNotice?.message]);
+
+  useEffect(() => {
+    if (workspaceTransferNotice?.kind === "progress") return;
+    const focusRequest = workspaceTransferReturnFocusRef.current;
+    if (focusRequest) scheduleWorkspaceTransferFocusRestore(focusRequest);
+  }, [
+    scheduleWorkspaceTransferFocusRestore,
+    workspaceTransferNotice?.kind,
+  ]);
+
   function selectProject(projectId: string) {
     setOpenMenu(null);
     onSelectProject(projectId);
@@ -147,6 +213,31 @@ export function WorkspaceSidebar({
     }
   }
 
+  function startWorkspaceTransfer(
+    returnFocusTarget: HTMLElement,
+    operation: () => void | Promise<void>,
+  ) {
+    const focusRequest = { target: returnFocusTarget };
+    workspaceTransferReturnFocusRef.current = focusRequest;
+    let completion: void | Promise<void>;
+    try {
+      completion = operation();
+    } catch (error) {
+      scheduleWorkspaceTransferFocusRestore(focusRequest);
+      throw error;
+    }
+    void Promise.resolve(completion).then(
+      () => scheduleWorkspaceTransferFocusRestore(focusRequest),
+      () => scheduleWorkspaceTransferFocusRestore(focusRequest),
+    );
+  }
+
+  function cancelWorkspaceTransfer() {
+    const focusRequest = workspaceTransferReturnFocusRef.current;
+    onCancelWorkspaceTransfer?.();
+    if (focusRequest) scheduleWorkspaceTransferFocusRestore(focusRequest);
+  }
+
   return (
     <>
       <aside
@@ -186,14 +277,32 @@ export function WorkspaceSidebar({
         <section className="entity-section project-section" aria-labelledby="projects-label">
           <div className="section-label">
             <span id="projects-label">Projects</span>
-            <button
-              type="button"
-              aria-label="Create project"
-              disabled={isPending}
-              onClick={() => setDialog({ kind: "project_create" })}
-            >
-              <Plus size={16} />
-            </button>
+            <span className="section-actions">
+              {onImportProject && (
+                <button
+                  type="button"
+                  aria-label="Import workspace"
+                  title="Import workspace"
+                  disabled={isWorkspaceTransferDisabled}
+                  onClick={(event) =>
+                    startWorkspaceTransfer(
+                      event.currentTarget,
+                      onImportProject,
+                    )
+                  }
+                >
+                  <Upload size={15} />
+                </button>
+              )}
+              <button
+                type="button"
+                aria-label="Create project"
+                disabled={isPending}
+                onClick={() => setDialog({ kind: "project_create" })}
+              >
+                <Plus size={16} />
+              </button>
+            </span>
           </div>
           <div className="entity-list project-list">
             {projects.map((project) => {
@@ -227,6 +336,27 @@ export function WorkspaceSidebar({
                   </button>
                   {openMenu === menuId && (
                     <div className="entity-menu" id={`${menuId}:options`}>
+                      {onExportProject && (
+                        <button
+                          type="button"
+                          disabled={isWorkspaceTransferDisabled}
+                          onClick={(event) => {
+                            const returnFocusTarget =
+                              event.currentTarget
+                                .closest("[data-management-menu]")
+                                ?.querySelector<HTMLElement>(
+                                  ".entity-menu-button",
+                                ) ?? event.currentTarget;
+                            setOpenMenu(null);
+                            startWorkspaceTransfer(
+                              returnFocusTarget,
+                              () => onExportProject(project.project_id),
+                            );
+                          }}
+                        >
+                          Export workspace
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => {
@@ -345,6 +475,34 @@ export function WorkspaceSidebar({
           </div>
         </section>
 
+        {workspaceTransferNotice && (
+          <div
+            ref={workspaceTransferStatusRef}
+            className={`status-banner ${workspaceTransferNotice.kind === "error" ? "failed" : ""}`}
+            role={
+              workspaceTransferNotice.kind === "error" ? "alert" : "status"
+            }
+            aria-atomic={true}
+            aria-busy={
+              workspaceTransferNotice.kind === "progress" ? true : undefined
+            }
+            tabIndex={-1}
+          >
+            <span>{workspaceTransferNotice.message}</span>
+            {workspaceTransferNotice.kind === "progress" &&
+              workspaceTransferNotice.is_cancellable &&
+              onCancelWorkspaceTransfer && (
+                <button
+                  type="button"
+                  className="status-banner-action"
+                  onClick={cancelWorkspaceTransfer}
+                >
+                  Cancel
+                </button>
+              )}
+          </div>
+        )}
+
         <div className="storage-status">
           <span className="profile-avatar">{activeProject?.name.slice(0, 1).toUpperCase() ?? "R"}</span>
           <span className="profile-copy">
@@ -362,4 +520,12 @@ export function WorkspaceSidebar({
       />
     </>
   );
+}
+
+type WorkspaceTransferFocusRequest = {
+  target: HTMLElement;
+};
+
+function isDisabledButton(element: HTMLElement): boolean {
+  return element instanceof HTMLButtonElement && element.disabled;
 }

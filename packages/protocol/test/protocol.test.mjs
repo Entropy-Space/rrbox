@@ -8,10 +8,17 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v7 command", () => {
+test("round-trips every protocol-v8 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("project_create", { name: "Docs" }),
+    createCommand("project_import", {
+      name: "Imported docs",
+      files: [
+        { path: "/README.md", content: "# Imported" },
+        { path: "/empty.txt", content: "" },
+      ],
+    }),
     createCommand("project_update", { project_id: "p1", name: "Product" }),
     createCommand("project_delete", { project_id: "p1" }),
     createCommand("project_select", { project_id: "p1" }),
@@ -51,6 +58,10 @@ test("round-trips every protocol-v7 command", () => {
       text: "follow-up",
     }),
     createCommand("abort", { project_id: "p1", session_id: "s1" }),
+    createCommand("workspace_export", { project_id: "p1" }),
+    createCommand("workspace_export_cancel", {
+      target_request_id: "export-request",
+    }),
     createCommand("fs_list", { project_id: "p1", path: "/" }),
     createCommand("fs_read", { project_id: "p1", path: "/README.md" }),
   ];
@@ -386,6 +397,19 @@ test("round-trips every normalized timeline core event", () => {
       },
       "request-draft",
     ),
+    coreEvent(
+      "workspace_export_snapshot",
+      {
+        project_id: "project-1",
+        project_name: "Project one",
+        workspace_revision: 2,
+        files: [
+          { path: "/README.md", content: "# ResearchBox" },
+          { path: "/empty.txt", content: "" },
+        ],
+      },
+      "request-export",
+    ),
     coreEvent("error", {
       code: "agent_run_failed",
       message: "Provider failed",
@@ -479,9 +503,100 @@ test("requires request correlation for filesystem and draft results", () => {
       session_id: null,
       input_draft: "draft",
     }),
+    coreEvent("workspace_export_snapshot", {
+      project_id: "project-1",
+      project_name: "Project one",
+      workspace_revision: 0,
+      files: [],
+    }),
   ]) {
     assert.throws(() => parseCoreEvent(event), /require request_id/);
   }
+});
+
+test("strictly parses JSON-only workspace transfer files", () => {
+  const files = [
+    { path: "/README.md", content: "# Imported" },
+    { path: "/empty.txt", content: "" },
+  ];
+  const command = {
+    protocol_version: PROTOCOL_VERSION,
+    request_id: "request-import",
+    type: "project_import",
+    payload: {
+      name: "Imported",
+      files,
+    },
+  };
+  const parsed = parseViewerCommand(command);
+  files[0].content = "mutated";
+  files.push({ path: "/later.txt", content: "later" });
+  assert.deepEqual(parsed.payload.files, [
+    { path: "/README.md", content: "# Imported" },
+    { path: "/empty.txt", content: "" },
+  ]);
+
+  for (const invalidFiles of [
+    [{ path: "/a.txt", content: "a", bytes: new Uint8Array([1]) }],
+    [{ path: "/a.txt", content: new Uint8Array([1]) }],
+    [
+      { path: "/same.txt", content: "first" },
+      { path: "/same.txt", content: "second" },
+    ],
+    [{ path: "", content: "empty path" }],
+  ]) {
+    assert.throws(
+      () =>
+        parseViewerCommand({
+          protocol_version: PROTOCOL_VERSION,
+          request_id: "request-invalid-import",
+          type: "project_import",
+          payload: { name: "Imported", files: invalidFiles },
+        }),
+      /Workspace transfer|Duplicate workspace|path must|content must|exactly|only JSON/,
+    );
+  }
+
+  assert.throws(
+    () =>
+      parseViewerCommand({
+        protocol_version: PROTOCOL_VERSION,
+        request_id: "request-extra-export",
+        type: "workspace_export",
+        payload: { project_id: "project-1", archive_bytes: [1, 2, 3] },
+      }),
+    /workspace_export payload must contain exactly/,
+  );
+  assert.throws(
+    () =>
+      parseViewerCommand({
+        protocol_version: PROTOCOL_VERSION,
+        request_id: "request-invalid-cancel",
+        type: "workspace_export_cancel",
+        payload: {
+          target_request_id: "request-export",
+          project_id: "project-1",
+        },
+      }),
+    /workspace_export_cancel payload must contain exactly/,
+  );
+  assert.throws(
+    () =>
+      parseCoreEvent(
+        coreEvent(
+          "workspace_export_snapshot",
+          {
+            project_id: "project-1",
+            project_name: "Project one",
+            workspace_revision: 0,
+            files: [],
+            archive_bytes: [1, 2, 3],
+          },
+          "request-export",
+        ),
+      ),
+    /workspace_export_snapshot payload must contain exactly/,
+  );
 });
 
 test("validates workspace change identity and numeric fields", () => {
@@ -544,7 +659,7 @@ test("rejects older protocol versions and missing nullable session scope", () =>
   assert.throws(
     () =>
       parseViewerCommand({
-        protocol_version: 6,
+        protocol_version: 7,
         request_id: "request-old",
         type: "bootstrap",
         payload: {},

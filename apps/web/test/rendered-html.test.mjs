@@ -45,6 +45,8 @@ test("keeps package boundaries explicit", async () => {
     session,
     coreWorker,
     llmWorker,
+    archiveWorker,
+    workspaceTransfer,
     core,
     runtime,
     protocol,
@@ -68,6 +70,14 @@ test("keeps package boundaries explicit", async () => {
       readFile(new URL("../browser/core.worker.ts", import.meta.url), "utf8"),
       readFile(new URL("../browser/llm.worker.ts", import.meta.url), "utf8"),
       readFile(
+        new URL("../browser/archive.worker.ts", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../browser/workspace-transfer.ts", import.meta.url),
+        "utf8",
+      ),
+      readFile(
         new URL(
           "../../../packages/agent-core/src/researchbox-core.ts",
           import.meta.url,
@@ -88,6 +98,7 @@ test("keeps package boundaries explicit", async () => {
     ]);
 
   assert.match(app, /new Worker\(new URL\(/);
+  assert.match(app, /workspaceTransferAdapter/);
   assert.doesNotMatch(viewer, /new Worker\(/);
   assert.match(session, /createCommand\("bootstrap"/);
   assert.match(session, /parseCoreEvent/);
@@ -109,11 +120,18 @@ test("keeps package boundaries explicit", async () => {
   assert.match(llmWorker, /attachLlmWorkerHost/);
   assert.match(llmWorker, /HttpNdjsonModelTransport/);
   assert.match(llmWorker, /OpenAiCompatibleModelTransport/);
+  assert.match(
+    workspaceTransfer,
+    /new Worker\(new URL\("\.\/archive\.worker\.ts"/,
+  );
+  assert.match(archiveWorker, /encodeWorkspaceArchive/);
+  assert.match(archiveWorker, /decodeWorkspaceArchive/);
+  assert.doesNotMatch(coreWorker, /archive_bytes|workspace-archive/);
   assert.match(core, /ProjectStore/);
   assert.match(core, /WorkspaceBackend/);
   assert.match(runtime, /new Agent\(/);
   assert.match(runtime, /WorkspaceController/);
-  assert.match(protocol, /PROTOCOL_VERSION = 7/);
+  assert.match(protocol, /PROTOCOL_VERSION = 8/);
 
   await assert.rejects(
     access(new URL("../.openai/hosting.json", import.meta.url)),

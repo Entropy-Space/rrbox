@@ -1,4 +1,5 @@
 import {
+  isWorkspaceOrphanReconciler,
   snapshotWorkspaceCreateOptions,
   type Workspace,
   type WorkspaceBackend,
@@ -64,6 +65,15 @@ export class BrowserWorkspaceBackend implements WorkspaceBackend {
 
   async delete(projectId: string): Promise<void> {
     return (await this.getBackend()).delete(projectId);
+  }
+
+  async reconcileOrphanedWorkspaces(
+    retainedProjectIds: readonly string[],
+  ): Promise<void> {
+    const retained = [...retainedProjectIds];
+    const backend = await this.getBackend();
+    if (!isWorkspaceOrphanReconciler(backend)) return;
+    await backend.reconcileOrphanedWorkspaces(retained);
   }
 
   private getBackend(): Promise<WorkspaceBackend> {

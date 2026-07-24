@@ -49,6 +49,38 @@ test("accepts the deprecated workspace provider composition option", async () =>
   assert.equal(latestState(events).active_session_id, null);
 });
 
+test("reconciles crash-orphaned workspaces before opening persisted projects", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const firstEvents = [];
+  const firstCore = createCore(store, provider, firstEvents);
+  await firstCore.handle(createCommand("bootstrap", {}));
+  await firstCore.handle(createCommand("project_create", { name: "Second" }));
+  const persisted = latestState(firstEvents);
+  const retainedProjectIds = persisted.projects.map(
+    (project) => project.project_id,
+  );
+  await provider.create("crash-orphan", {
+    initial_files: [{ path: "/temporary.txt", content: "orphaned" }],
+  });
+
+  const reloadedEvents = [];
+  const reloaded = createCore(store, provider, reloadedEvents);
+  await reloaded.handle(createCommand("bootstrap", {}));
+
+  assert.equal(
+    latestState(reloadedEvents).active_project_id,
+    persisted.active_project_id,
+  );
+  for (const projectId of retainedProjectIds) {
+    await provider.open(projectId);
+  }
+  await assert.rejects(
+    provider.open("crash-orphan"),
+    (error) => error?.code === "not_found",
+  );
+});
+
 test("keeps new chat virtual and persists the first prompt before transport", async () => {
   const store = new MemoryProjectStore();
   const provider = createWorkspaceProvider();
@@ -1941,6 +1973,520 @@ test("projects keep isolated filesystems without requiring a session", async () 
   assert.equal(replacement.sessions.length, 0);
 });
 
+test("imports a validated workspace as a revision-zero project", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+
+  const command = createCommand("project_import", {
+    name: " Imported workspace ",
+    files: [
+      { path: "/z.txt", content: "last" },
+      { path: "/docs/é.txt", content: "first" },
+      { path: "/empty.txt", content: "" },
+    ],
+  });
+  await core.handle(command);
+
+  const state = latestState(events);
+  const importedProject = state.projects.find(
+    (project) => project.name === "Imported workspace",
+  );
+  assert.ok(importedProject);
+  assert.equal(state.projects.length, 2);
+  assert.equal(state.active_project_id, importedProject.project_id);
+  assert.equal(state.active_session_id, null);
+  assert.equal(state.workspace_revision, 0);
+  const workspace = await provider.open(state.active_project_id);
+  assert.deepEqual(await workspace.listChanges(), {
+    workspace_revision: 0,
+    changes: [],
+  });
+  assert.equal((await workspace.read("/docs/é.txt")).content, "first");
+  assert.equal((await workspace.read("/empty.txt")).content, "");
+  assert.equal((await workspace.read("/z.txt")).content, "last");
+  await assert.rejects(
+    workspace.read("/README.md"),
+    (error) => error?.code === "not_found",
+  );
+  assert.equal(events.at(-1).request_id, command.request_id);
+});
+
+test("acknowledges an import from its pre-commit workspace snapshot", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const create = provider.create.bind(provider);
+  let importedListCalls = 0;
+  provider.create = async (projectId, options) => {
+    const workspace = await create(projectId, options);
+    if (options?.initial_files === undefined) return workspace;
+    return {
+      ...workspace,
+      async list(path) {
+        importedListCalls += 1;
+        if (importedListCalls > 1) {
+          throw new Error("Post-commit listing must not be required.");
+        }
+        return workspace.list(path);
+      },
+    };
+  };
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+  const command = createCommand("project_import", {
+    name: "Cached import",
+    files: [{ path: "/imported.txt", content: "durable" }],
+  });
+
+  await core.handle(command);
+
+  assert.equal(importedListCalls, 1);
+  assert.equal(events.at(-1).type, "state_snapshot");
+  assert.equal(events.at(-1).request_id, command.request_id);
+  assert.equal(
+    latestState(events).projects.some(
+      (project) => project.name === "Cached import",
+    ),
+    true,
+  );
+  assert.equal(
+    (await store.load()).projects.some(
+      (project) => project.name === "Cached import",
+    ),
+    true,
+  );
+});
+
+test("rejects invalid workspace imports without creating a project", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+  const before = await store.load();
+
+  await core.handle(
+    createCommand("project_import", {
+      name: "Invalid",
+      files: [
+        { path: "/file", content: "parent" },
+        { path: "/file/child.txt", content: "child" },
+      ],
+    }),
+  );
+
+  assert.equal(events.at(-1).type, "error");
+  assert.equal(events.at(-1).payload.code, "invalid_workspace_import");
+  assert.deepEqual(await store.load(), before);
+});
+
+test("applies configured workspace transfer limits to imports and exports", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const core = createCore(store, provider, events, undefined, {
+    workspaceTransferOptions: {
+      limits: {
+        max_file_bytes: 4,
+        max_total_content_bytes: 4,
+      },
+    },
+  });
+  await core.handle(createCommand("bootstrap", {}));
+  const projectId = latestState(events).active_project_id;
+
+  await core.handle(
+    createCommand("project_import", {
+      name: "Too large",
+      files: [{ path: "/large.txt", content: "12345" }],
+    }),
+  );
+
+  assert.equal(events.at(-1).type, "error");
+  assert.equal(events.at(-1).payload.code, "invalid_workspace_import");
+  assert.equal((await store.load()).projects.length, 1);
+
+  await core.handle(
+    createCommand("workspace_export", {
+      project_id: projectId,
+    }),
+  );
+
+  assert.equal(events.at(-1).type, "error");
+  assert.equal(events.at(-1).payload.code, "workspace_export_failed");
+  assert.match(events.at(-1).payload.message, /configured limit/);
+});
+
+test("rolls back an imported workspace when project persistence fails", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+  const before = await store.load();
+  const create = provider.create.bind(provider);
+  const remove = provider.delete.bind(provider);
+  let importedProjectId = null;
+  let rolledBackProjectId = null;
+  provider.create = async (projectId, options) => {
+    if (options?.initial_files !== undefined) {
+      importedProjectId = projectId;
+    }
+    return create(projectId, options);
+  };
+  provider.delete = async (projectId) => {
+    rolledBackProjectId = projectId;
+    return remove(projectId);
+  };
+  const save = store.save.bind(store);
+  store.save = async (state, expectedRevision) => {
+    if (state.projects.length > 1) throw new Error("Disk full");
+    return save(state, expectedRevision);
+  };
+
+  await assert.rejects(
+    core.handle(
+      createCommand("project_import", {
+        name: "Must roll back",
+        files: [{ path: "/imported.txt", content: "temporary" }],
+      }),
+    ),
+    /Disk full/,
+  );
+
+  assert.ok(importedProjectId);
+  assert.equal(rolledBackProjectId, importedProjectId);
+  assert.deepEqual(await store.load(), before);
+  await assert.rejects(
+    provider.open(importedProjectId),
+    (error) => error?.code === "not_found",
+  );
+});
+
+test("leaves project state unchanged when imported workspace creation fails", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+  const before = await store.load();
+  const create = provider.create.bind(provider);
+  provider.create = async (projectId, options) => {
+    if (options?.initial_files !== undefined) {
+      throw new Error("Workspace storage unavailable");
+    }
+    return create(projectId, options);
+  };
+  events.length = 0;
+  const command = createCommand("project_import", {
+    name: "Cannot create",
+    files: [{ path: "/imported.txt", content: "never stored" }],
+  });
+
+  await assert.rejects(
+    core.handle(command),
+    /Workspace storage unavailable/,
+  );
+
+  assert.deepEqual(await store.load(), before);
+  assert.deepEqual(events, []);
+});
+
+test("exports active and inactive project snapshots without changing selection", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+  const firstProjectId = latestState(events).active_project_id;
+  await (await provider.open(firstProjectId)).write(
+    "/only-first.txt",
+    "first",
+  );
+  await core.handle(createCommand("project_create", { name: "Second" }));
+  const secondProjectId = latestState(events).active_project_id;
+  await (await provider.open(secondProjectId)).write(
+    "/only-second.txt",
+    "second",
+  );
+
+  const inactiveExport = createCommand("workspace_export", {
+    project_id: firstProjectId,
+  });
+  await core.handle(inactiveExport);
+  assert.deepEqual(events.at(-1), {
+    protocol_version: events.at(-1).protocol_version,
+    event_id: events.at(-1).event_id,
+    request_id: inactiveExport.request_id,
+    type: "workspace_export_snapshot",
+    payload: {
+      project_id: firstProjectId,
+      project_name: "Local workspace",
+      workspace_revision: 1,
+      files: [
+        { path: "/README.md", content: "# Test" },
+        { path: "/only-first.txt", content: "first" },
+      ],
+    },
+  });
+  assert.equal((await store.load()).active_project_id, secondProjectId);
+
+  const activeExport = createCommand("workspace_export", {
+    project_id: secondProjectId,
+  });
+  await core.handle(activeExport);
+  assert.equal(events.at(-1).type, "workspace_export_snapshot");
+  assert.equal(events.at(-1).request_id, activeExport.request_id);
+  assert.deepEqual(events.at(-1).payload, {
+    project_id: secondProjectId,
+    project_name: "Second",
+    workspace_revision: 1,
+    files: [
+      { path: "/README.md", content: "# Test" },
+      { path: "/only-second.txt", content: "second" },
+    ],
+  });
+  assert.equal((await store.load()).active_project_id, secondProjectId);
+});
+
+test("cancels one active export and coalesces duplicate request ids", async () => {
+  const store = new MemoryProjectStore();
+  let blockCapture = true;
+  let captureCount = 0;
+  let captureSignal;
+  let markCaptureStarted;
+  const captureStarted = new Promise((resolve) => {
+    markCaptureStarted = resolve;
+  });
+  const provider = new MemoryWorkspaceBackend((initialFiles) => {
+    const workspace = new MemoryFileSystem(
+      Object.fromEntries(
+        (initialFiles ?? [{ path: "/README.md", content: "# Test" }]).map(
+          ({ path, content }) => [path, content],
+        ),
+      ),
+    );
+    const readFilesSnapshot = workspace.readFilesSnapshot.bind(workspace);
+    workspace.readFilesSnapshot = async (options) => {
+      captureCount += 1;
+      if (!blockCapture) return readFilesSnapshot(options);
+      captureSignal = options?.signal;
+      markCaptureStarted();
+      return new Promise((_resolve, reject) => {
+        const abort = () => reject(captureSignal.reason);
+        if (captureSignal.aborted) {
+          abort();
+        } else {
+          captureSignal.addEventListener("abort", abort, { once: true });
+        }
+      });
+    };
+    return workspace;
+  });
+  const events = [];
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+  const projectId = latestState(events).active_project_id;
+  const exportCommand = createCommand("workspace_export", {
+    project_id: projectId,
+  });
+  const exportHandling = core.handle(exportCommand);
+  await captureStarted;
+  const duplicateHandling = core.handle({
+    ...exportCommand,
+    payload: { ...exportCommand.payload },
+  });
+  await duplicateHandling;
+  assert.equal(captureCount, 1);
+
+  await core.handle(
+    createCommand("workspace_export_cancel", {
+      target_request_id: "another-export",
+    }),
+  );
+  assert.equal(captureSignal.aborted, false);
+
+  await core.handle(
+    createCommand("workspace_export_cancel", {
+      target_request_id: exportCommand.request_id,
+    }),
+  );
+  await exportHandling;
+
+  assert.equal(captureSignal.aborted, true);
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === "workspace_export_snapshot" &&
+        event.request_id === exportCommand.request_id,
+    ),
+    false,
+  );
+  const canceled = events.find(
+    (event) =>
+      event.type === "error" &&
+      event.request_id === exportCommand.request_id,
+  );
+  assert.equal(canceled.payload.code, "workspace_export_cancelled");
+
+  const reusedRequestId = "future-export";
+  await core.handle(
+    createCommand("workspace_export_cancel", {
+      target_request_id: reusedRequestId,
+    }),
+  );
+  blockCapture = false;
+  await core.handle({
+    ...createCommand("workspace_export", { project_id: projectId }),
+    request_id: reusedRequestId,
+  });
+  assert.equal(events.at(-1).type, "workspace_export_snapshot");
+  assert.equal(events.at(-1).request_id, reusedRequestId);
+});
+
+test("an export canceled while queued never starts workspace capture", async () => {
+  const store = new MemoryProjectStore();
+  let captureCount = 0;
+  let markFirstCaptureStarted;
+  const firstCaptureStarted = new Promise((resolve) => {
+    markFirstCaptureStarted = resolve;
+  });
+  const provider = new MemoryWorkspaceBackend((initialFiles) => {
+    const workspace = new MemoryFileSystem(
+      Object.fromEntries(
+        (initialFiles ?? [{ path: "/README.md", content: "# Test" }]).map(
+          ({ path, content }) => [path, content],
+        ),
+      ),
+    );
+    workspace.readFilesSnapshot = async (options) => {
+      captureCount += 1;
+      if (captureCount === 1) markFirstCaptureStarted();
+      return new Promise((_resolve, reject) => {
+        const signal = options?.signal;
+        const abort = () => reject(signal.reason);
+        if (signal.aborted) {
+          abort();
+        } else {
+          signal.addEventListener("abort", abort, { once: true });
+        }
+      });
+    };
+    return workspace;
+  });
+  const events = [];
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+  const projectId = latestState(events).active_project_id;
+  const firstExport = createCommand("workspace_export", {
+    project_id: projectId,
+  });
+  const queuedExport = createCommand("workspace_export", {
+    project_id: projectId,
+  });
+  const firstHandling = core.handle(firstExport);
+  await firstCaptureStarted;
+  const queuedHandling = core.handle(queuedExport);
+  await Promise.resolve();
+
+  await core.handle(
+    createCommand("workspace_export_cancel", {
+      target_request_id: queuedExport.request_id,
+    }),
+  );
+  await core.handle(
+    createCommand("workspace_export_cancel", {
+      target_request_id: firstExport.request_id,
+    }),
+  );
+  await Promise.all([firstHandling, queuedHandling]);
+
+  assert.equal(captureCount, 1);
+  for (const command of [firstExport, queuedExport]) {
+    assert.equal(
+      events.some(
+        (event) =>
+          event.type === "error" &&
+          event.request_id === command.request_id &&
+          event.payload.code === "workspace_export_cancelled",
+      ),
+      true,
+    );
+    assert.equal(
+      events.some(
+        (event) =>
+          event.type === "workspace_export_snapshot" &&
+          event.request_id === command.request_id,
+      ),
+      false,
+    );
+  }
+});
+
+test("rejects workspace import and export while a model run is active", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  let markStarted;
+  const started = new Promise((resolve) => {
+    markStarted = resolve;
+  });
+  const core = createCore(store, provider, events, {
+    async *stream(_request, signal) {
+      markStarted();
+      await new Promise((resolve, reject) => {
+        signal.addEventListener(
+          "abort",
+          () => reject(new DOMException("Aborted", "AbortError")),
+          { once: true },
+        );
+      });
+      yield { type: "done" };
+    },
+  });
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  const prompt = core.handle(
+    createCommand("prompt", {
+      project_id: initial.active_project_id,
+      session_id: null,
+      text: "Keep running",
+    }),
+  );
+  await started;
+  const active = latestState(events);
+
+  await core.handle(
+    createCommand("workspace_export", {
+      project_id: active.active_project_id,
+    }),
+  );
+  assert.equal(events.at(-1).payload.code, "run_in_progress");
+  await core.handle(
+    createCommand("project_import", {
+      name: "Blocked import",
+      files: [{ path: "/blocked.txt", content: "blocked" }],
+    }),
+  );
+  assert.equal(events.at(-1).payload.code, "run_in_progress");
+  assert.equal((await store.load()).projects.length, 1);
+  assert.equal(
+    events.some((event) => event.type === "workspace_export_snapshot"),
+    false,
+  );
+
+  await core.handle(
+    createCommand("abort", {
+      project_id: active.active_project_id,
+      session_id: active.active_session_id,
+    }),
+  );
+  await prompt;
+});
+
 test("a failed first-session commit never starts transport or creates a session", async () => {
   const store = new MemoryProjectStore();
   const provider = createWorkspaceProvider();
@@ -2021,7 +2567,13 @@ test("reload repairs an incomplete persisted tool transcript by block identity",
   assert.equal(latestState(reloadedEvents).active_session_id, sessionId);
 });
 
-function createCore(store, provider, events, modelTransport) {
+function createCore(
+  store,
+  provider,
+  events,
+  modelTransport,
+  coreOptions = {},
+) {
   return new ResearchBoxCore({
     projectStore: store,
     workspaceBackend: provider,
@@ -2034,6 +2586,7 @@ function createCore(store, provider, events, modelTransport) {
     model,
     systemPrompt: "You are a test agent.",
     eventSink: (event) => events.push(event),
+    ...coreOptions,
   });
 }
 
@@ -2119,8 +2672,17 @@ function describeTimeline(timeline) {
 }
 
 function createWorkspaceProvider() {
+  const defaultFiles = [{ path: "/README.md", content: "# Test" }];
   return new MemoryWorkspaceBackend(
-    () => new MemoryFileSystem({ "/README.md": "# Test" }),
+    (initialFiles) =>
+      new MemoryFileSystem(
+        Object.fromEntries(
+          (initialFiles ?? defaultFiles).map(({ path, content }) => [
+            path,
+            content,
+          ]),
+        ),
+      ),
   );
 }
 

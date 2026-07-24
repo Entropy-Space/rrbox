@@ -13,8 +13,13 @@ import {
   type TimelineEntry,
   type ViewerCommand,
   type WorkspaceChangeSummary,
+  type WorkspaceTransferFile,
 } from "@researchbox/protocol";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import {
+  WorkspaceTransferRequests,
+  type WorkspaceExportSnapshot,
+} from "./workspace-transfer.ts";
 
 export type AgentSessionState = {
   state_revision: number;
@@ -144,7 +149,10 @@ type ManagementCommand = Exclude<
       | "input_draft_update"
       | "abort"
       | "fs_list"
-      | "fs_read";
+      | "fs_read"
+      | "project_import"
+      | "workspace_export"
+      | "workspace_export_cancel";
   }
 >;
 
@@ -161,6 +169,11 @@ export function useAgentSession(createWorker: () => Worker) {
   const workerRef = useRef<Worker | null>(null);
   const pendingManagementRequestRef = useRef<string | null>(null);
   const pendingProviderRefreshRequestRef = useRef(new Map<string, string>());
+  const workspaceTransferRequestsRef =
+    useRef<WorkspaceTransferRequests | null>(null);
+  if (workspaceTransferRequestsRef.current === null) {
+    workspaceTransferRequestsRef.current = new WorkspaceTransferRequests();
+  }
   const lastWorkspaceRefreshRef = useRef<string | null>(null);
   const isInputDraftPending =
     coreState.pending_input_draft_request_id !== null ||
@@ -309,11 +322,30 @@ export function useAgentSession(createWorker: () => Worker) {
 
   useEffect(() => {
     const worker = createWorker();
+    const terminateWorker = createWorkerTerminator(worker);
+    const failWorker = (message: string) => {
+      terminateWorker();
+      if (workerRef.current === worker) workerRef.current = null;
+      setTransportError(message);
+      dispatch({ type: "transport_failed", message });
+      pendingManagementRequestRef.current = null;
+      pendingProviderRefreshRequestRef.current.clear();
+      workspaceTransferRequestsRef.current?.rejectAll(new Error(message));
+      setRefreshingProviderIds(new Set());
+      setManagementPending(false);
+    };
     workerRef.current = worker;
     worker.onmessage = (message: MessageEvent<unknown>) => {
       try {
         const event = parseCoreEvent(message.data);
-        dispatch(event);
+        const handledWorkspaceTransfer =
+          workspaceTransferRequestsRef.current?.accept(event) ?? false;
+        if (
+          !handledWorkspaceTransfer ||
+          event.type === "state_snapshot"
+        ) {
+          dispatch(event);
+        }
         if (
           event.request_id === pendingManagementRequestRef.current &&
           (event.type === "state_snapshot" || event.type === "error")
@@ -348,23 +380,22 @@ export function useAgentSession(createWorker: () => Worker) {
           }
         }
       } catch {
-        setTransportError("The browser core sent an invalid event.");
+        failWorker("The browser core sent an invalid event.");
       }
     };
     worker.onerror = () => {
-      const message = "The browser core stopped. Refresh to try again.";
-      setTransportError(message);
-      dispatch({ type: "transport_failed", message });
-      pendingManagementRequestRef.current = null;
-      pendingProviderRefreshRequestRef.current.clear();
-      setRefreshingProviderIds(new Set());
-      setManagementPending(false);
+      failWorker("The browser core stopped. Refresh to try again.");
     };
     worker.postMessage(createCommand("bootstrap", {}));
 
     return () => {
-      worker.terminate();
-      workerRef.current = null;
+      workspaceTransferRequestsRef.current?.rejectAll(
+        new Error(
+          "The browser core closed before the workspace transfer completed.",
+        ),
+      );
+      terminateWorker();
+      if (workerRef.current === worker) workerRef.current = null;
     };
   }, [createWorker]);
 
@@ -465,6 +496,55 @@ export function useAgentSession(createWorker: () => Worker) {
       );
     },
     [sendManagementCommand],
+  );
+
+  const importProject = useCallback(
+    (name: string, files: WorkspaceTransferFile[]): Promise<void> => {
+      const requests = workspaceTransferRequestsRef.current;
+      if (!requests) {
+        return Promise.reject(
+          new Error("Workspace transfers are unavailable."),
+        );
+      }
+      if (requests.size > 0) {
+        return Promise.reject(
+          new Error("Another workspace transfer is already in progress."),
+        );
+      }
+
+      const command = createCommand("project_import", { name, files });
+      const completion = requests.beginImport(command.request_id);
+      try {
+        const worker = workerRef.current;
+        if (!worker) throw new Error("The browser core is not ready.");
+        worker.postMessage(command);
+      } catch (error) {
+        requests.reject(command.request_id, toError(error));
+      }
+      return completion;
+    },
+    [],
+  );
+
+  const exportWorkspace = useCallback(
+    (
+      projectId: string,
+      signal: AbortSignal,
+    ): Promise<WorkspaceExportSnapshot> => {
+      const requests = workspaceTransferRequestsRef.current;
+      if (!requests) {
+        return Promise.reject(
+          new Error("Workspace transfers are unavailable."),
+        );
+      }
+      return requestWorkspaceExport(
+        requests,
+        workerRef.current,
+        projectId,
+        signal,
+      );
+    },
+    [],
   );
 
   const selectNewChat = useCallback(
@@ -633,6 +713,8 @@ export function useAgentSession(createWorker: () => Worker) {
     renameProject,
     deleteProject,
     selectProject,
+    importProject,
+    exportWorkspace,
     selectNewChat,
     selectModel,
     refreshProvider,
@@ -643,6 +725,70 @@ export function useAgentSession(createWorker: () => Worker) {
     openFile,
     navigateToParent,
   };
+}
+
+export function cancelWorkspaceExportRequest(
+  requests: WorkspaceTransferRequests,
+  worker: Pick<Worker, "postMessage">,
+  targetRequestId: string,
+): boolean {
+  if (!requests.cancelExport(targetRequestId)) return false;
+  try {
+    worker.postMessage(
+      createCommand("workspace_export_cancel", {
+        target_request_id: targetRequestId,
+      }),
+    );
+  } catch {
+    // The local request is already canceled; any eventual reply is ignored.
+  }
+  return true;
+}
+
+export function requestWorkspaceExport(
+  requests: WorkspaceTransferRequests,
+  worker: Pick<Worker, "postMessage"> | null,
+  projectId: string,
+  signal: AbortSignal,
+): Promise<WorkspaceExportSnapshot> {
+  if (signal.aborted) {
+    return Promise.reject(
+      new DOMException("The workspace export was canceled.", "AbortError"),
+    );
+  }
+  if (requests.size > 0) {
+    return Promise.reject(
+      new Error("Another workspace transfer is already in progress."),
+    );
+  }
+  if (!worker) {
+    return Promise.reject(new Error("The browser core is not ready."));
+  }
+
+  const command = createCommand("workspace_export", {
+    project_id: projectId,
+  });
+  const completion = requests.beginExport(command.request_id);
+  try {
+    worker.postMessage(command);
+  } catch (error) {
+    requests.reject(command.request_id, toError(error));
+    return completion;
+  }
+
+  const cancelExport = () => {
+    cancelWorkspaceExportRequest(
+      requests,
+      worker,
+      command.request_id,
+    );
+  };
+  signal.addEventListener("abort", cancelExport, { once: true });
+  if (signal.aborted) cancelExport();
+
+  return completion.finally(() => {
+    signal.removeEventListener("abort", cancelExport);
+  });
 }
 
 export function coreReducer(
@@ -861,6 +1007,8 @@ export function coreReducer(
         },
       };
     }
+    case "workspace_export_snapshot":
+      return state;
     case "files_snapshot": {
       const pending = state.pending_fs_list;
       if (
@@ -1273,4 +1421,23 @@ function replaceAt<T>(values: T[], index: number, value: T): T[] {
   return values.map((candidate, candidateIndex) =>
     candidateIndex === index ? value : candidate,
   );
+}
+
+function toError(value: unknown): Error {
+  return value instanceof Error
+    ? value
+    : new Error("The workspace transfer could not be started.");
+}
+
+export function createWorkerTerminator(
+  worker: Pick<Worker, "onmessage" | "onerror" | "terminate">,
+): () => void {
+  let isTerminated = false;
+  return () => {
+    if (isTerminated) return;
+    isTerminated = true;
+    worker.onmessage = null;
+    worker.onerror = null;
+    worker.terminate();
+  };
 }

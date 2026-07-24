@@ -1,12 +1,16 @@
-import type {
-  VfsRemoveOptions,
-  VfsWriteOptions,
-  Workspace,
-  WorkspaceChangesResult,
-  WorkspaceListResult,
-  WorkspaceReadResult,
-  WorkspaceRemoveResult,
-  WorkspaceWriteResult,
+import {
+  isWorkspaceFilesSnapshotReader,
+  type VfsRemoveOptions,
+  type VfsWriteOptions,
+  type Workspace,
+  type WorkspaceChangesResult,
+  type WorkspaceFilesSnapshotOptions,
+  type WorkspaceFilesSnapshotReader,
+  type WorkspaceFilesSnapshotResult,
+  type WorkspaceListResult,
+  type WorkspaceReadResult,
+  type WorkspaceRemoveResult,
+  type WorkspaceWriteResult,
 } from "@researchbox/vfs";
 
 /** @deprecated Use `WorkspaceListResult` from `@researchbox/vfs`. */
@@ -19,11 +23,22 @@ export type VersionedWorkspaceRead = WorkspaceReadResult;
 export type VersionedWorkspaceWrite = WorkspaceWriteResult;
 
 export class WorkspaceController implements Workspace {
+  readonly readFilesSnapshot?: WorkspaceFilesSnapshotReader["readFilesSnapshot"];
+
   private readonly filesystem: Workspace;
   private operationTail: Promise<void> = Promise.resolve();
 
   constructor(filesystem: Workspace) {
     this.filesystem = filesystem;
+    if (isWorkspaceFilesSnapshotReader(filesystem)) {
+      this.readFilesSnapshot = (
+        options?: WorkspaceFilesSnapshotOptions,
+      ): Promise<WorkspaceFilesSnapshotResult> =>
+        this.enqueue(() => {
+          throwIfAborted(options?.signal);
+          return filesystem.readFilesSnapshot(options);
+        });
+    }
   }
 
   list(path: string): Promise<WorkspaceListResult> {
@@ -61,4 +76,10 @@ export class WorkspaceController implements Workspace {
     );
     return result;
   }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw signal.reason ??
+    new DOMException("The operation was aborted.", "AbortError");
 }

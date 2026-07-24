@@ -52,14 +52,18 @@ export function encodeWorkspaceArchive(
 ): Uint8Array {
   const limits = resolveWorkspaceArchiveLimits(options);
   const validated = validatePortableWorkspaceSnapshot(snapshot, limits);
+  const encodedFiles = validated.files.map((file) => ({
+    ...file,
+    bytes: textEncoder.encode(file.content),
+  }));
   const manifest: WorkspaceArchiveManifestV1 = {
     format: "researchbox_workspace",
     format_version: WORKSPACE_ARCHIVE_FORMAT_VERSION,
     content_encoding: "utf-8",
-    files: validated.files.map((file) => ({
+    files: encodedFiles.map((file) => ({
       path: file.path,
       archive_path: file.archive_path,
-      byte_size: file.bytes.byteLength,
+      byte_size: file.byte_size,
       sha256: sha256Hex(file.bytes),
     })),
   };
@@ -73,7 +77,7 @@ export function encodeWorkspaceArchive(
   );
   const expectedArchiveSize = canonicalArchiveByteSize(
     manifestBytes,
-    validated.files,
+    encodedFiles,
   );
   assertWithinLimit(
     expectedArchiveSize,
@@ -84,7 +88,7 @@ export function encodeWorkspaceArchive(
   const entries: Zippable = {
     [WORKSPACE_ARCHIVE_MANIFEST_PATH]: [manifestBytes, ZIP_OPTIONS],
   };
-  for (const file of validated.files) {
+  for (const file of encodedFiles) {
     entries[file.archive_path] = [file.bytes, ZIP_OPTIONS];
   }
 

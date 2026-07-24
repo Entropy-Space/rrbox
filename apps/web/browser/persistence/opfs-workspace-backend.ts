@@ -1,6 +1,7 @@
 import {
   assertVfsWriteExpectation,
   compareVfsEntries,
+  compareVfsStrings,
   compareWorkspaceChanges,
   createVfsWriteResult,
   incrementWorkspaceRevision,
@@ -21,6 +22,9 @@ import {
   type WorkspaceCreateOptions,
   type WorkspaceChangeRecord,
   type WorkspaceChangesResult,
+  type WorkspaceFilesSnapshotOptions,
+  type WorkspaceFilesSnapshotReader,
+  type WorkspaceFilesSnapshotResult,
   type WorkspaceListResult,
   type WorkspaceReadResult,
   type WorkspaceRemoveResult,
@@ -272,106 +276,169 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
   }
 
   delete(projectId: string): Promise<void> {
+    return this.enqueue(() => this.deleteWorkspace(projectId));
+  }
+
+  reconcileOrphanedWorkspaces(
+    retainedProjectIds: readonly string[],
+  ): Promise<void> {
+    const retained = new Set(retainedProjectIds);
     return this.enqueue(async () => {
-      const database = await this.database.open();
-      const transaction = database.transaction(
-        [
-          databaseStores.project_filesystems,
-          databaseStores.files,
-          databaseStores.file_changes,
-          databaseStores.opfs_files,
-          databaseStores.meta,
-        ],
-        "readwrite",
+      const orphaned = await this.listOrphanedWorkspaces(retained);
+      for (const orphan of orphaned) {
+        await this.deleteWorkspace(
+          orphan.project_id,
+          orphan.incarnation_id,
+        );
+      }
+    });
+  }
+
+  private async deleteWorkspace(
+    projectId: string,
+    expectedIncarnationId?: string,
+  ): Promise<void> {
+    const database = await this.database.open();
+    const transaction = database.transaction(
+      [
+        databaseStores.project_filesystems,
+        databaseStores.files,
+        databaseStores.file_changes,
+        databaseStores.opfs_files,
+        databaseStores.meta,
+      ],
+      "readwrite",
+    );
+    const completion = transactionDone(transaction);
+    const storageIds = new Set<string>();
+    try {
+      const workspaceStore = transaction.objectStore(
+        databaseStores.project_filesystems,
       );
-      const completion = transactionDone(transaction);
-      const storageIds = new Set<string>();
-      try {
-        const workspaceStore = transaction.objectStore(
-          databaseStores.project_filesystems,
-        );
-        const storedMarker = (await requestResult(
-          workspaceStore.get(projectId),
-        )) as Partial<ProjectFileSystemRecord> | undefined;
-        const fileStore = transaction.objectStore(databaseStores.files);
-        const changeStore = transaction.objectStore(
-          databaseStores.file_changes,
-        );
-        const opfsStore = transaction.objectStore(databaseStores.opfs_files);
-        const [inlineKeys, changes, opfsFiles] = await Promise.all([
-          requestResult(
-            fileStore.index("by_project").getAllKeys(projectId),
-          ),
-          requestResult(
-            changeStore.index("by_project").getAll(projectId),
-          ) as Promise<WorkspaceChangeStorageRecord[]>,
-          requestResult(
-            opfsStore.index("by_project").getAll(projectId),
-          ) as Promise<OpfsFileRecord[]>,
-        ]);
+      const storedMarker = (await requestResult(
+        workspaceStore.get(projectId),
+      )) as Partial<ProjectFileSystemRecord> | undefined;
+      const fileStore = transaction.objectStore(databaseStores.files);
+      const changeStore = transaction.objectStore(
+        databaseStores.file_changes,
+      );
+      const opfsStore = transaction.objectStore(databaseStores.opfs_files);
+      const [inlineKeys, changes, opfsFiles] = await Promise.all([
+        requestResult(
+          fileStore.index("by_project").getAllKeys(projectId),
+        ),
+        requestResult(
+          changeStore.index("by_project").getAll(projectId),
+        ) as Promise<WorkspaceChangeStorageRecord[]>,
+        requestResult(
+          opfsStore.index("by_project").getAll(projectId),
+        ) as Promise<OpfsFileRecord[]>,
+      ]);
 
-        let marker: ProjectFileSystemRecord | undefined;
-        if (storedMarker !== undefined) {
-          marker = hasCompleteProjectFileSystemMetadata(storedMarker)
-            ? storedMarker
-            : repairProjectFileSystemRecord(
-                {
-                  ...storedMarker,
-                  project_id: projectId,
-                },
-                changes,
-              );
-        }
-        if (marker?.opfs_storage_id) {
-          storageIds.add(marker.opfs_storage_id);
-        }
-        if (marker?.opfs_migration) {
-          storageIds.add(marker.opfs_migration.storage_id);
-        }
-        for (const file of opfsFiles) storageIds.add(file.storage_id);
-        const metaStore = transaction.objectStore(databaseStores.meta);
-        for (const storageId of storageIds) {
-          metaStore.put(this.createCleanupRecord(storageId, null));
-        }
-
-        for (const key of inlineKeys) fileStore.delete(key);
-        for (const change of changes) {
-          changeStore.delete([projectId, change.change_id]);
-        }
-        for (const file of opfsFiles) {
-          opfsStore.delete([projectId, file.path]);
-        }
-
-        if (marker?.lifecycle_status === "active") {
-          workspaceStore.put({
-            ...marker,
-            workspace_revision: incrementWorkspaceRevision(
-              marker.workspace_revision,
-            ),
-            lifecycle_status: "deleted",
-            content_storage: "none",
-            opfs_storage_id: null,
-            opfs_migration: null,
-          } satisfies ProjectFileSystemRecord);
-        } else if (
-          storedMarker !== undefined &&
-          marker !== undefined &&
-          !hasCompleteProjectFileSystemMetadata(storedMarker)
-        ) {
-          workspaceStore.put(marker);
-        }
+      let marker: ProjectFileSystemRecord | undefined;
+      if (storedMarker !== undefined) {
+        marker = hasCompleteProjectFileSystemMetadata(storedMarker)
+          ? storedMarker
+          : repairProjectFileSystemRecord(
+              {
+                ...storedMarker,
+                project_id: projectId,
+              },
+              changes,
+            );
+      }
+      if (
+        expectedIncarnationId !== undefined &&
+        (marker?.lifecycle_status !== "active" ||
+          marker.incarnation_id !== expectedIncarnationId)
+      ) {
         await completion;
-      } catch (error) {
-        return abortTransaction(transaction, completion, error);
+        return;
+      }
+      if (marker?.opfs_storage_id) {
+        storageIds.add(marker.opfs_storage_id);
+      }
+      if (marker?.opfs_migration) {
+        storageIds.add(marker.opfs_migration.storage_id);
+      }
+      for (const file of opfsFiles) storageIds.add(file.storage_id);
+      const metaStore = transaction.objectStore(databaseStores.meta);
+      for (const storageId of storageIds) {
+        metaStore.put(this.createCleanupRecord(storageId, null));
       }
 
-    });
+      for (const key of inlineKeys) fileStore.delete(key);
+      for (const change of changes) {
+        changeStore.delete([projectId, change.change_id]);
+      }
+      for (const file of opfsFiles) {
+        opfsStore.delete([projectId, file.path]);
+      }
+
+      if (marker?.lifecycle_status === "active") {
+        workspaceStore.put({
+          ...marker,
+          workspace_revision: incrementWorkspaceRevision(
+            marker.workspace_revision,
+          ),
+          lifecycle_status: "deleted",
+          content_storage: "none",
+          opfs_storage_id: null,
+          opfs_migration: null,
+        } satisfies ProjectFileSystemRecord);
+      } else if (
+        storedMarker !== undefined &&
+        marker !== undefined &&
+        !hasCompleteProjectFileSystemMetadata(storedMarker)
+      ) {
+        workspaceStore.put(marker);
+      }
+      await completion;
+    } catch (error) {
+      return abortTransaction(transaction, completion, error);
+    }
+  }
+
+  private async listOrphanedWorkspaces(
+    retainedProjectIds: ReadonlySet<string>,
+  ): Promise<Array<{ project_id: string; incarnation_id: string }>> {
+    const database = await this.database.open();
+    const transaction = database.transaction(
+      databaseStores.project_filesystems,
+      "readonly",
+    );
+    const completion = transactionDone(transaction);
+    try {
+      const records = (await requestResult(
+        transaction
+          .objectStore(databaseStores.project_filesystems)
+          .getAll(),
+      )) as Array<Partial<ProjectFileSystemRecord>>;
+      await completion;
+      return records
+        .filter(
+          (record): record is Partial<ProjectFileSystemRecord> & {
+            project_id: string;
+            incarnation_id: string;
+          } =>
+            typeof record.project_id === "string" &&
+            typeof record.incarnation_id === "string" &&
+            record.lifecycle_status !== "deleted" &&
+            !retainedProjectIds.has(record.project_id),
+        )
+        .map((record) => ({
+          project_id: record.project_id,
+          incarnation_id: record.incarnation_id,
+        }));
+    } catch (error) {
+      return abortTransaction(transaction, completion, error);
+    }
   }
 
   private createHandle(
     projectId: string,
     incarnationId: string,
-  ): Workspace {
+  ): Workspace & WorkspaceFilesSnapshotReader {
     return {
       list: (path) =>
         this.enqueue(() =>
@@ -380,6 +447,14 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
       read: (path) =>
         this.enqueue(() =>
           this.readWorkspace(projectId, incarnationId, path),
+        ),
+      readFilesSnapshot: (options) =>
+        this.enqueue(() =>
+          this.readWorkspaceFilesSnapshot(
+            projectId,
+            incarnationId,
+            options,
+          ),
         ),
       write: (path, content, options) =>
         this.enqueue(() =>
@@ -404,6 +479,35 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
         this.enqueue(() =>
           this.listWorkspaceChanges(projectId, incarnationId),
         ),
+    };
+  }
+
+  private async readWorkspaceFilesSnapshot(
+    projectId: string,
+    incarnationId: string,
+    options?: WorkspaceFilesSnapshotOptions,
+  ): Promise<WorkspaceFilesSnapshotResult> {
+    throwIfAborted(options?.signal);
+    const { marker, files } = await this.loadOpfsSnapshot(
+      projectId,
+      incarnationId,
+    );
+    const capturedFiles: VfsSeedFile[] = [];
+    for (const file of files) {
+      throwIfAborted(options?.signal);
+      const content = await this.objects.read(
+        file.storage_id,
+        file.content_id,
+      );
+      assertObjectByteSize(file, content);
+      capturedFiles.push({ path: file.path, content });
+    }
+    throwIfAborted(options?.signal);
+    return {
+      workspace_revision: marker.workspace_revision,
+      files: capturedFiles.sort((left, right) =>
+        compareVfsStrings(left.path, right.path),
+      ),
     };
   }
 
@@ -1877,4 +1981,10 @@ async function abortTransaction(
   }
   await completion.catch(() => undefined);
   throw error;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw signal.reason ??
+    new DOMException("The workspace snapshot was aborted.", "AbortError");
 }

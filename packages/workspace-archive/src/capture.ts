@@ -1,9 +1,11 @@
 import {
   compareVfsEntries,
   compareVfsStrings,
+  isWorkspaceFilesSnapshotReader,
   normalizePath,
   VfsError,
   type VfsEntry,
+  type WorkspaceFilesSnapshotReader,
   type WorkspaceReader,
 } from "@researchbox/vfs";
 import {
@@ -31,13 +33,19 @@ class WorkspaceRevisionChanged extends Error {}
 export async function capturePortableWorkspace(
   workspace: WorkspaceReader,
   options?: WorkspaceArchiveOptions,
+  signal?: AbortSignal,
 ): Promise<CapturedPortableWorkspace> {
   const limits = resolveWorkspaceArchiveLimits(options);
+  throwIfAborted(signal);
+  if (isWorkspaceFilesSnapshotReader(workspace)) {
+    return captureFilesSnapshot(workspace, limits, signal);
+  }
   let observedConcurrentChange = false;
 
   for (let attempt = 0; attempt < CAPTURE_ATTEMPTS; attempt += 1) {
+    throwIfAborted(signal);
     try {
-      return await captureAttempt(workspace, limits);
+      return await captureAttempt(workspace, limits, signal);
     } catch (error) {
       if (error instanceof WorkspaceRevisionChanged) {
         observedConcurrentChange = true;
@@ -57,8 +65,12 @@ export async function capturePortableWorkspace(
 async function captureAttempt(
   workspace: WorkspaceReader,
   limits: WorkspaceArchiveLimits,
+  signal: AbortSignal | undefined,
 ): Promise<CapturedPortableWorkspace> {
-  const rootListing = await workspace.list("/");
+  const rootListing = await runWorkspaceRead(
+    () => workspace.list("/"),
+    signal,
+  );
   const workspaceRevision = validateWorkspaceRevision(
     rootListing.workspace_revision,
   );
@@ -68,11 +80,15 @@ async function captureAttempt(
       rootListing.entries,
       workspaceRevision,
       limits,
+      signal,
     );
   } catch (error) {
     if (!isConcurrentShapeError(error)) throw error;
     try {
-      const latestRoot = await workspace.list("/");
+      const latestRoot = await runWorkspaceRead(
+        () => workspace.list("/"),
+        signal,
+      );
       if (
         validateWorkspaceRevision(latestRoot.workspace_revision) !==
         workspaceRevision
@@ -97,6 +113,7 @@ async function captureAtRevision(
   initialRootEntries: VfsEntry[],
   workspaceRevision: number,
   limits: WorkspaceArchiveLimits,
+  signal: AbortSignal | undefined,
 ): Promise<CapturedPortableWorkspace> {
   const rootEntries = validateListing("/", initialRootEntries, limits);
   const files: Array<{ path: string; content: string }> = [];
@@ -115,7 +132,10 @@ async function captureAtRevision(
         : validateListing(
             directory,
             assertRevision(
-              await workspace.list(directory),
+              await runWorkspaceRead(
+                () => workspace.list(directory),
+                signal,
+              ),
               workspaceRevision,
             ).entries,
             limits,
@@ -162,7 +182,10 @@ async function captureAtRevision(
         "Workspace content",
       );
       const result = assertRevision(
-        await workspace.read(entry.path),
+        await runWorkspaceRead(
+          () => workspace.read(entry.path),
+          signal,
+        ),
         workspaceRevision,
       );
       if (
@@ -189,7 +212,10 @@ async function captureAtRevision(
   }
 
   const finalRoot = assertRevision(
-    await workspace.list("/"),
+    await runWorkspaceRead(
+      () => workspace.list("/"),
+      signal,
+    ),
     workspaceRevision,
   );
   const finalRootEntries = validateListing("/", finalRoot.entries, limits);
@@ -204,6 +230,52 @@ async function captureAtRevision(
     },
     workspace_revision: workspaceRevision,
   };
+}
+
+async function captureFilesSnapshot(
+  workspace: WorkspaceReader & WorkspaceFilesSnapshotReader,
+  limits: WorkspaceArchiveLimits,
+  signal: AbortSignal | undefined,
+): Promise<CapturedPortableWorkspace> {
+  const result = await runWorkspaceRead(
+    () => workspace.readFilesSnapshot({ signal }),
+    signal,
+  );
+  if (typeof result !== "object" || result === null) {
+    throw new WorkspaceArchiveError(
+      "invalid_input",
+      "Workspace returned an invalid files snapshot.",
+    );
+  }
+  const workspaceRevision = validateWorkspaceRevision(
+    result.workspace_revision,
+  );
+  const validated = validatePortableWorkspaceSnapshot(
+    { files: result.files },
+    limits,
+  );
+  return {
+    snapshot: {
+      files: validated.files.map(({ path, content }) => ({ path, content })),
+    },
+    workspace_revision: workspaceRevision,
+  };
+}
+
+async function runWorkspaceRead<T>(
+  operation: () => Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  throwIfAborted(signal);
+  const result = await operation();
+  throwIfAborted(signal);
+  return result;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw signal.reason ??
+    new DOMException("The workspace capture was aborted.", "AbortError");
 }
 
 function assertRevision<T extends { workspace_revision: number }>(

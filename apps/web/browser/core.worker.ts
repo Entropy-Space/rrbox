@@ -10,7 +10,7 @@ import {
 } from "@researchbox/runtime-browser";
 import { startBrowserRuntime } from "./browser-runtime.ts";
 import {
-  IndexedDbWorkspaceBackend,
+  BrowserWorkspaceBackend,
   IndexedDbProjectStore,
   ResearchBoxDatabase,
 } from "./persistence";
@@ -69,7 +69,7 @@ startBrowserRuntime({
     const database = new ResearchBoxDatabase();
     return new ResearchBoxCore({
       projectStore: new IndexedDbProjectStore(database),
-      workspaceBackend: new IndexedDbWorkspaceBackend(
+      workspaceBackend: new BrowserWorkspaceBackend(
         database,
         researchBoxSeedFiles,
       ),

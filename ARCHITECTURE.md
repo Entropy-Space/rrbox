@@ -110,25 +110,32 @@ elected core. Writer election first probes conditionally, reports
 request for automatic promotion.
 
 The elected browser core owns one IndexedDB database with `meta`, `projects`,
-`sessions`, `session_documents`, `project_filesystems`, `files`, and
-`file_changes` stores. Catalog writes use a monotonic `state_revision` guard.
-Draft-only writes update one project or session document without rewriting the
-catalog; this relies on the origin-wide exclusive Web Lock that gives exactly
-one core write ownership. Session documents persist the existing-session input
-draft and one versioned, ordered timeline. Assistant entries own ordered text,
-reasoning, and tool-call blocks; tool results are separate entries linked by
-internal block identifiers. That timeline is the viewer state and maps
-back into the currently supported text-only user and tool-result Pi surface.
-Projects persist their virtual new-chat draft and model selection; durable
-sessions persist their own model selection.
+`sessions`, `session_documents`, `project_filesystems`, `files`,
+`file_changes`, and `opfs_files` stores. Catalog writes use a monotonic
+`state_revision` guard. Draft-only writes update one project or session
+document without rewriting the catalog; this relies on the origin-wide
+exclusive Web Lock that gives exactly one core write ownership. Session
+documents persist the existing-session input draft and one versioned, ordered
+timeline. Assistant entries own ordered text, reasoning, and tool-call blocks;
+tool results are separate entries linked by internal block identifiers. That
+timeline is the viewer state and maps back into the currently supported
+text-only user and tool-result Pi surface. Projects persist their virtual
+new-chat draft and model selection; durable sessions persist their own model
+selection.
 
 `write_file` and exact-match `replace_text` use compare-and-swap VFS writes.
-IndexedDB commits the file and an undo-ready before/after receipt in one
-transaction. The core checkpoints a mutation before execution and after its
-tool result, correlating its receipt with the internal tool-call block
-identifier. If a worker stops between those checkpoints, reload reconciliation
-uses the durable receipt to record truthful success before the remaining stream
-is marked interrupted.
+For inline projects, IndexedDB commits the file and an undo-ready before/after
+receipt in one transaction. For OPFS projects, content bytes are immutable
+SHA-256-addressed objects written and closed first; one later IndexedDB
+transaction atomically publishes the manifest pointer, receipt, clock, and
+revision. Pre-registered cleanup tasks make unpublished and superseded objects
+recoverable after interruption. All OPFS operations and cleanup share a
+separate origin-wide Web Lock so cleanup cannot race a reader or publisher.
+The core checkpoints a mutation before execution and after its tool result,
+correlating its receipt with the internal tool-call block identifier. If a
+worker stops between those checkpoints, reload reconciliation uses the durable
+receipt to record truthful success before the remaining stream is marked
+interrupted.
 
 A project owns one virtual filesystem and zero or more durable sessions.
 Switching a project restores its last selected session or its virtual new chat.
@@ -158,8 +165,8 @@ cannot be reconstructed after its files and receipts have been cleared, so a
 durable backend must fail closed instead of resetting that project sequence.
 
 - memory: implemented deterministic test backend
-- IndexedDB: implemented durable browser backend
-- OPFS: planned large-workspace browser backend
+- IndexedDB: implemented durable metadata, journal, and fallback content backend
+- OPFS: implemented immutable content backend with resumable IndexedDB migration
 - native folder: planned desktop backend
 - iOS application storage: planned native mobile backend
 - ZIP: planned deterministic import/export codec, not a live backend
@@ -173,6 +180,22 @@ namespace exactly; their on-disk representation is not a public contract.
 Deleted workspace markers retain only the next project-scoped revision so
 reusing an identifier cannot move the viewer's cache backwards; file content
 and change receipts are still removed.
+
+Browser storage version 5 gives each active workspace an explicit
+`indexeddb` or `opfs` content owner. Migration never performs filesystem I/O in
+an IndexedDB upgrade transaction. Inline content remains authoritative while
+each OPFS candidate is copied and recorded; a final IndexedDB transaction
+rechecks the incarnation, source revision, and exact path coverage before
+flipping ownership. Cleanup of stale inline rows and unreachable OPFS objects
+is idempotent and resumes from durable `meta` records.
+
+The browser probes an actual temporary OPFS writable stream before selecting
+the hybrid backend, so engines that expose an OPFS root without writable
+streams remain on inline IndexedDB. A transient probe failure is surfaced and
+may be retried; the runtime never falls back to stale inline content after an
+OPFS-owned marker exists. This design provides application/process-crash
+consistency. The web platform does not expose a cross-engine fsync or
+two-phase-commit guarantee for sudden device power loss.
 Backend-specific optional behavior must be added through explicit capability
 interfaces rather than runtime checks inside the agent core. All concrete
 backends run the same shared conformance suite.

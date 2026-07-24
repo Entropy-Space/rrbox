@@ -89,15 +89,25 @@ deployment target. Never publish ResearchBox to `chatgpt.site`.
 ## Storage
 
 The browser composition stores project metadata, drafts, normalized session
-timelines, project files, and undo-ready file-change receipts in one versioned
-IndexedDB database. A new chat remains project-scoped draft state until its
-first prompt; its selected model, staged user timeline entry, session, and
-cleared project draft commit atomically before model transport starts. Existing
-chats retain their own model selection. File mutations use compare-and-swap
-writes; file content, an optional receipt, the durable workspace revision, and
-the monotonic receipt clock share one IndexedDB transaction. Version-4 storage
-backfills legacy workspace revisions from receipt counts, which preserves the
-only revision baseline recoverable from older databases.
+timelines, transactional file manifests, undo-ready change receipts, and
+workspace revisions in one versioned IndexedDB database. When the browser can
+successfully create and close an OPFS writable stream, immutable
+content-addressed UTF-8 file objects live in OPFS; otherwise new workspaces keep
+their content inline in IndexedDB. A new chat remains project-scoped draft state
+until its first prompt; its selected model, staged user timeline entry, session,
+and cleared project draft commit atomically before model transport starts.
+Existing chats retain their own model selection.
+
+An OPFS mutation closes its immutable object before one IndexedDB transaction
+publishes the new manifest pointer, optional receipt, monotonic receipt clock,
+and durable revision. Failed publication leaves an unreachable object, never a
+partially committed workspace; durable cleanup records remove those objects
+under an origin-wide storage lock. Existing inline workspaces migrate
+resumably: IndexedDB remains authoritative while candidate objects are copied,
+then one transaction verifies the source revision and exact path coverage
+before flipping ownership without changing the workspace revision. Versioned
+storage migrations backfill the only revision baseline recoverable from older
+receipt journals.
 
 Provider discovery starts independently from workspace ownership. A browser
 runtime coordinator exposes provider catalog snapshots immediately, routes
@@ -106,15 +116,14 @@ only after acquiring one origin-wide Web Lock. A contending tab reports that it
 is waiting and is promoted automatically when the active writer closes. Only
 the elected core can persist a model selection or start inference.
 
-The memory project store and workspace backend remain deterministic test
-backends. IndexedDB and memory run one shared backend conformance suite.
-Optional OPFS, native-folder, and iOS backends can implement the same structural
-workspace capabilities. ZIP is a portable import/export codec rather than a
-live filesystem backend. Workspace paths are case-sensitive Unicode logical
-paths; native adapters may encode their physical names to preserve collisions
-that the host filesystem cannot represent directly. Every workspace operation
-returns a durable content revision from the same atomic read or mutation;
-revisions include unjournaled writes and removals and therefore are not derived
-from change-receipt count. Recreating a deleted project id continues its
-sequence through a durable tombstone instead of resetting cached content to an
-apparently older revision.
+The memory, inline IndexedDB, and hybrid OPFS workspace backends run the same
+conformance suite. Native-folder and iOS backends can implement the same
+structural workspace capabilities. ZIP is a portable import/export codec rather
+than a live filesystem backend. Workspace paths are case-sensitive Unicode
+logical paths; physical OPFS names are opaque hashes, and native adapters may
+encode names to preserve collisions that the host filesystem cannot represent
+directly. Every workspace operation returns a durable content revision from the
+same atomic read or mutation; revisions include unjournaled writes and removals
+and therefore are not derived from change-receipt count. Recreating a deleted
+project id continues its sequence through a durable tombstone instead of
+resetting cached content to an apparently older revision.

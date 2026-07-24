@@ -26,6 +26,8 @@ import {
 import {
   databaseStores,
   hasCompleteProjectFileSystemMetadata,
+  type OpfsFileRecord,
+  ProjectFileSystemMetadataError,
   type ProjectFileSystemRecord,
   repairProjectFileSystemRecord,
   requestResult,
@@ -68,6 +70,7 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
         databaseStores.project_filesystems,
         databaseStores.files,
         databaseStores.file_changes,
+        databaseStores.opfs_files,
       ],
       "readwrite",
     );
@@ -108,18 +111,26 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
       const workspaceRevision = existing?.workspace_revision ?? 0;
       const fileStore = transaction.objectStore(databaseStores.files);
       const changeStore = transaction.objectStore(databaseStores.file_changes);
-      const [fileKeys, changeKeys] = await Promise.all([
+      const opfsFileStore = transaction.objectStore(
+        databaseStores.opfs_files,
+      );
+      const [fileKeys, changeKeys, opfsFileKeys] = await Promise.all([
         requestResult(fileStore.index("by_project").getAllKeys(projectId)),
         requestResult(changeStore.index("by_project").getAllKeys(projectId)),
+        requestResult(opfsFileStore.index("by_project").getAllKeys(projectId)),
       ]);
       for (const key of fileKeys) fileStore.delete(key);
       for (const key of changeKeys) changeStore.delete(key);
+      for (const key of opfsFileKeys) opfsFileStore.delete(key);
       workspaceStore.put({
         project_id: projectId,
         incarnation_id: incarnationId,
         workspace_revision: workspaceRevision,
         last_change_at: null,
         lifecycle_status: "active",
+        content_storage: "indexeddb",
+        opfs_storage_id: null,
+        opfs_migration: null,
       } satisfies ProjectFileSystemRecord);
       for (const { path, content } of this.seedFiles) {
         fileStore.put({
@@ -186,6 +197,7 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
           `Project filesystem does not exist: ${projectId}`,
         );
       }
+      assertIndexedDbContentStorage(repaired);
       const incarnationId = repaired.incarnation_id;
       await completion;
       return new IndexedDbWorkspace(
@@ -205,6 +217,8 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
         databaseStores.project_filesystems,
         databaseStores.files,
         databaseStores.file_changes,
+        databaseStores.opfs_files,
+        databaseStores.meta,
       ],
       "readwrite",
     );
@@ -214,13 +228,17 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
     );
     const fileStore = transaction.objectStore(databaseStores.files);
     const changeStore = transaction.objectStore(databaseStores.file_changes);
+    const opfsFileStore = transaction.objectStore(databaseStores.opfs_files);
     const markerRequest = workspaceStore.get(projectId);
     const fileKeysRequest = fileStore.index("by_project").getAllKeys(projectId);
     const changesRequest = changeStore
       .index("by_project")
       .getAll(projectId);
+    const opfsFilesRequest = opfsFileStore
+      .index("by_project")
+      .getAll(projectId);
     try {
-      const [storedMarker, fileKeys, changes] = await Promise.all([
+      const [storedMarker, fileKeys, changes, opfsFiles] = await Promise.all([
         requestResult(markerRequest) as Promise<
           Partial<ProjectFileSystemRecord> | undefined
         >,
@@ -228,23 +246,51 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
         requestResult(changesRequest) as Promise<
           WorkspaceChangeStorageRecord[]
         >,
+        requestResult(opfsFilesRequest) as Promise<OpfsFileRecord[]>,
       ]);
+      let marker: ProjectFileSystemRecord | undefined;
+      let markerWasComplete = false;
+      if (storedMarker !== undefined) {
+        if (hasCompleteProjectFileSystemMetadata(storedMarker)) {
+          markerWasComplete = true;
+          marker = storedMarker;
+        } else {
+          marker = repairProjectFileSystemRecord(
+            {
+              ...storedMarker,
+              project_id: projectId,
+            },
+            changes,
+          );
+        }
+        if (marker.lifecycle_status === "active") {
+          assertIndexedDbContentStorage(marker);
+        }
+      }
       for (const key of fileKeys) fileStore.delete(key);
       for (const change of changes) {
         changeStore.delete([projectId, change.change_id]);
       }
-      if (storedMarker !== undefined) {
-        const markerWasComplete =
-          hasCompleteProjectFileSystemMetadata(storedMarker);
-        const marker = markerWasComplete
-          ? storedMarker
-          : repairProjectFileSystemRecord(
-              {
-                ...storedMarker,
-                project_id: projectId,
-              },
-              changes,
-            );
+      const cleanupStorageIds = new Set(
+        opfsFiles.map((file) => file.storage_id),
+      );
+      if (marker?.opfs_migration) {
+        cleanupStorageIds.add(marker.opfs_migration.storage_id);
+      }
+      const metaStore = transaction.objectStore(databaseStores.meta);
+      for (const storageId of cleanupStorageIds) {
+        metaStore.put({
+          key: `opfs_cleanup:${crypto.randomUUID()}`,
+          record_type: "opfs_cleanup",
+          created_by: "indexeddb_backend",
+          storage_id: storageId,
+          content_id: null,
+        });
+      }
+      for (const file of opfsFiles) {
+        opfsFileStore.delete([projectId, file.path]);
+      }
+      if (marker !== undefined) {
         if (marker.lifecycle_status === "active") {
           workspaceStore.put({
             ...marker,
@@ -252,6 +298,9 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
               marker.workspace_revision,
             ),
             lifecycle_status: "deleted",
+            content_storage: "none",
+            opfs_storage_id: null,
+            opfs_migration: null,
           } satisfies ProjectFileSystemRecord);
         } else if (!markerWasComplete) {
           workspaceStore.put(marker);
@@ -608,7 +657,21 @@ async function assertActiveProjectFileSystem(
       `Project filesystem metadata is incomplete; reopen it: ${projectId}`,
     );
   }
+  assertIndexedDbContentStorage(record);
   return record;
+}
+
+function assertIndexedDbContentStorage(
+  record: ProjectFileSystemRecord,
+): void {
+  if (
+    record.lifecycle_status === "active" &&
+    record.content_storage === "opfs"
+  ) {
+    throw new ProjectFileSystemMetadataError(
+      `Project filesystem content is stored in OPFS and cannot be opened by the legacy IndexedDB backend: ${record.project_id}`,
+    );
+  }
 }
 
 function readIncarnationId(

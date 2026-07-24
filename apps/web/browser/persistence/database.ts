@@ -1,4 +1,4 @@
-export const RESEARCHBOX_DATABASE_VERSION = 4;
+export const RESEARCHBOX_DATABASE_VERSION = 5;
 
 export const databaseStores = {
   meta: "meta",
@@ -8,14 +8,54 @@ export const databaseStores = {
   project_filesystems: "project_filesystems",
   files: "files",
   file_changes: "file_changes",
+  opfs_files: "opfs_files",
 } as const;
 
-export type ProjectFileSystemRecord = {
+type ProjectFileSystemRecordBase = {
   project_id: string;
   incarnation_id: string;
   workspace_revision: number;
   last_change_at: string | null;
-  lifecycle_status: "active" | "deleted";
+};
+
+export type ProjectFileSystemMigrationRecord = {
+  migration_id: string;
+  storage_id: string;
+  source_workspace_revision: number;
+};
+
+type ActiveProjectFileSystemStorageState =
+  | {
+      content_storage: "indexeddb";
+      opfs_storage_id: null;
+      opfs_migration: ProjectFileSystemMigrationRecord | null;
+    }
+  | {
+      content_storage: "opfs";
+      opfs_storage_id: string;
+      opfs_migration: null;
+    };
+
+export type ProjectFileSystemRecord = ProjectFileSystemRecordBase &
+  (
+    | ({ lifecycle_status: "active" } &
+        ActiveProjectFileSystemStorageState)
+    | {
+        lifecycle_status: "deleted";
+        content_storage: "none";
+        opfs_storage_id: null;
+        opfs_migration: null;
+      }
+  );
+
+export type OpfsFileRecord = {
+  project_id: string;
+  path: string;
+  incarnation_id: string;
+  storage_id: string;
+  content_id: string;
+  byte_size: number;
+  migration_id: string | null;
 };
 
 export type StoredWorkspaceChangeTimestamp = {
@@ -161,6 +201,9 @@ function createSchema(
           workspace_revision: 0,
           last_change_at: null,
           lifecycle_status: "active",
+          content_storage: "indexeddb",
+          opfs_storage_id: null,
+          opfs_migration: null,
         } satisfies ProjectFileSystemRecord);
         cursor.continue();
       };
@@ -178,6 +221,12 @@ function createSchema(
       { keyPath: ["project_id", "change_id"] },
     );
     fileChanges.createIndex("by_project", "project_id", { unique: false });
+  }
+  if (!database.objectStoreNames.contains(databaseStores.opfs_files)) {
+    const opfsFiles = database.createObjectStore(databaseStores.opfs_files, {
+      keyPath: ["project_id", "path"],
+    });
+    opfsFiles.createIndex("by_project", "project_id", { unique: false });
   }
   if (transaction) {
     migrateProjectFileSystemMetadata(transaction);
@@ -201,7 +250,8 @@ export function hasCompleteProjectFileSystemMetadata(
     (record.last_change_at === null ||
       canonicalTimestamp(record.last_change_at) === record.last_change_at) &&
     (record.lifecycle_status === "active" ||
-      record.lifecycle_status === "deleted")
+      record.lifecycle_status === "deleted") &&
+    hasValidProjectFileSystemStorageState(record)
   );
 }
 
@@ -235,8 +285,7 @@ export function repairProjectFileSystemRecord(
       null,
     );
 
-  return {
-    ...record,
+  const common = {
     project_id: record.project_id,
     incarnation_id:
       typeof record.incarnation_id === "string" &&
@@ -248,7 +297,20 @@ export function repairProjectFileSystemRecord(
       changes.length + (lifecycleStatus === "deleted" ? 1 : 0),
     ),
     last_change_at: latestTimestamp,
-    lifecycle_status: lifecycleStatus,
+  };
+  if (lifecycleStatus === "deleted") {
+    return {
+      ...common,
+      lifecycle_status: "deleted",
+      content_storage: "none",
+      opfs_storage_id: null,
+      opfs_migration: null,
+    };
+  }
+  return {
+    ...common,
+    lifecycle_status: "active",
+    ...repairActiveProjectFileSystemStorageState(record),
   };
 }
 
@@ -279,6 +341,102 @@ function migrateProjectFileSystemMetadata(
       cursor.continue();
     };
   };
+}
+
+function hasValidProjectFileSystemStorageState(
+  record: Partial<ProjectFileSystemRecord>,
+): boolean {
+  if (record.lifecycle_status === "deleted") {
+    return (
+      record.content_storage === "none" &&
+      record.opfs_storage_id === null &&
+      record.opfs_migration === null
+    );
+  }
+  if (record.lifecycle_status !== "active") return false;
+  if (record.content_storage === "indexeddb") {
+    return (
+      record.opfs_storage_id === null &&
+      (record.opfs_migration === null ||
+        isValidProjectFileSystemMigration(record.opfs_migration))
+    );
+  }
+  return (
+    record.content_storage === "opfs" &&
+    isNonEmptyString(record.opfs_storage_id) &&
+    record.opfs_migration === null
+  );
+}
+
+function repairActiveProjectFileSystemStorageState(
+  record: Partial<ProjectFileSystemRecord>,
+): ActiveProjectFileSystemStorageState {
+  if (record.content_storage === undefined) {
+    if (
+      record.opfs_storage_id !== undefined ||
+      record.opfs_migration !== undefined
+    ) {
+      throw invalidStorageMetadata(record.project_id);
+    }
+    return {
+      content_storage: "indexeddb",
+      opfs_storage_id: null,
+      opfs_migration: null,
+    };
+  }
+  if (record.content_storage === "indexeddb") {
+    if (
+      (record.opfs_storage_id !== undefined &&
+        record.opfs_storage_id !== null) ||
+      (record.opfs_migration !== undefined &&
+        record.opfs_migration !== null &&
+        !isValidProjectFileSystemMigration(record.opfs_migration))
+    ) {
+      throw invalidStorageMetadata(record.project_id);
+    }
+    return {
+      content_storage: "indexeddb",
+      opfs_storage_id: null,
+      opfs_migration: record.opfs_migration ?? null,
+    };
+  }
+  if (
+    record.content_storage === "opfs" &&
+    isNonEmptyString(record.opfs_storage_id) &&
+    (record.opfs_migration === undefined || record.opfs_migration === null)
+  ) {
+    return {
+      content_storage: "opfs",
+      opfs_storage_id: record.opfs_storage_id,
+      opfs_migration: null,
+    };
+  }
+  throw invalidStorageMetadata(record.project_id);
+}
+
+function isValidProjectFileSystemMigration(
+  value: unknown,
+): value is ProjectFileSystemMigrationRecord {
+  if (typeof value !== "object" || value === null) return false;
+  const migration = value as Partial<ProjectFileSystemMigrationRecord>;
+  return (
+    isNonEmptyString(migration.migration_id) &&
+    isNonEmptyString(migration.storage_id) &&
+    Number.isSafeInteger(migration.source_workspace_revision) &&
+    (migration.source_workspace_revision ?? -1) >= 0
+  );
+}
+
+function invalidStorageMetadata(
+  projectId: string | undefined,
+): ProjectFileSystemMetadataError {
+  return new ProjectFileSystemMetadataError(
+    `Project filesystem has invalid content storage metadata: ${projectId ?? "unknown"}`,
+  );
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
 }
 
 function canonicalTimestamp(value: unknown): string | null {

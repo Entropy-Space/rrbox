@@ -104,6 +104,7 @@ test("keeps package boundaries explicit", async () => {
   assert.match(coreWorker, /startBrowserRuntime/);
   assert.match(coreWorker, /new ResearchBoxCore/);
   assert.match(coreWorker, /IndexedDbProjectStore/);
+  assert.match(coreWorker, /BrowserWorkspaceBackend/);
   assert.doesNotMatch(coreWorker, /HttpNdjsonModelTransport/);
   assert.match(llmWorker, /attachLlmWorkerHost/);
   assert.match(llmWorker, /HttpNdjsonModelTransport/);

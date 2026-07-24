@@ -678,6 +678,9 @@ test("IndexedDB v2 filesystem markers gain stable incarnation ids", async () => 
   assert.equal(marker.workspace_revision, 0);
   assert.equal(marker.last_change_at, null);
   assert.equal(marker.lifecycle_status, "active");
+  assert.equal(marker.content_storage, "indexeddb");
+  assert.equal(marker.opfs_storage_id, null);
+  assert.equal(marker.opfs_migration, null);
 
   const secondHandle = await provider.open("legacy-project");
   await secondHandle.write("/legacy.txt", "updated", {
@@ -762,6 +765,9 @@ test("IndexedDB v3 workspace markers gain durable revision metadata", async () =
     workspace_revision: 4,
     last_change_at: "2026-07-24T00:00:00.010Z",
     lifecycle_status: "active",
+    content_storage: "indexeddb",
+    opfs_storage_id: null,
+    opfs_migration: null,
   });
 
   database.close();
@@ -772,6 +778,221 @@ test("IndexedDB v3 workspace markers gain durable revision metadata", async () =
   ).open("legacy-project");
   assert.equal((await reopened.list("/")).workspace_revision, 4);
   reopenedDatabase.close();
+});
+
+test("IndexedDB v4 workspace markers gain explicit content storage state", async () => {
+  const factory = new IDBFactory();
+  const databaseName = `researchbox-storage-migration-${crypto.randomUUID()}`;
+  const legacyDatabase = await openVersionFourDatabase(
+    factory,
+    databaseName,
+  );
+  const transaction = legacyDatabase.transaction(
+    ["project_filesystems", "files"],
+    "readwrite",
+  );
+  const completion = transactionComplete(transaction);
+  transaction.objectStore("project_filesystems").put({
+    project_id: "active-project",
+    incarnation_id: "active-incarnation",
+    workspace_revision: 2,
+    last_change_at: null,
+    lifecycle_status: "active",
+  });
+  transaction.objectStore("project_filesystems").put({
+    project_id: "deleted-project",
+    incarnation_id: "deleted-incarnation",
+    workspace_revision: 7,
+    last_change_at: null,
+    lifecycle_status: "deleted",
+  });
+  transaction.objectStore("files").put({
+    project_id: "active-project",
+    path: "/legacy.txt",
+    content: "legacy",
+  });
+  await completion;
+  legacyDatabase.close();
+
+  const database = new ResearchBoxDatabase(factory, databaseName);
+  const connection = await database.open();
+  assert.equal(connection.version, 5);
+  assert.equal(connection.objectStoreNames.contains("opfs_files"), true);
+  const verification = connection.transaction(
+    ["project_filesystems", "opfs_files"],
+    "readonly",
+  );
+  const verificationComplete = transactionComplete(verification);
+  assert.equal(
+    verification
+      .objectStore("opfs_files")
+      .indexNames.contains("by_project"),
+    true,
+  );
+  assert.deepEqual(
+    await requestValue(
+      verification.objectStore("project_filesystems").get("active-project"),
+    ),
+    {
+      project_id: "active-project",
+      incarnation_id: "active-incarnation",
+      workspace_revision: 2,
+      last_change_at: null,
+      lifecycle_status: "active",
+      content_storage: "indexeddb",
+      opfs_storage_id: null,
+      opfs_migration: null,
+    },
+  );
+  assert.deepEqual(
+    await requestValue(
+      verification.objectStore("project_filesystems").get("deleted-project"),
+    ),
+    {
+      project_id: "deleted-project",
+      incarnation_id: "deleted-incarnation",
+      workspace_revision: 7,
+      last_change_at: null,
+      lifecycle_status: "deleted",
+      content_storage: "none",
+      opfs_storage_id: null,
+      opfs_migration: null,
+    },
+  );
+  assert.deepEqual(
+    await requestValue(verification.objectStore("opfs_files").getAll()),
+    [],
+  );
+  await verificationComplete;
+
+  const provider = new IndexedDbWorkspaceBackend(database, {});
+  assert.equal(
+    (await (await provider.open("active-project")).read("/legacy.txt")).content,
+    "legacy",
+  );
+  await assert.rejects(
+    provider.open("deleted-project"),
+    /does not exist/,
+  );
+  database.close();
+});
+
+test("legacy IndexedDB backend rejects OPFS ownership and clears OPFS metadata on delete", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-opfs-ownership-${crypto.randomUUID()}`,
+  );
+  const provider = new IndexedDbWorkspaceBackend(database, {
+    "/inline.txt": "inline",
+  });
+  const workspace = await provider.create("project-1");
+  const connection = await database.open();
+  const markOpfs = connection.transaction(
+    ["project_filesystems", "opfs_files"],
+    "readwrite",
+  );
+  const markOpfsComplete = transactionComplete(markOpfs);
+  const marker = await requestValue(
+    markOpfs.objectStore("project_filesystems").get("project-1"),
+  );
+  markOpfs.objectStore("project_filesystems").put({
+    ...marker,
+    content_storage: "opfs",
+    opfs_storage_id: "storage-1",
+    opfs_migration: null,
+  });
+  markOpfs.objectStore("opfs_files").put({
+    project_id: "project-1",
+    path: "/inline.txt",
+    incarnation_id: marker.incarnation_id,
+    storage_id: "storage-1",
+    content_id: "content-1",
+    byte_size: 6,
+    migration_id: null,
+  });
+  await markOpfsComplete;
+
+  for (const operation of [
+    () => workspace.list("/"),
+    () => provider.open("project-1"),
+    () => provider.delete("project-1"),
+  ]) {
+    await assert.rejects(
+      operation(),
+      (error) =>
+        error.name === "ProjectFileSystemMetadataError" &&
+        /stored in OPFS/.test(error.message),
+    );
+  }
+
+  const verifyRejectedDelete = connection.transaction(
+    ["project_filesystems", "files", "opfs_files"],
+    "readonly",
+  );
+  const verifyRejectedDeleteComplete = transactionComplete(
+    verifyRejectedDelete,
+  );
+  assert.equal(
+    (
+      await requestValue(
+        verifyRejectedDelete.objectStore("files").getAll(),
+      )
+    ).length,
+    1,
+  );
+  assert.equal(
+    (
+      await requestValue(
+        verifyRejectedDelete.objectStore("opfs_files").getAll(),
+      )
+    ).length,
+    1,
+  );
+  await verifyRejectedDeleteComplete;
+
+  const returnToIndexedDb = connection.transaction(
+    "project_filesystems",
+    "readwrite",
+  );
+  const returnToIndexedDbComplete = transactionComplete(returnToIndexedDb);
+  returnToIndexedDb.objectStore("project_filesystems").put({
+    ...marker,
+    content_storage: "indexeddb",
+    opfs_storage_id: null,
+    opfs_migration: null,
+  });
+  await returnToIndexedDbComplete;
+  await provider.delete("project-1");
+
+  const verification = connection.transaction(
+    ["project_filesystems", "files", "opfs_files"],
+    "readonly",
+  );
+  const verificationComplete = transactionComplete(verification);
+  assert.deepEqual(
+    await requestValue(
+      verification.objectStore("project_filesystems").get("project-1"),
+    ),
+    {
+      ...marker,
+      workspace_revision: 1,
+      lifecycle_status: "deleted",
+      content_storage: "none",
+      opfs_storage_id: null,
+      opfs_migration: null,
+    },
+  );
+  assert.deepEqual(
+    await requestValue(verification.objectStore("files").getAll()),
+    [],
+  );
+  assert.deepEqual(
+    await requestValue(verification.objectStore("opfs_files").getAll()),
+    [],
+  );
+  await verificationComplete;
+  database.close();
 });
 
 test("current IndexedDB markers lazily repair revision metadata", async () => {
@@ -831,6 +1052,9 @@ test("current IndexedDB markers lazily repair revision metadata", async () => {
     workspace_revision: 1,
     last_change_at: expectedTimestamp,
     lifecycle_status: "active",
+    content_storage: "indexeddb",
+    opfs_storage_id: null,
+    opfs_migration: null,
   });
   database.close();
 });
@@ -935,6 +1159,9 @@ test("current IndexedDB markers missing incarnation ids are repaired lazily", as
   assert.equal(marker.workspace_revision, 0);
   assert.equal(marker.last_change_at, null);
   assert.equal(marker.lifecycle_status, "active");
+  assert.equal(marker.content_storage, "indexeddb");
+  assert.equal(marker.opfs_storage_id, null);
+  assert.equal(marker.opfs_migration, null);
   database.close();
 });
 
@@ -951,7 +1178,7 @@ test("a blocked IndexedDB upgrade can be retried without leaking its late connec
 
   legacyDatabase.close();
   const connection = await database.open();
-  assert.equal(connection.version, 4);
+  assert.equal(connection.version, 5);
 
   database.close();
   await Promise.resolve();
@@ -1232,6 +1459,37 @@ function openVersionTwoDatabase(factory, databaseName) {
 function openVersionThreeDatabase(factory, databaseName) {
   return new Promise((resolve, reject) => {
     const request = factory.open(databaseName, 3);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      database.createObjectStore("meta", { keyPath: "key" });
+      database.createObjectStore("projects", { keyPath: "project_id" });
+      const sessions = database.createObjectStore("sessions", {
+        keyPath: "session_id",
+      });
+      sessions.createIndex("by_project", "project_id", { unique: false });
+      database.createObjectStore("session_documents", {
+        keyPath: "session_id",
+      });
+      database.createObjectStore("project_filesystems", {
+        keyPath: "project_id",
+      });
+      const files = database.createObjectStore("files", {
+        keyPath: ["project_id", "path"],
+      });
+      files.createIndex("by_project", "project_id", { unique: false });
+      const changes = database.createObjectStore("file_changes", {
+        keyPath: ["project_id", "change_id"],
+      });
+      changes.createIndex("by_project", "project_id", { unique: false });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function openVersionFourDatabase(factory, databaseName) {
+  return new Promise((resolve, reject) => {
+    const request = factory.open(databaseName, 4);
     request.onupgradeneeded = () => {
       const database = request.result;
       database.createObjectStore("meta", { keyPath: "key" });

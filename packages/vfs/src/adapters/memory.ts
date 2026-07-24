@@ -1,5 +1,7 @@
 import {
   assertVfsWriteExpectation,
+  compareVfsEntries,
+  compareWorkspaceChanges,
   createVfsWriteResult,
   normalizeFilePath,
   normalizePath,
@@ -9,11 +11,11 @@ import {
   type VfsRemoveOptions,
   type VfsWriteOptions,
   type VfsWriteResult,
-  type VirtualFileSystem,
+  type Workspace,
   type WorkspaceChangeRecord,
 } from "../filesystem.ts";
 
-export class MemoryFileSystem implements VirtualFileSystem {
+export class MemoryWorkspace implements Workspace {
   private readonly files = new Map<string, string>();
   private readonly changes = new Map<string, WorkspaceChangeRecord>();
 
@@ -62,10 +64,7 @@ export class MemoryFileSystem implements VirtualFileSystem {
       }
     }
 
-    return [...entries.values()].sort((left, right) => {
-      if (left.kind !== right.kind) return left.kind === "directory" ? -1 : 1;
-      return left.name.localeCompare(right.name);
-    });
+    return [...entries.values()].sort(compareVfsEntries);
   }
 
   async read(path: string): Promise<string> {
@@ -134,11 +133,7 @@ export class MemoryFileSystem implements VirtualFileSystem {
 
   async listChanges(): Promise<WorkspaceChangeRecord[]> {
     return [...this.changes.values()]
-      .sort((left, right) =>
-        left.created_at === right.created_at
-          ? left.change_id.localeCompare(right.change_id)
-          : left.created_at.localeCompare(right.created_at),
-      )
+      .sort(compareWorkspaceChanges)
       .map((change) => ({ ...change }));
   }
 
@@ -167,3 +162,6 @@ export class MemoryFileSystem implements VirtualFileSystem {
     return [...this.files.keys()].some((candidate) => candidate.startsWith(prefix));
   }
 }
+
+/** @deprecated Use `MemoryWorkspace`. */
+export { MemoryWorkspace as MemoryFileSystem };

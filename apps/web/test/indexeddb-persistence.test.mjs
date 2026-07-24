@@ -2,17 +2,47 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { IDBFactory } from "fake-indexeddb";
 import {
-  IndexedDbProjectFileSystemProvider,
+  defineDurableWorkspaceBackendConformance,
+  defineWorkspaceBackendConformance,
+} from "@researchbox/vfs-testkit";
+import {
+  IndexedDbWorkspaceBackend,
   IndexedDbProjectStore,
   ResearchBoxDatabase,
 } from "../browser/persistence/index.ts";
+
+const indexedDbConformance = {
+  name: "IndexedDB workspace backend",
+  async create_backend({ seed_files }) {
+    const factory = new IDBFactory();
+    const databaseName = `researchbox-conformance-${crypto.randomUUID()}`;
+    let database = new ResearchBoxDatabase(factory, databaseName);
+    let backend = new IndexedDbWorkspaceBackend(database, seed_files);
+
+    return {
+      backend,
+      async reopen() {
+        database.close();
+        database = new ResearchBoxDatabase(factory, databaseName);
+        backend = new IndexedDbWorkspaceBackend(database, {});
+        return backend;
+      },
+      close() {
+        database.close();
+      },
+    };
+  },
+};
+
+defineWorkspaceBackendConformance(indexedDbConformance);
+defineDurableWorkspaceBackendConformance(indexedDbConformance);
 
 test("IndexedDB project state and files survive reopening the database", async () => {
   const factory = new IDBFactory();
   const databaseName = `researchbox-test-${crypto.randomUUID()}`;
   const firstDatabase = new ResearchBoxDatabase(factory, databaseName);
   const firstStore = new IndexedDbProjectStore(firstDatabase);
-  const firstProvider = new IndexedDbProjectFileSystemProvider(firstDatabase, {
+  const firstProvider = new IndexedDbWorkspaceBackend(firstDatabase, {
     "/README.md": "seed",
   });
   const state = createState();
@@ -37,7 +67,7 @@ test("IndexedDB project state and files survive reopening the database", async (
 
   const secondDatabase = new ResearchBoxDatabase(factory, databaseName);
   const secondStore = new IndexedDbProjectStore(secondDatabase);
-  const secondProvider = new IndexedDbProjectFileSystemProvider(secondDatabase, {});
+  const secondProvider = new IndexedDbWorkspaceBackend(secondDatabase, {});
   assert.deepEqual(await secondStore.load(), expectedState);
   assert.equal(
     await (await secondProvider.open("project-1")).read("/notes.txt"),
@@ -74,7 +104,7 @@ test("IndexedDB seed validation cannot leave a partial workspace", async () => {
 
   assert.throws(
     () =>
-      new IndexedDbProjectFileSystemProvider(database, {
+      new IndexedDbWorkspaceBackend(database, {
         "/valid.txt": "valid",
         "../../invalid.txt": "invalid",
       }),
@@ -82,14 +112,14 @@ test("IndexedDB seed validation cannot leave a partial workspace", async () => {
   );
   assert.throws(
     () =>
-      new IndexedDbProjectFileSystemProvider(database, {
+      new IndexedDbWorkspaceBackend(database, {
         "/a": "file",
         "/a/b": "nested",
       }),
     (error) => error.code === "not_directory",
   );
 
-  const provider = new IndexedDbProjectFileSystemProvider(database, {});
+  const provider = new IndexedDbWorkspaceBackend(database, {});
   await assert.rejects(provider.open("project-1"), /does not exist/);
   database.close();
 });
@@ -98,7 +128,7 @@ test("IndexedDB atomically persists file writes and workspace change receipts", 
   const factory = new IDBFactory();
   const databaseName = `researchbox-file-changes-${crypto.randomUUID()}`;
   const firstDatabase = new ResearchBoxDatabase(factory, databaseName);
-  const firstProvider = new IndexedDbProjectFileSystemProvider(firstDatabase, {});
+  const firstProvider = new IndexedDbWorkspaceBackend(firstDatabase, {});
   const filesystem = await firstProvider.create("project-1");
 
   const created = await filesystem.write(
@@ -144,7 +174,7 @@ test("IndexedDB atomically persists file writes and workspace change receipts", 
   firstDatabase.close();
 
   const reopenedDatabase = new ResearchBoxDatabase(factory, databaseName);
-  const reopenedProvider = new IndexedDbProjectFileSystemProvider(
+  const reopenedProvider = new IndexedDbWorkspaceBackend(
     reopenedDatabase,
     {},
   );
@@ -197,7 +227,7 @@ test("concurrent IndexedDB compare-and-swap writes allow one winner", async () =
     factory,
     `researchbox-file-cas-${crypto.randomUUID()}`,
   );
-  const provider = new IndexedDbProjectFileSystemProvider(database, {
+  const provider = new IndexedDbWorkspaceBackend(database, {
     "/notes.txt": "original",
   });
   const filesystem = await provider.create("project-1");
@@ -241,7 +271,7 @@ test("stale IndexedDB handles cannot mutate a deleted or recreated project", asy
     factory,
     `researchbox-stale-filesystem-${crypto.randomUUID()}`,
   );
-  const provider = new IndexedDbProjectFileSystemProvider(database, {});
+  const provider = new IndexedDbWorkspaceBackend(database, {});
   const stale = await provider.create("project-1");
 
   await provider.delete("project-1");
@@ -542,7 +572,7 @@ test("IndexedDB v1 projects gain filesystem markers during migration", async () 
   legacyDatabase.close();
 
   const database = new ResearchBoxDatabase(factory, databaseName);
-  const provider = new IndexedDbProjectFileSystemProvider(database, {});
+  const provider = new IndexedDbWorkspaceBackend(database, {});
   const filesystem = await provider.open("legacy-project");
 
   assert.deepEqual(await filesystem.list("/"), []);
@@ -574,7 +604,7 @@ test("IndexedDB v2 filesystem markers gain stable incarnation ids", async () => 
   legacyDatabase.close();
 
   const database = new ResearchBoxDatabase(factory, databaseName);
-  const provider = new IndexedDbProjectFileSystemProvider(database, {});
+  const provider = new IndexedDbWorkspaceBackend(database, {});
   const filesystem = await provider.open("legacy-project");
   assert.equal(await filesystem.read("/legacy.txt"), "legacy");
 
@@ -605,7 +635,7 @@ test("current IndexedDB markers missing incarnation ids are repaired lazily", as
     factory,
     `researchbox-incarnation-repair-${crypto.randomUUID()}`,
   );
-  const provider = new IndexedDbProjectFileSystemProvider(database, {});
+  const provider = new IndexedDbWorkspaceBackend(database, {});
   const oldHandle = await provider.create("project-1");
   await oldHandle.write("/notes.txt", "persisted");
 
@@ -676,7 +706,7 @@ test("concurrent IndexedDB writes preserve file and directory path invariants", 
     factory,
     `researchbox-write-race-${crypto.randomUUID()}`,
   );
-  const provider = new IndexedDbProjectFileSystemProvider(database, {});
+  const provider = new IndexedDbWorkspaceBackend(database, {});
   const filesystem = await provider.create("project-1");
 
   const results = await Promise.allSettled([

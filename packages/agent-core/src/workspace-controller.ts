@@ -2,7 +2,7 @@ import type {
   VfsEntry,
   VfsWriteOptions,
   VfsWriteResult,
-  VirtualFileSystem,
+  Workspace,
   WorkspaceChangeRecord,
 } from "@researchbox/vfs";
 
@@ -22,13 +22,13 @@ export type VersionedWorkspaceWrite = {
 };
 
 export class WorkspaceController {
-  private readonly filesystem: VirtualFileSystem;
+  private readonly filesystem: Workspace;
   private operationTail: Promise<void> = Promise.resolve();
   private initialized = false;
   private workspaceRevision = 0;
   private lastChangeTimestamp = -1;
 
-  constructor(filesystem: VirtualFileSystem) {
+  constructor(filesystem: Workspace) {
     this.filesystem = filesystem;
   }
 

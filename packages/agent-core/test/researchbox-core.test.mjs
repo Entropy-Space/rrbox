@@ -4,7 +4,7 @@ import { MemoryProjectStore } from "@researchbox/project-store";
 import { createCommand } from "@researchbox/protocol";
 import {
   MemoryFileSystem,
-  MemoryProjectFileSystemProvider,
+  MemoryWorkspaceBackend,
 } from "@researchbox/vfs";
 import { ResearchBoxCore } from "../src/index.ts";
 
@@ -29,6 +29,25 @@ const localModel = {
   provider: "local-openai",
   baseUrl: "",
 };
+
+test("accepts the deprecated workspace provider composition option", async () => {
+  const events = [];
+  const core = new ResearchBoxCore({
+    projectStore: new MemoryProjectStore(),
+    workspaceProvider: createWorkspaceProvider(),
+    modelTransport: {
+      async *stream() {
+        yield { type: "done" };
+      },
+    },
+    model,
+    systemPrompt: "You are a test agent.",
+    eventSink: (event) => events.push(event),
+  });
+
+  await core.handle(createCommand("bootstrap", {}));
+  assert.equal(latestState(events).active_session_id, null);
+});
 
 test("keeps new chat virtual and persists the first prompt before transport", async () => {
   const store = new MemoryProjectStore();
@@ -209,7 +228,7 @@ test("model selection is chat-scoped and survives first send and reload", async 
   const createConfiguredCore = (eventSink) =>
     new ResearchBoxCore({
       projectStore: store,
-      workspaceProvider: provider,
+      workspaceBackend: provider,
       modelTransport,
       model,
       providers: [
@@ -324,7 +343,7 @@ test("dynamic providers refresh, reject non-tool models, and recover", async () 
   ];
   const core = new ResearchBoxCore({
     projectStore: store,
-    workspaceProvider: provider,
+    workspaceBackend: provider,
     modelTransport: {
       async *stream() {
         yield { type: "done" };
@@ -455,7 +474,7 @@ test("persisted dynamic model becomes ready after reload discovery", async () =>
   const createDynamicCore = (modelCatalog, eventSink) =>
     new ResearchBoxCore({
       projectStore: store,
-      workspaceProvider: provider,
+      workspaceBackend: provider,
       modelTransport: {
         async *stream() {
           yield { type: "done" };
@@ -553,7 +572,7 @@ test("persisted dynamic model becomes ready after reload discovery", async () =>
 test("provider refresh recovers when its loading snapshot fails", async () => {
   const store = new MemoryProjectStore();
   const workspace = new MemoryFileSystem({ "/README.md": "# Test" });
-  const provider = new MemoryProjectFileSystemProvider(() => workspace);
+  const provider = new MemoryWorkspaceBackend(() => workspace);
   const events = [];
   let listCalls = 0;
   let discoveryCalls = 0;
@@ -575,7 +594,7 @@ test("provider refresh recovers when its loading snapshot fails", async () => {
   };
   const core = new ResearchBoxCore({
     projectStore: store,
-    workspaceProvider: provider,
+    workspaceBackend: provider,
     modelTransport: {
       async *stream() {
         yield { type: "done" };
@@ -753,7 +772,7 @@ test("abort bypasses catalog serialization and checkpoints a terminal assistant"
 test("abort repairs unexecuted sequential tool calls before the next prompt", async () => {
   const store = new MemoryProjectStore();
   const workspace = new MemoryFileSystem({ "/README.md": "# Test" });
-  const provider = new MemoryProjectFileSystemProvider(() => workspace);
+  const provider = new MemoryWorkspaceBackend(() => workspace);
   const events = [];
   let markFirstToolStarted;
   let releaseFirstTool;
@@ -1652,7 +1671,7 @@ test("reload never reuses an old receipt for a repeated provider tool id", async
 test("replace_text rejects overlapping matches without changing the file", async () => {
   const store = new MemoryProjectStore();
   const workspace = new MemoryFileSystem({ "/overlap.txt": "aaa" });
-  const provider = new MemoryProjectFileSystemProvider(() => workspace);
+  const provider = new MemoryWorkspaceBackend(() => workspace);
   const events = [];
   let requestCount = 0;
   const core = createCore(store, provider, events, {
@@ -1958,7 +1977,7 @@ test("reload repairs an incomplete persisted tool transcript by block identity",
 function createCore(store, provider, events, modelTransport) {
   return new ResearchBoxCore({
     projectStore: store,
-    workspaceProvider: provider,
+    workspaceBackend: provider,
     modelTransport: modelTransport ?? {
       async *stream(request) {
         yield* textEvents(`Echo: ${promptFromRequest(request)}`);
@@ -2053,7 +2072,7 @@ function describeTimeline(timeline) {
 }
 
 function createWorkspaceProvider() {
-  return new MemoryProjectFileSystemProvider(
+  return new MemoryWorkspaceBackend(
     () => new MemoryFileSystem({ "/README.md": "# Test" }),
   );
 }

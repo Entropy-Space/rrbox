@@ -109,7 +109,7 @@ test("keeps package boundaries explicit", async () => {
   assert.match(llmWorker, /HttpNdjsonModelTransport/);
   assert.match(llmWorker, /OpenAiCompatibleModelTransport/);
   assert.match(core, /ProjectStore/);
-  assert.match(core, /ProjectFileSystemProvider/);
+  assert.match(core, /WorkspaceBackend/);
   assert.match(runtime, /new Agent\(/);
   assert.match(runtime, /WorkspaceController/);
   assert.match(protocol, /PROTOCOL_VERSION = 7/);

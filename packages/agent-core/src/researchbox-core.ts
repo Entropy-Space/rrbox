@@ -23,8 +23,8 @@ import {
   type WorkspaceChangeSummary,
 } from "@researchbox/protocol";
 import type {
-  ProjectFileSystemProvider,
   VfsEntry,
+  WorkspaceBackend,
   WorkspaceChangeRecord,
 } from "@researchbox/vfs";
 import {
@@ -40,9 +40,20 @@ import {
 } from "./provider-catalog-service.ts";
 import { WorkspaceController } from "./workspace-controller.ts";
 
+type WorkspaceBackendOption =
+  | {
+      workspaceBackend: WorkspaceBackend;
+      /** @deprecated Use `workspaceBackend`. */
+      workspaceProvider?: never;
+    }
+  | {
+      workspaceBackend?: never;
+      /** @deprecated Use `workspaceBackend`. */
+      workspaceProvider: WorkspaceBackend;
+    };
+
 export type ResearchBoxCoreOptions = {
   projectStore: ProjectStore;
-  workspaceProvider: ProjectFileSystemProvider;
   modelTransport: ModelTransport;
   providerCatalog?: ProviderCatalogService;
   modelCatalog?: ProviderModelCatalog;
@@ -50,13 +61,13 @@ export type ResearchBoxCoreOptions = {
   providers?: ModelProviderDefinition[];
   systemPrompt: string;
   eventSink: CoreEventSink;
-};
+} & WorkspaceBackendOption;
 
 export type AgentCoreOptions = ResearchBoxCoreOptions;
 
 export class ResearchBoxCore {
   private readonly projectStore: ProjectStore;
-  private readonly workspaceProvider: ProjectFileSystemProvider;
+  private readonly workspaceBackend: WorkspaceBackend;
   private readonly modelTransport: ModelTransport;
   private readonly providerCatalog: ProviderCatalogService;
   private readonly defaultModel: Model<string>;
@@ -73,7 +84,8 @@ export class ResearchBoxCore {
 
   constructor(options: ResearchBoxCoreOptions) {
     this.projectStore = options.projectStore;
-    this.workspaceProvider = options.workspaceProvider;
+    this.workspaceBackend =
+      options.workspaceBackend ?? options.workspaceProvider;
     this.modelTransport = options.modelTransport;
     this.defaultModel = options.model;
     this.defaultModelSelection = {
@@ -149,7 +161,7 @@ export class ResearchBoxCore {
       this.state = loaded;
       const reconciledChanges = await reconcileWorkspaceChanges(
         loaded,
-        this.workspaceProvider,
+        this.workspaceBackend,
       );
       const repairedTranscripts = repairInvalidTranscripts(loaded);
       const repairedRuns = repairInterruptedSessions(loaded);
@@ -159,12 +171,12 @@ export class ResearchBoxCore {
     } else {
       const state = createInitialState(this.defaultModelSelection);
       const projectId = state.active_project_id;
-      await this.workspaceProvider.create(projectId);
+      await this.workspaceBackend.create(projectId);
       state.state_revision = 1;
       try {
         await this.projectStore.save(state, null);
       } catch (error) {
-        await this.workspaceProvider.delete(projectId).catch(() => undefined);
+        await this.workspaceBackend.delete(projectId).catch(() => undefined);
         throw error;
       }
       this.state = state;
@@ -376,11 +388,11 @@ export class ResearchBoxCore {
     draft.active_project_id = project.project_id;
     draft.active_session_id = null;
 
-    await this.workspaceProvider.create(project.project_id);
+    await this.workspaceBackend.create(project.project_id);
     try {
       await this.commitDraft(draft);
     } catch (error) {
-      await this.workspaceProvider
+      await this.workspaceBackend
         .delete(project.project_id)
         .catch(() => undefined);
       throw error;
@@ -440,7 +452,7 @@ export class ResearchBoxCore {
       );
       draft.projects.push(replacement);
       replacementProjectId = replacement.project_id;
-      await this.workspaceProvider.create(replacement.project_id);
+      await this.workspaceBackend.create(replacement.project_id);
     }
     if (activeChanged) {
       const nextProject = newestProject(draft.projects);
@@ -452,7 +464,7 @@ export class ResearchBoxCore {
       await this.commitDraft(draft);
     } catch (error) {
       if (replacementProjectId) {
-        await this.workspaceProvider
+        await this.workspaceBackend
           .delete(replacementProjectId)
           .catch(() => undefined);
       }
@@ -461,7 +473,7 @@ export class ResearchBoxCore {
     if (activeChanged) await this.activateSelection();
     await this.emitStateSnapshot(requestId);
     try {
-      await this.workspaceProvider.delete(projectId);
+      await this.workspaceBackend.delete(projectId);
       this.workspaces.delete(projectId);
     } catch (error) {
       this.emitError(
@@ -804,7 +816,7 @@ export class ResearchBoxCore {
     let workspace = this.workspaces.get(projectId);
     if (!workspace) {
       workspace = new WorkspaceController(
-        await this.workspaceProvider.open(projectId),
+        await this.workspaceBackend.open(projectId),
       );
       this.workspaces.set(projectId, workspace);
     }
@@ -1347,11 +1359,11 @@ function createSessionRecord(
 
 async function reconcileWorkspaceChanges(
   state: ProjectStoreState,
-  workspaceProvider: ProjectFileSystemProvider,
+  workspaceBackend: WorkspaceBackend,
 ): Promise<boolean> {
   const changesByProject = new Map<string, WorkspaceChangeRecord[]>();
   for (const project of state.projects) {
-    const workspace = await workspaceProvider.open(project.project_id);
+    const workspace = await workspaceBackend.open(project.project_id);
     changesByProject.set(project.project_id, await workspace.listChanges());
   }
 

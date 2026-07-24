@@ -1,17 +1,20 @@
 import {
   assertVfsWriteExpectation,
+  compareVfsEntries,
+  compareWorkspaceChanges,
   createVfsWriteResult,
   normalizeFilePath,
   normalizePath,
   normalizeVfsSeedFiles,
   VfsError,
-  type ProjectFileSystemProvider,
+  WorkspaceBackendError,
   type VfsEntry,
   type VfsRemoveOptions,
   type VfsSeedFile,
   type VfsWriteOptions,
   type VfsWriteResult,
-  type VirtualFileSystem,
+  type Workspace,
+  type WorkspaceBackend,
   type WorkspaceChangeRecord,
 } from "@researchbox/vfs";
 import {
@@ -41,9 +44,7 @@ type WorkspaceChangeStorageRecord = Omit<
   message_id?: string;
 };
 
-export class IndexedDbProjectFileSystemProvider
-  implements ProjectFileSystemProvider
-{
+export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
   private readonly database: ResearchBoxDatabase;
   private readonly seedFiles: VfsSeedFile[];
 
@@ -55,7 +56,7 @@ export class IndexedDbProjectFileSystemProvider
     this.seedFiles = normalizeVfsSeedFiles(seedFiles);
   }
 
-  async create(projectId: string): Promise<VirtualFileSystem> {
+  async create(projectId: string): Promise<Workspace> {
     const incarnationId = crypto.randomUUID();
     const database = await this.database.open();
     const transaction = database.transaction(
@@ -73,7 +74,10 @@ export class IndexedDbProjectFileSystemProvider
     try {
       const existing = await requestResult(workspaceStore.get(projectId));
       if (existing !== undefined) {
-        throw new Error(`Project filesystem already exists: ${projectId}`);
+        throw new WorkspaceBackendError(
+          "already_exists",
+          `Project filesystem already exists: ${projectId}`,
+        );
       }
       const fileStore = transaction.objectStore(databaseStores.files);
       const changeStore = transaction.objectStore(databaseStores.file_changes);
@@ -95,7 +99,7 @@ export class IndexedDbProjectFileSystemProvider
         } satisfies FileRecord);
       }
       await completion;
-      return new IndexedDbVirtualFileSystem(
+      return new IndexedDbWorkspace(
         this.database,
         projectId,
         incarnationId,
@@ -105,7 +109,7 @@ export class IndexedDbProjectFileSystemProvider
     }
   }
 
-  async open(projectId: string): Promise<VirtualFileSystem> {
+  async open(projectId: string): Promise<Workspace> {
     const database = await this.database.open();
     const transaction = database.transaction(
       databaseStores.project_filesystems,
@@ -118,7 +122,10 @@ export class IndexedDbProjectFileSystemProvider
         | Partial<ProjectFileSystemRecord>
         | undefined;
       if (record === undefined) {
-        throw new Error(`Project filesystem does not exist: ${projectId}`);
+        throw new WorkspaceBackendError(
+          "not_found",
+          `Project filesystem does not exist: ${projectId}`,
+        );
       }
       const existingIncarnationId = readIncarnationId(record);
       const incarnationId = existingIncarnationId ?? crypto.randomUUID();
@@ -129,7 +136,7 @@ export class IndexedDbProjectFileSystemProvider
         } satisfies ProjectFileSystemRecord);
       }
       await completion;
-      return new IndexedDbVirtualFileSystem(
+      return new IndexedDbWorkspace(
         this.database,
         projectId,
         incarnationId,
@@ -169,7 +176,7 @@ export class IndexedDbProjectFileSystemProvider
   }
 }
 
-class IndexedDbVirtualFileSystem implements VirtualFileSystem {
+class IndexedDbWorkspace implements Workspace {
   private readonly database: ResearchBoxDatabase;
   private readonly projectId: string;
   private readonly incarnationId: string;
@@ -215,10 +222,7 @@ class IndexedDbVirtualFileSystem implements VirtualFileSystem {
             },
       );
     }
-    return [...entries.values()].sort((left, right) => {
-      if (left.kind !== right.kind) return left.kind === "directory" ? -1 : 1;
-      return left.name.localeCompare(right.name);
-    });
+    return [...entries.values()].sort(compareVfsEntries);
   }
 
   async read(path: string): Promise<string> {
@@ -375,11 +379,7 @@ class IndexedDbVirtualFileSystem implements VirtualFileSystem {
       )) as WorkspaceChangeStorageRecord[];
       await completion;
       return records
-        .sort((left, right) =>
-          left.created_at === right.created_at
-            ? left.change_id.localeCompare(right.change_id)
-            : left.created_at.localeCompare(right.created_at),
-        )
+        .sort(compareWorkspaceChanges)
         .map(toWorkspaceChangeRecord);
     } catch (error) {
       return abortTransaction(transaction, completion, error);
@@ -412,6 +412,11 @@ class IndexedDbVirtualFileSystem implements VirtualFileSystem {
     }
   }
 }
+
+/** @deprecated Use `IndexedDbWorkspaceBackend`. */
+export {
+  IndexedDbWorkspaceBackend as IndexedDbProjectFileSystemProvider,
+};
 
 function assertWritablePath(records: FileRecord[], path: string): void {
   if (records.some((record) => record.path.startsWith(`${path}/`))) {

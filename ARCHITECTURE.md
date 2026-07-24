@@ -16,7 +16,7 @@ apps/web
        │    ├─ packages/project-store
        │    └─ packages/vfs
        ├─ IndexedDB project/session store
-       ├─ IndexedDB project VFS provider
+       ├─ IndexedDB workspace backend
        └─ worker model transport
             │ versioned JSON, multiplexed by stream_id
             ▼
@@ -140,14 +140,26 @@ active project, but an active session is intentionally optional.
 
 ## Storage roadmap
 
-Every storage backend implements `VirtualFileSystem`:
+`WorkspaceBackend` owns project workspace lifecycle and returns a `Workspace`.
+The workspace contract is split into structural `WorkspaceReader`,
+`WorkspaceWriter`, and `WorkspaceChangeJournal` capabilities so consumers
+depend only on operations they use. Compare-and-swap writes and atomic
+file-plus-receipt commits are mandatory semantics, not optional capability
+flags.
 
-- memory: implemented, deterministic test backend
-- IndexedDB: implemented browser persistence backend
-- OPFS: optional large-workspace browser backend
-- ZIP: portable import/export backend
-- native folder: desktop backend
-- iOS application storage: native mobile backend
+- memory: implemented deterministic test backend
+- IndexedDB: implemented durable browser backend
+- OPFS: planned large-workspace browser backend
+- native folder: planned desktop backend
+- iOS application storage: planned native mobile backend
+- ZIP: planned deterministic import/export codec, not a live backend
 
-Backend-specific capabilities must be added through explicit interfaces rather
-than runtime checks inside the agent core.
+The current workspace format contains UTF-8 text files and infers directories
+from paths; empty directories and binary files are intentionally not yet part
+of the portable contract. Logical paths are case-sensitive Unicode and preserve
+distinct normalization forms. Native backends must use an encoded physical
+representation or metadata where a host filesystem cannot preserve that
+namespace exactly; their on-disk representation is not a public contract.
+Backend-specific optional behavior must be added through explicit capability
+interfaces rather than runtime checks inside the agent core. All concrete
+backends run the same shared conformance suite.

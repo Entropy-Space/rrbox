@@ -39,7 +39,8 @@ packages/
   viewer/              React conversation and workspace UI
   model-transport/     Model request/stream contract and HTTP adapter
   runtime-browser/     Core and LLM Web Worker hosts and transports
-  vfs/                 Filesystem contract, errors, and adapters
+  vfs/                 Workspace capabilities, errors, and adapters
+  vfs-testkit/         Shared backend conformance suite
   project-store/       Project/session records and persistence contract
 
 platforms/
@@ -102,6 +103,10 @@ only after acquiring one origin-wide Web Lock. A contending tab reports that it
 is waiting and is promoted automatically when the active writer closes. Only
 the elected core can persist a model selection or start inference.
 
-The memory project store and filesystem provider remain deterministic test
-backends. ZIP import/export, native folders, iOS application storage, and an
-optional OPFS adapter can implement the same portable contracts.
+The memory project store and workspace backend remain deterministic test
+backends. IndexedDB and memory run one shared backend conformance suite.
+Optional OPFS, native-folder, and iOS backends can implement the same structural
+workspace capabilities. ZIP is a portable import/export codec rather than a
+live filesystem backend. Workspace paths are case-sensitive Unicode logical
+paths; native adapters may encode their physical names to preserve collisions
+that the host filesystem cannot represent directly.

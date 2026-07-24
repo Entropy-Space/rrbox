@@ -69,16 +69,73 @@ export class VfsError extends Error {
   }
 }
 
-export interface VirtualFileSystem {
+export interface WorkspaceReader {
   list(path: string): Promise<VfsEntry[]>;
   read(path: string): Promise<string>;
+}
+
+export interface WorkspaceWriter {
   write(
     path: string,
     content: string,
     options?: VfsWriteOptions,
   ): Promise<VfsWriteResult>;
   remove(path: string, options?: VfsRemoveOptions): Promise<void>;
+}
+
+export interface WorkspaceChangeJournal {
   listChanges(): Promise<WorkspaceChangeRecord[]>;
+}
+
+/**
+ * A UTF-8 text workspace with implicit directories.
+ *
+ * Paths form a case-sensitive Unicode logical namespace. A native adapter must
+ * preserve distinct spellings and normalization forms, using an encoded
+ * physical representation or metadata when the host filesystem cannot do so.
+ * The native on-disk representation is not part of this contract.
+ *
+ * Implementations must commit a changed file and its optional change receipt
+ * atomically. They must also provide exact compare-and-swap behavior through
+ * `expected_content`; these guarantees are not optional backend capabilities.
+ */
+export interface Workspace
+  extends WorkspaceReader,
+    WorkspaceWriter,
+    WorkspaceChangeJournal {}
+
+/** @deprecated Use `Workspace`. */
+export type VirtualFileSystem = Workspace;
+
+export function compareVfsStrings(left: string, right: string): number {
+  const leftCodePoints = [...left];
+  const rightCodePoints = [...right];
+  const sharedLength = Math.min(leftCodePoints.length, rightCodePoints.length);
+
+  for (let index = 0; index < sharedLength; index += 1) {
+    const leftCodePoint = leftCodePoints[index]?.codePointAt(0) ?? 0;
+    const rightCodePoint = rightCodePoints[index]?.codePointAt(0) ?? 0;
+    if (leftCodePoint !== rightCodePoint) {
+      return leftCodePoint < rightCodePoint ? -1 : 1;
+    }
+  }
+
+  if (leftCodePoints.length === rightCodePoints.length) return 0;
+  return leftCodePoints.length < rightCodePoints.length ? -1 : 1;
+}
+
+export function compareVfsEntries(left: VfsEntry, right: VfsEntry): number {
+  if (left.kind !== right.kind) return left.kind === "directory" ? -1 : 1;
+  return compareVfsStrings(left.name, right.name);
+}
+
+export function compareWorkspaceChanges(
+  left: Pick<WorkspaceChangeRecord, "change_id" | "created_at">,
+  right: Pick<WorkspaceChangeRecord, "change_id" | "created_at">,
+): number {
+  return left.created_at === right.created_at
+    ? compareVfsStrings(left.change_id, right.change_id)
+    : compareVfsStrings(left.created_at, right.created_at);
 }
 
 export function createVfsWriteResult(

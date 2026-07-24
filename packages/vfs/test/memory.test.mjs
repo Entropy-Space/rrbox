@@ -1,9 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { MemoryFileSystem, VfsError } from "../src/index.ts";
+import { defineWorkspaceBackendConformance } from "@researchbox/vfs-testkit";
+import {
+  MemoryWorkspace,
+  MemoryWorkspaceBackend,
+  VfsError,
+} from "../src/index.ts";
+
+defineWorkspaceBackendConformance({
+  name: "Memory workspace backend",
+  async create_backend({ seed_files }) {
+    return {
+      backend: new MemoryWorkspaceBackend(
+        () => new MemoryWorkspace(seed_files),
+      ),
+    };
+  },
+});
 
 test("lists a deterministic file and directory view", async () => {
-  const filesystem = new MemoryFileSystem({
+  const filesystem = new MemoryWorkspace({
     "/README.md": "hello",
     "/src/index.ts": "export {};",
   });
@@ -17,7 +33,7 @@ test("lists a deterministic file and directory view", async () => {
 test("prevents file and directory collisions", () => {
   assert.throws(
     () =>
-      new MemoryFileSystem({
+      new MemoryWorkspace({
         "/src": "file",
         "/src/index.ts": "nested",
       }),
@@ -28,7 +44,7 @@ test("prevents file and directory collisions", () => {
 test("normalizes and validates seed paths before constructing a filesystem", () => {
   assert.throws(
     () =>
-      new MemoryFileSystem({
+      new MemoryWorkspace({
         "/src/index.ts": "nested",
         "/src": "file",
       }),
@@ -36,7 +52,7 @@ test("normalizes and validates seed paths before constructing a filesystem", () 
   );
   assert.throws(
     () =>
-      new MemoryFileSystem({
+      new MemoryWorkspace({
         "notes.txt": "first",
         "/notes.txt": "duplicate",
       }),
@@ -45,7 +61,7 @@ test("normalizes and validates seed paths before constructing a filesystem", () 
 });
 
 test("confines paths to the virtual workspace", async () => {
-  const filesystem = new MemoryFileSystem();
+  const filesystem = new MemoryWorkspace();
 
   await assert.rejects(
     filesystem.write("../../outside.txt", "nope"),
@@ -54,7 +70,7 @@ test("confines paths to the virtual workspace", async () => {
 });
 
 test("reads and overwrites text files", async () => {
-  const filesystem = new MemoryFileSystem();
+  const filesystem = new MemoryWorkspace();
   await filesystem.write("/notes/today.md", "first");
   await filesystem.write("/notes/today.md", "second");
 
@@ -62,7 +78,7 @@ test("reads and overwrites text files", async () => {
 });
 
 test("returns atomic write results and records compact workspace changes", async () => {
-  const filesystem = new MemoryFileSystem();
+  const filesystem = new MemoryWorkspace();
   const created = await filesystem.write(
     "/notes/today.md",
     "alpha\nbeta\n",
@@ -116,7 +132,7 @@ test("returns atomic write results and records compact workspace changes", async
 });
 
 test("compare-and-swap writes reject stale content without mutation", async () => {
-  const filesystem = new MemoryFileSystem({ "/notes.txt": "original" });
+  const filesystem = new MemoryWorkspace({ "/notes.txt": "original" });
 
   await assert.rejects(
     filesystem.write("/notes.txt", "stale update", {
@@ -139,7 +155,7 @@ test("compare-and-swap writes reject stale content without mutation", async () =
 });
 
 test("only one concurrent compare-and-swap write can commit", async () => {
-  const filesystem = new MemoryFileSystem({ "/notes.txt": "original" });
+  const filesystem = new MemoryWorkspace({ "/notes.txt": "original" });
   const results = await Promise.allSettled([
     filesystem.write("/notes.txt", "first", {
       expected_content: "original",
@@ -161,7 +177,7 @@ test("only one concurrent compare-and-swap write can commit", async () => {
 });
 
 test("duplicate workspace change ids roll back the file mutation", async () => {
-  const filesystem = new MemoryFileSystem();
+  const filesystem = new MemoryWorkspace();
   const change = changeMetadata("same-change", "write_file");
   await filesystem.write("/first.txt", "first", { change });
 
@@ -177,7 +193,7 @@ test("duplicate workspace change ids roll back the file mutation", async () => {
 });
 
 test("guarded removal cannot delete a changed file or a directory", async () => {
-  const filesystem = new MemoryFileSystem({
+  const filesystem = new MemoryWorkspace({
     "/notes/today.md": "current",
   });
 

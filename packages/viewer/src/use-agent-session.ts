@@ -12,10 +12,14 @@ import {
   type SessionSummary,
   type TimelineEntry,
   type ViewerCommand,
-  type WorkspaceChangeSummary,
   type WorkspaceTransferFile,
 } from "@researchbox/protocol";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import {
+  WorkspaceChangeRequests,
+  type WorkspaceChangeRevertResult,
+  type WorkspaceChangeSnapshot,
+} from "./workspace-change.ts";
 import {
   WorkspaceTransferRequests,
   type WorkspaceExportSnapshot,
@@ -152,7 +156,9 @@ type ManagementCommand = Exclude<
       | "fs_read"
       | "project_import"
       | "workspace_export"
-      | "workspace_export_cancel";
+      | "workspace_export_cancel"
+      | "workspace_change_read"
+      | "workspace_change_revert";
   }
 >;
 
@@ -173,6 +179,11 @@ export function useAgentSession(createWorker: () => Worker) {
     useRef<WorkspaceTransferRequests | null>(null);
   if (workspaceTransferRequestsRef.current === null) {
     workspaceTransferRequestsRef.current = new WorkspaceTransferRequests();
+  }
+  const workspaceChangeRequestsRef =
+    useRef<WorkspaceChangeRequests | null>(null);
+  if (workspaceChangeRequestsRef.current === null) {
+    workspaceChangeRequestsRef.current = new WorkspaceChangeRequests();
   }
   const lastWorkspaceRefreshRef = useRef<string | null>(null);
   const isInputDraftPending =
@@ -331,6 +342,7 @@ export function useAgentSession(createWorker: () => Worker) {
       pendingManagementRequestRef.current = null;
       pendingProviderRefreshRequestRef.current.clear();
       workspaceTransferRequestsRef.current?.rejectAll(new Error(message));
+      workspaceChangeRequestsRef.current?.rejectAll(new Error(message));
       setRefreshingProviderIds(new Set());
       setManagementPending(false);
     };
@@ -340,9 +352,12 @@ export function useAgentSession(createWorker: () => Worker) {
         const event = parseCoreEvent(message.data);
         const handledWorkspaceTransfer =
           workspaceTransferRequestsRef.current?.accept(event) ?? false;
+        const handledWorkspaceChange =
+          workspaceChangeRequestsRef.current?.accept(event) ?? false;
         if (
-          !handledWorkspaceTransfer ||
-          event.type === "state_snapshot"
+          (!handledWorkspaceTransfer && !handledWorkspaceChange) ||
+          event.type === "state_snapshot" ||
+          event.type === "workspace_change_reverted"
         ) {
           dispatch(event);
         }
@@ -392,6 +407,11 @@ export function useAgentSession(createWorker: () => Worker) {
       workspaceTransferRequestsRef.current?.rejectAll(
         new Error(
           "The browser core closed before the workspace transfer completed.",
+        ),
+      );
+      workspaceChangeRequestsRef.current?.rejectAll(
+        new Error(
+          "The browser core closed before the workspace change request completed.",
         ),
       );
       terminateWorker();
@@ -544,6 +564,36 @@ export function useAgentSession(createWorker: () => Worker) {
         signal,
       );
     },
+    [],
+  );
+
+  const readWorkspaceChange = useCallback(
+    (
+      projectId: string,
+      changeId: string,
+    ): Promise<WorkspaceChangeSnapshot> =>
+      requestWorkspaceChange(
+        workspaceChangeRequestsRef.current,
+        workerRef.current,
+        "workspace_change_read",
+        projectId,
+        changeId,
+      ),
+    [],
+  );
+
+  const revertWorkspaceChange = useCallback(
+    (
+      projectId: string,
+      changeId: string,
+    ): Promise<WorkspaceChangeRevertResult> =>
+      requestWorkspaceChange(
+        workspaceChangeRequestsRef.current,
+        workerRef.current,
+        "workspace_change_revert",
+        projectId,
+        changeId,
+      ),
     [],
   );
 
@@ -715,6 +765,8 @@ export function useAgentSession(createWorker: () => Worker) {
     selectProject,
     importProject,
     exportWorkspace,
+    readWorkspaceChange,
+    revertWorkspaceChange,
     selectNewChat,
     selectModel,
     refreshProvider,
@@ -725,6 +777,86 @@ export function useAgentSession(createWorker: () => Worker) {
     openFile,
     navigateToParent,
   };
+}
+
+function requestWorkspaceChange(
+  requests: WorkspaceChangeRequests | null,
+  worker: Pick<Worker, "postMessage"> | null,
+  type: "workspace_change_read",
+  projectId: string,
+  changeId: string,
+): Promise<WorkspaceChangeSnapshot>;
+function requestWorkspaceChange(
+  requests: WorkspaceChangeRequests | null,
+  worker: Pick<Worker, "postMessage"> | null,
+  type: "workspace_change_revert",
+  projectId: string,
+  changeId: string,
+): Promise<WorkspaceChangeRevertResult>;
+function requestWorkspaceChange(
+  requests: WorkspaceChangeRequests | null,
+  worker: Pick<Worker, "postMessage"> | null,
+  type: "workspace_change_read" | "workspace_change_revert",
+  projectId: string,
+  changeId: string,
+): Promise<WorkspaceChangeSnapshot | WorkspaceChangeRevertResult> {
+  if (!requests) {
+    return Promise.reject(
+      new Error("Workspace change inspection is unavailable."),
+    );
+  }
+  if (!worker) {
+    return Promise.reject(new Error("The browser core is not ready."));
+  }
+
+  if (type === "workspace_change_read") {
+    const command = createCommand(type, {
+      project_id: projectId,
+      change_id: changeId,
+    });
+    return postWorkspaceChangeRequest(
+      requests,
+      worker,
+      command,
+      requests.beginRead(
+        command.request_id,
+        command.payload.project_id,
+        command.payload.change_id,
+      ),
+    );
+  }
+
+  const command = createCommand(type, {
+    project_id: projectId,
+    change_id: changeId,
+  });
+  return postWorkspaceChangeRequest(
+    requests,
+    worker,
+    command,
+    requests.beginRevert(
+      command.request_id,
+      command.payload.project_id,
+      command.payload.change_id,
+    ),
+  );
+}
+
+function postWorkspaceChangeRequest<T>(
+  requests: WorkspaceChangeRequests,
+  worker: Pick<Worker, "postMessage">,
+  command: Extract<
+    ViewerCommand,
+    { type: "workspace_change_read" | "workspace_change_revert" }
+  >,
+  completion: Promise<T>,
+): Promise<T> {
+  try {
+    worker.postMessage(command);
+  } catch (error) {
+    requests.reject(command.request_id, toError(error));
+  }
+  return completion;
 }
 
 export function cancelWorkspaceExportRequest(
@@ -971,44 +1103,30 @@ export function coreReducer(
           }
         : state;
     case "workspace_changed": {
+      if (!isActiveSessionEvent(state, event.payload)) return state;
+      return applyWorkspaceMutation(
+        state,
+        event.payload.workspace_revision,
+        event.payload.change.path,
+        false,
+      );
+    }
+    case "workspace_export_snapshot":
+    case "workspace_change_snapshot":
+      return state;
+    case "workspace_change_reverted":
       if (
-        !isActiveSessionEvent(state, event.payload) ||
-        event.payload.workspace_revision <= state.workspace_revision
+        event.payload.project_id !== state.active_project_id ||
+        event.payload.revert_outcome === "already_reverted"
       ) {
         return state;
       }
-      const inFlightRefreshPath =
-        state.pending_fs_read?.request_kind === "workspace_refresh" &&
-        state.pending_fs_read.expected_workspace_revision <
-          event.payload.workspace_revision
-          ? state.pending_fs_read.path
-          : null;
-      const changedPaths = appendChangedPath(
-        appendPath(
-          state.pending_workspace_refresh?.changed_paths ?? [],
-          inFlightRefreshPath,
-        ),
-        event.payload.change,
+      return applyWorkspaceMutation(
+        state,
+        event.payload.workspace_revision,
+        event.payload.path,
+        event.payload.change_kind === "created",
       );
-      return {
-        ...state,
-        workspace_revision: event.payload.workspace_revision,
-        pending_fs_list: invalidateStaleFileSystemRequest(
-          state.pending_fs_list,
-          event.payload.workspace_revision,
-        ),
-        pending_fs_read: invalidateStaleFileSystemRequest(
-          state.pending_fs_read,
-          event.payload.workspace_revision,
-        ),
-        pending_workspace_refresh: {
-          workspace_revision: event.payload.workspace_revision,
-          changed_paths: changedPaths,
-        },
-      };
-    }
-    case "workspace_export_snapshot":
-      return state;
     case "files_snapshot": {
       const pending = state.pending_fs_list;
       if (
@@ -1299,11 +1417,45 @@ function invalidateStaleFileSystemRequest(
     : null;
 }
 
-function appendChangedPath(
-  paths: string[],
-  change: WorkspaceChangeSummary,
-): string[] {
-  return appendPath(paths, change.path);
+function applyWorkspaceMutation(
+  state: AgentSessionState,
+  workspaceRevision: number,
+  changedPath: string,
+  removedFile: boolean,
+): AgentSessionState {
+  if (workspaceRevision <= state.workspace_revision) return state;
+  const inFlightRefreshPath =
+    state.pending_fs_read?.request_kind === "workspace_refresh" &&
+    state.pending_fs_read.expected_workspace_revision < workspaceRevision
+      ? state.pending_fs_read.path
+      : null;
+  const changedPaths = appendPath(
+    appendPath(
+      state.pending_workspace_refresh?.changed_paths ?? [],
+      inFlightRefreshPath,
+    ),
+    changedPath,
+  );
+  return {
+    ...state,
+    workspace_revision: workspaceRevision,
+    selected_file:
+      removedFile && state.selected_file?.path === changedPath
+        ? null
+        : state.selected_file,
+    pending_fs_list: invalidateStaleFileSystemRequest(
+      state.pending_fs_list,
+      workspaceRevision,
+    ),
+    pending_fs_read: invalidateStaleFileSystemRequest(
+      state.pending_fs_read,
+      workspaceRevision,
+    ),
+    pending_workspace_refresh: {
+      workspace_revision: workspaceRevision,
+      changed_paths: changedPaths,
+    },
+  };
 }
 
 function appendPath(paths: string[], path: string | null): string[] {

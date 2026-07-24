@@ -3,6 +3,8 @@ import {
   type VfsRemoveOptions,
   type VfsWriteOptions,
   type Workspace,
+  type WorkspaceChangeResult,
+  type WorkspaceChangeRevertResult,
   type WorkspaceChangesResult,
   type WorkspaceFilesSnapshotOptions,
   type WorkspaceFilesSnapshotReader,
@@ -66,6 +68,16 @@ export class WorkspaceController implements Workspace {
 
   listChanges(): Promise<WorkspaceChangesResult> {
     return this.enqueue(() => this.filesystem.listChanges());
+  }
+
+  getChange(changeId: string): Promise<WorkspaceChangeResult> {
+    return this.enqueue(() => this.filesystem.getChange(changeId));
+  }
+
+  revertChange(
+    changeId: string,
+  ): Promise<WorkspaceChangeRevertResult> {
+    return this.enqueue(() => this.filesystem.revertChange(changeId));
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {

@@ -5,6 +5,7 @@ import {
   MemoryWorkspace,
   MemoryWorkspaceBackend,
   VfsError,
+  WorkspaceCorruptionError,
 } from "../src/index.ts";
 
 defineWorkspaceBackendConformance({
@@ -140,6 +141,8 @@ test("returns atomic write results and records compact workspace changes", async
     after_content: "alpha\nbeta\n",
     change: {
       ...changeMetadata("change-1", "write_file"),
+      applied_workspace_revision: 1,
+      reverted_at_workspace_revision: null,
       path: "/notes/today.md",
       change_kind: "created",
       before_content: null,
@@ -252,6 +255,56 @@ test("duplicate workspace change ids roll back the file mutation", async () => {
     (error) => error instanceof VfsError && error.code === "not_found",
   );
   assert.equal((await filesystem.listChanges()).changes.length, 1);
+});
+
+test("memory reverts reject malformed receipts without mutation", async (t) => {
+  const cases = [
+    {
+      name: "invalid change kind",
+      corrupt: (change) => ({
+        ...change,
+        change_kind: "removed",
+      }),
+    },
+    {
+      name: "zero applied revision",
+      corrupt: (change) => ({
+        ...change,
+        applied_workspace_revision: 0,
+      }),
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      const filesystem = new MemoryWorkspace({
+        "/notes.txt": "before",
+      });
+      await filesystem.write("/notes.txt", "after", {
+        change: changeMetadata("change-1", "write_file"),
+      });
+      const [change] = (await filesystem.listChanges()).changes;
+      filesystem.changes.set(
+        change.change_id,
+        testCase.corrupt(change),
+      );
+
+      await assert.rejects(
+        filesystem.revertChange(change.change_id),
+        (error) => error instanceof WorkspaceCorruptionError,
+      );
+      assert.deepEqual(await filesystem.read("/notes.txt"), {
+        workspace_revision: 1,
+        path_revision: 1,
+        content: "after",
+      });
+      assert.equal(
+        (await filesystem.getChange(change.change_id)).change
+          .reverted_at_workspace_revision,
+        null,
+      );
+    });
+  }
 });
 
 test("guarded removal cannot delete a changed file or a directory", async () => {

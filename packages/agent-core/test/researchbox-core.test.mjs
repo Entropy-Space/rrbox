@@ -1379,6 +1379,544 @@ test("workspace mutation tools persist receipts and emit live change events", as
   );
 });
 
+test("reads coherent workspace change details from an inactive project", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+  const firstProjectId = latestState(events).active_project_id;
+  const firstWorkspace = await provider.open(firstProjectId);
+  const changed = await firstWorkspace.write(
+    "/README.md",
+    "# Reviewed\n",
+    {
+      change: createWorkspaceChangeMetadata("inactive-change"),
+    },
+  );
+  const receipt = changed.result.change;
+  assert.ok(receipt);
+
+  await core.handle(createCommand("project_create", { name: "Second" }));
+  const activeProjectId = latestState(events).active_project_id;
+  assert.notEqual(activeProjectId, firstProjectId);
+
+  const command = createCommand("workspace_change_read", {
+    project_id: firstProjectId,
+    change_id: receipt.change_id,
+  });
+  await core.handle(command);
+
+  const snapshot = events.at(-1);
+  assert.equal(snapshot.type, "workspace_change_snapshot");
+  assert.equal(snapshot.request_id, command.request_id);
+  assert.equal(snapshot.payload.project_id, firstProjectId);
+  assert.equal(snapshot.payload.workspace_revision, changed.workspace_revision);
+  assert.deepEqual(snapshot.payload.change, {
+    change_id: receipt.change_id,
+    tool_call_id: receipt.tool_call_id,
+    path: receipt.path,
+    change_kind: "updated",
+    additions: receipt.additions,
+    deletions: receipt.deletions,
+    byte_size: receipt.byte_size,
+    before_content: "# Test",
+    after_content: "# Reviewed\n",
+    current_content: "# Reviewed\n",
+    reverted_at_workspace_revision: null,
+    revert_status: "available",
+  });
+  assert.equal(latestState(events).active_project_id, activeProjectId);
+
+  for (const type of [
+    "workspace_change_read",
+    "workspace_change_revert",
+  ]) {
+    const missing = createCommand(type, {
+      project_id: firstProjectId,
+      change_id: "missing-change",
+    });
+    await core.handle(missing);
+    assert.equal(events.at(-1).type, "error");
+    assert.equal(events.at(-1).request_id, missing.request_id);
+    assert.equal(
+      events.at(-1).payload.code,
+      "workspace_change_not_found",
+    );
+    assert.equal(events.at(-1).payload.project_id, firstProjectId);
+  }
+});
+
+test("reverts a created file and treats repeated reverts as success", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+  const projectId = latestState(events).active_project_id;
+  const workspace = await provider.open(projectId);
+  const write = await workspace.write("/created.txt", "created\n", {
+    change: createWorkspaceChangeMetadata("created-change"),
+  });
+  const receipt = write.result.change;
+  assert.ok(receipt);
+
+  const first = createCommand("workspace_change_revert", {
+    project_id: projectId,
+    change_id: receipt.change_id,
+  });
+  await core.handle(first);
+  const reverted = events.at(-1);
+  assert.deepEqual(reverted, {
+    protocol_version: reverted.protocol_version,
+    event_id: reverted.event_id,
+    request_id: first.request_id,
+    type: "workspace_change_reverted",
+    payload: {
+      project_id: projectId,
+      change_id: receipt.change_id,
+      path: "/created.txt",
+      change_kind: "created",
+      workspace_revision: 2,
+      reverted_at_workspace_revision: 2,
+      revert_outcome: "applied",
+    },
+  });
+  await assert.rejects(
+    workspace.read("/created.txt"),
+    (error) => error?.code === "not_found",
+  );
+
+  const repeated = createCommand("workspace_change_revert", {
+    project_id: projectId,
+    change_id: receipt.change_id,
+  });
+  await core.handle(repeated);
+  assert.equal(events.at(-1).type, "workspace_change_reverted");
+  assert.equal(events.at(-1).request_id, repeated.request_id);
+  assert.equal(events.at(-1).payload.workspace_revision, 2);
+  assert.equal(
+    events.at(-1).payload.reverted_at_workspace_revision,
+    2,
+  );
+  assert.equal(
+    events.at(-1).payload.revert_outcome,
+    "already_reverted",
+  );
+
+  const read = createCommand("workspace_change_read", {
+    project_id: projectId,
+    change_id: receipt.change_id,
+  });
+  await core.handle(read);
+  assert.equal(events.at(-1).payload.change.current_content, null);
+  assert.equal(
+    events.at(-1).payload.change.reverted_at_workspace_revision,
+    2,
+  );
+  assert.equal(
+    events.at(-1).payload.change.revert_status,
+    "already_reverted",
+  );
+  assert.equal(events.at(-1).payload.workspace_revision, 2);
+  assert.equal((await workspace.listChanges()).changes.length, 1);
+
+  await workspace.write("/created.txt", "created\n");
+  const replayAfterRecreation = createCommand("workspace_change_revert", {
+    project_id: projectId,
+    change_id: receipt.change_id,
+  });
+  await core.handle(replayAfterRecreation);
+  assert.equal(events.at(-1).type, "workspace_change_reverted");
+  assert.equal(
+    events.at(-1).payload.revert_outcome,
+    "already_reverted",
+  );
+  assert.equal(events.at(-1).payload.workspace_revision, 3);
+  assert.equal(
+    events.at(-1).payload.reverted_at_workspace_revision,
+    2,
+  );
+  assert.equal((await workspace.read("/created.txt")).content, "created\n");
+});
+
+test("reverts an updated file and preserves an empty original exactly", async () => {
+  const filesystem = new MemoryFileSystem({ "/empty.txt": "" });
+  const provider = new MemoryWorkspaceBackend(() => filesystem);
+  const store = new MemoryProjectStore();
+  const events = [];
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+  const projectId = latestState(events).active_project_id;
+  const workspace = await provider.open(projectId);
+  const write = await workspace.write("/empty.txt", "filled", {
+    change: createWorkspaceChangeMetadata("updated-change"),
+  });
+  const receipt = write.result.change;
+  assert.ok(receipt);
+
+  const first = createCommand("workspace_change_revert", {
+    project_id: projectId,
+    change_id: receipt.change_id,
+  });
+  await core.handle(first);
+  assert.equal(events.at(-1).type, "workspace_change_reverted");
+  assert.equal(events.at(-1).payload.change_kind, "updated");
+  assert.equal(events.at(-1).payload.workspace_revision, 2);
+  assert.equal(events.at(-1).payload.revert_outcome, "applied");
+  assert.equal((await workspace.read("/empty.txt")).content, "");
+
+  const repeated = createCommand("workspace_change_revert", {
+    project_id: projectId,
+    change_id: receipt.change_id,
+  });
+  await core.handle(repeated);
+  assert.equal(events.at(-1).type, "workspace_change_reverted");
+  assert.equal(events.at(-1).payload.workspace_revision, 2);
+  assert.equal(
+    events.at(-1).payload.revert_outcome,
+    "already_reverted",
+  );
+
+  const read = createCommand("workspace_change_read", {
+    project_id: projectId,
+    change_id: receipt.change_id,
+  });
+  await core.handle(read);
+  assert.equal(events.at(-1).payload.change.before_content, "");
+  assert.equal(events.at(-1).payload.change.current_content, "");
+  assert.equal(
+    events.at(-1).payload.change.reverted_at_workspace_revision,
+    2,
+  );
+  assert.equal(
+    events.at(-1).payload.change.revert_status,
+    "already_reverted",
+  );
+});
+
+test("revert preflight rejects malformed or mismatched receipts without delegating", async (t) => {
+  const cases = [
+    {
+      name: "malformed receipt",
+      corrupt: (change) => ({
+        ...change,
+        change_kind: "removed",
+      }),
+    },
+    {
+      name: "mismatched receipt id",
+      corrupt: (change) => ({
+        ...change,
+        change_id: "different-change",
+      }),
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      const filesystem = new MemoryFileSystem({
+        "/notes.txt": "before",
+      });
+      const provider = new MemoryWorkspaceBackend(() => filesystem);
+      const store = new MemoryProjectStore();
+      const events = [];
+      const core = createCore(store, provider, events);
+      await core.handle(createCommand("bootstrap", {}));
+      const projectId = latestState(events).active_project_id;
+      const workspace = await provider.open(projectId);
+      const write = await workspace.write("/notes.txt", "after", {
+        change: createWorkspaceChangeMetadata("preflight-change"),
+      });
+      const receipt = write.result.change;
+      assert.ok(receipt);
+
+      const getChange = filesystem.getChange.bind(filesystem);
+      filesystem.getChange = async (changeId) => {
+        const result = await getChange(changeId);
+        return {
+          ...result,
+          change:
+            result.change === null
+              ? null
+              : testCase.corrupt(result.change),
+        };
+      };
+      const revertChange = filesystem.revertChange.bind(filesystem);
+      let revertCalls = 0;
+      filesystem.revertChange = async (changeId) => {
+        revertCalls += 1;
+        return revertChange(changeId);
+      };
+
+      const command = createCommand("workspace_change_revert", {
+        project_id: projectId,
+        change_id: receipt.change_id,
+      });
+      await core.handle(command);
+
+      assert.equal(revertCalls, 0);
+      assert.equal(events.at(-1).type, "error");
+      assert.equal(events.at(-1).request_id, command.request_id);
+      assert.equal(
+        events.at(-1).payload.code,
+        "workspace_change_revert_failed",
+      );
+      assert.equal(
+        (await filesystem.read("/notes.txt")).content,
+        "after",
+      );
+    });
+  }
+});
+
+test("reports conflicts without overwriting newer content or directories", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+  const projectId = latestState(events).active_project_id;
+  const workspace = await provider.open(projectId);
+
+  const updated = await workspace.write("/README.md", "# Agent version", {
+    change: createWorkspaceChangeMetadata("conflicted-update"),
+  });
+  const updatedReceipt = updated.result.change;
+  assert.ok(updatedReceipt);
+  await workspace.write("/README.md", "# User version");
+
+  const inspectUpdated = createCommand("workspace_change_read", {
+    project_id: projectId,
+    change_id: updatedReceipt.change_id,
+  });
+  await core.handle(inspectUpdated);
+  assert.equal(events.at(-1).payload.change.current_content, "# User version");
+  assert.equal(events.at(-1).payload.change.revert_status, "conflict");
+
+  const revertUpdated = createCommand("workspace_change_revert", {
+    project_id: projectId,
+    change_id: updatedReceipt.change_id,
+  });
+  await core.handle(revertUpdated);
+  assert.equal(events.at(-1).type, "error");
+  assert.equal(events.at(-1).request_id, revertUpdated.request_id);
+  assert.equal(events.at(-1).payload.code, "workspace_change_conflict");
+  assert.equal((await workspace.read("/README.md")).content, "# User version");
+  const revisionAfterConflict = (await workspace.read("/README.md"))
+    .workspace_revision;
+
+  const created = await workspace.write("/former-file", "agent", {
+    change: createWorkspaceChangeMetadata("directory-conflict"),
+  });
+  const createdReceipt = created.result.change;
+  assert.ok(createdReceipt);
+  await workspace.remove("/former-file", { expected_content: "agent" });
+  await workspace.write("/former-file/child.txt", "keep");
+
+  const inspectDirectory = createCommand("workspace_change_read", {
+    project_id: projectId,
+    change_id: createdReceipt.change_id,
+  });
+  await core.handle(inspectDirectory);
+  assert.equal(events.at(-1).payload.change.current_content, null);
+  assert.equal(events.at(-1).payload.change.revert_status, "conflict");
+
+  const revertDirectory = createCommand("workspace_change_revert", {
+    project_id: projectId,
+    change_id: createdReceipt.change_id,
+  });
+  await core.handle(revertDirectory);
+  assert.equal(events.at(-1).payload.code, "workspace_change_conflict");
+  assert.equal(
+    (await workspace.read("/former-file/child.txt")).content,
+    "keep",
+  );
+  assert.equal(
+    (await workspace.read("/former-file/child.txt")).workspace_revision,
+    revisionAfterConflict + 3,
+  );
+});
+
+test("retries inspection until receipt and current content share a revision", async () => {
+  const filesystem = new MemoryFileSystem({ "/README.md": "# Test" });
+  const provider = new MemoryWorkspaceBackend(() => filesystem);
+  const store = new MemoryProjectStore();
+  const events = [];
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+  const projectId = latestState(events).active_project_id;
+  const workspace = await provider.open(projectId);
+  const write = await workspace.write("/README.md", "# Agent", {
+    change: createWorkspaceChangeMetadata("inspection-race"),
+  });
+  const receipt = write.result.change;
+  assert.ok(receipt);
+
+  const getChange = filesystem.getChange.bind(filesystem);
+  let getChangeCalls = 0;
+  filesystem.getChange = async (changeId) => {
+    getChangeCalls += 1;
+    if (getChangeCalls === 2) {
+      await filesystem.write("/README.md", "# Concurrent");
+    }
+    return getChange(changeId);
+  };
+
+  const command = createCommand("workspace_change_read", {
+    project_id: projectId,
+    change_id: receipt.change_id,
+  });
+  await core.handle(command);
+
+  assert.equal(getChangeCalls, 4);
+  assert.equal(events.at(-1).type, "workspace_change_snapshot");
+  assert.equal(events.at(-1).payload.workspace_revision, 2);
+  assert.equal(events.at(-1).payload.change.current_content, "# Concurrent");
+  assert.equal(events.at(-1).payload.change.revert_status, "conflict");
+});
+
+test("edit-away and edit-back ABA cannot make an old receipt revertible", async () => {
+  const filesystem = new MemoryFileSystem({ "/README.md": "# Test" });
+  const provider = new MemoryWorkspaceBackend(() => filesystem);
+  const store = new MemoryProjectStore();
+  const events = [];
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+  const projectId = latestState(events).active_project_id;
+  const workspace = await provider.open(projectId);
+  const write = await workspace.write("/README.md", "# Agent", {
+    change: createWorkspaceChangeMetadata("cas-race"),
+  });
+  const receipt = write.result.change;
+  assert.ok(receipt);
+
+  await workspace.write("/README.md", "# Concurrent");
+  await workspace.write("/README.md", "# Agent");
+
+  const inspect = createCommand("workspace_change_read", {
+    project_id: projectId,
+    change_id: receipt.change_id,
+  });
+  await core.handle(inspect);
+  assert.equal(events.at(-1).type, "workspace_change_snapshot");
+  assert.equal(events.at(-1).payload.change.current_content, "# Agent");
+  assert.equal(events.at(-1).payload.change.revert_status, "conflict");
+  assert.equal(
+    events.at(-1).payload.change.reverted_at_workspace_revision,
+    null,
+  );
+
+  const command = createCommand("workspace_change_revert", {
+    project_id: projectId,
+    change_id: receipt.change_id,
+  });
+  await core.handle(command);
+
+  assert.equal(events.at(-1).type, "error");
+  assert.equal(events.at(-1).request_id, command.request_id);
+  assert.equal(events.at(-1).payload.code, "workspace_change_conflict");
+  assert.equal((await workspace.read("/README.md")).content, "# Agent");
+  assert.equal(
+    (await workspace.read("/README.md")).workspace_revision,
+    3,
+  );
+});
+
+test("active runs block same-project reverts but not inactive projects", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  let markStarted;
+  const started = new Promise((resolve) => {
+    markStarted = resolve;
+  });
+  const core = createCore(store, provider, events, {
+    async *stream(_request, signal) {
+      markStarted();
+      await new Promise((resolve, reject) => {
+        signal.addEventListener(
+          "abort",
+          () => reject(new DOMException("Aborted", "AbortError")),
+          { once: true },
+        );
+      });
+      yield { type: "done" };
+    },
+  });
+  await core.handle(createCommand("bootstrap", {}));
+  const inactiveProjectId = latestState(events).active_project_id;
+  const inactiveWorkspace = await provider.open(inactiveProjectId);
+  const inactiveWrite = await inactiveWorkspace.write(
+    "/inactive.txt",
+    "agent",
+    {
+      change: createWorkspaceChangeMetadata("inactive-run-change"),
+    },
+  );
+  const inactiveReceipt = inactiveWrite.result.change;
+  assert.ok(inactiveReceipt);
+
+  await core.handle(createCommand("project_create", { name: "Active run" }));
+  const active = latestState(events);
+  const activeWorkspace = await provider.open(active.active_project_id);
+  const activeWrite = await activeWorkspace.write("/active.txt", "agent", {
+    change: createWorkspaceChangeMetadata("active-run-change"),
+  });
+  const activeReceipt = activeWrite.result.change;
+  assert.ok(activeReceipt);
+
+  const prompt = core.handle(
+    createCommand("prompt", {
+      project_id: active.active_project_id,
+      session_id: null,
+      text: "Keep running",
+    }),
+  );
+  await started;
+
+  const read = createCommand("workspace_change_read", {
+    project_id: active.active_project_id,
+    change_id: activeReceipt.change_id,
+  });
+  await core.handle(read);
+  assert.equal(events.at(-1).type, "workspace_change_snapshot");
+  assert.equal(events.at(-1).request_id, read.request_id);
+
+  const inactiveRevert = createCommand("workspace_change_revert", {
+    project_id: inactiveProjectId,
+    change_id: inactiveReceipt.change_id,
+  });
+  await core.handle(inactiveRevert);
+  assert.equal(events.at(-1).type, "workspace_change_reverted");
+  assert.equal(events.at(-1).request_id, inactiveRevert.request_id);
+  assert.equal(events.at(-1).payload.project_id, inactiveProjectId);
+  assert.equal(events.at(-1).payload.revert_outcome, "applied");
+  await assert.rejects(
+    inactiveWorkspace.read("/inactive.txt"),
+    (error) => error?.code === "not_found",
+  );
+
+  const revert = createCommand("workspace_change_revert", {
+    project_id: active.active_project_id,
+    change_id: activeReceipt.change_id,
+  });
+  await core.handle(revert);
+  assert.equal(events.at(-1).type, "error");
+  assert.equal(events.at(-1).request_id, revert.request_id);
+  assert.equal(events.at(-1).payload.code, "run_in_progress");
+  assert.equal((await activeWorkspace.read("/active.txt")).content, "agent");
+
+  const running = latestState(events);
+  await core.handle(
+    createCommand("abort", {
+      project_id: running.active_project_id,
+      session_id: running.active_session_id,
+    }),
+  );
+  await prompt;
+});
+
 test("core snapshots use backend revisions for unjournaled mutations", async () => {
   const store = new MemoryProjectStore();
   const provider = createWorkspaceProvider();
@@ -2684,6 +3222,18 @@ function createWorkspaceProvider() {
         ),
       ),
   );
+}
+
+function createWorkspaceChangeMetadata(changeId) {
+  return {
+    change_id: changeId,
+    session_id: "receipt-session",
+    tool_call_block_id: `block-${changeId}`,
+    assistant_message_index: 0,
+    tool_call_id: `tool-${changeId}`,
+    tool_name: "write_file",
+    created_at: "2026-07-24T00:00:00.000Z",
+  };
 }
 
 function latestState(events) {

@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Code2,
   Copy,
+  FileDiff,
   FileText,
   Folder,
   FolderOpen,
@@ -30,9 +31,16 @@ import {
   type FileEntry,
   type ToolCallBlock,
   type ToolResultEntry,
+  type WorkspaceChangeSummary,
 } from "@researchbox/protocol";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent, KeyboardEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import type { FormEvent, KeyboardEvent, RefObject } from "react";
 import {
   isModalNavigationOpen,
   MOBILE_NAVIGATION_QUERY,
@@ -47,6 +55,11 @@ import {
   type AssistantTurnPresentation,
 } from "./timeline-rendering.ts";
 import { useAgentSession } from "./use-agent-session.ts";
+import {
+  useWorkspaceChangeReview,
+  type WorkspaceChangeReviewView,
+} from "./use-workspace-change-review.ts";
+import { WorkspaceChangeReview } from "./WorkspaceChangeReview.tsx";
 import { WorkspaceSidebar } from "./WorkspaceSidebar.tsx";
 import {
   useWorkspaceTransfer,
@@ -100,6 +113,8 @@ export function ResearchBoxViewer({
     selectProject,
     importProject,
     exportWorkspace,
+    readWorkspaceChange,
+    revertWorkspaceChange,
     selectNewChat,
     selectModel,
     refreshProvider,
@@ -115,6 +130,21 @@ export function ResearchBoxViewer({
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const conversationEndRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const workspaceHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const {
+    view: workspaceChangeReview,
+    open: openChangeReview,
+    close: closeChangeReview,
+    retry: retryChangeReview,
+    request_revert: requestChangeRevert,
+    cancel_revert: cancelChangeRevert,
+    confirm_revert: confirmChangeRevert,
+  } = useWorkspaceChangeReview({
+    active_project_id: coreState.active_project_id,
+    active_session_id: coreState.active_session_id,
+    read_change: readWorkspaceChange,
+    revert_change: revertWorkspaceChange,
+  });
   const timelineRows = useMemo(
     () => buildTimelineRows(coreState.timeline),
     [coreState.timeline],
@@ -155,6 +185,28 @@ export function ResearchBoxViewer({
     [selectNewChat],
   );
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
+  const closeWorkspace = useCallback(() => {
+    setWorkspaceOpen(false);
+    closeChangeReview();
+  }, [closeChangeReview]);
+  const toggleWorkspace = useCallback(() => {
+    if (workspaceOpen) {
+      closeWorkspace();
+      return;
+    }
+    setWorkspaceOpen(true);
+  }, [closeWorkspace, workspaceOpen]);
+  const openWorkspaceChangeReview = useCallback(
+    (change: WorkspaceChangeSummary, trigger: HTMLButtonElement) => {
+      setWorkspaceOpen(true);
+      void openChangeReview(change, trigger);
+    },
+    [openChangeReview],
+  );
+  const showWorkspaceBrowser = useCallback(() => {
+    closeChangeReview({ restore_focus: false });
+    requestAnimationFrame(() => workspaceHeadingRef.current?.focus());
+  }, [closeChangeReview]);
   const isWorkspaceTransferDisabled =
     !coreState.is_ready ||
     isManagementPending ||
@@ -181,6 +233,12 @@ export function ResearchBoxViewer({
   const isSidebarPending =
     isManagementPending ||
     isInputDraftPending ||
+    coreState.is_running ||
+    coreState.pending_prompt !== null ||
+    isWorkspaceTransferPending;
+  const isWorkspaceChangeRevertDisabled =
+    !coreState.is_ready ||
+    isManagementPending ||
     coreState.is_running ||
     coreState.pending_prompt !== null ||
     isWorkspaceTransferPending;
@@ -323,7 +381,8 @@ export function ResearchBoxViewer({
               type="button"
               aria-label={workspaceOpen ? "Close workspace" : "Open workspace"}
               aria-expanded={workspaceOpen}
-              onClick={() => setWorkspaceOpen((open) => !open)}
+              aria-controls="researchbox-workspace"
+              onClick={toggleWorkspace}
             >
               <PanelRight size={17} />
               <span>Workspace</span>
@@ -355,6 +414,7 @@ export function ResearchBoxViewer({
                       key={`${row.run_id}:${row.entries[0]?.entry_id ?? "empty"}`}
                       entries={row.entries}
                       isRunActive={row.run_id === activeRunId}
+                      onReviewWorkspaceChange={openWorkspaceChangeReview}
                     />
                   ),
                 )}
@@ -446,7 +506,19 @@ export function ResearchBoxViewer({
             currentPath={coreState.current_path}
             files={coreState.files}
             selectedFile={coreState.selected_file}
-            onClose={() => setWorkspaceOpen(false)}
+            changeReview={workspaceChangeReview}
+            isChangeRevertDisabled={isWorkspaceChangeRevertDisabled}
+            headingRef={workspaceHeadingRef}
+            onClose={closeWorkspace}
+            onBackToWorkspace={showWorkspaceBrowser}
+            onRetryChangeReview={() => {
+              void retryChangeReview();
+            }}
+            onRequestChangeRevert={requestChangeRevert}
+            onCancelChangeRevert={cancelChangeRevert}
+            onConfirmChangeRevert={() => {
+              void confirmChangeRevert();
+            }}
             onEntryClick={openFile}
             onNavigateBack={navigateToParent}
           />
@@ -499,12 +571,19 @@ function UserMessageRow({ content }: { content: string }) {
   );
 }
 
+type WorkspaceChangeReviewHandler = (
+  change: WorkspaceChangeSummary,
+  trigger: HTMLButtonElement,
+) => void;
+
 function AssistantRunRow({
   entries,
   isRunActive,
+  onReviewWorkspaceChange,
 }: {
   entries: Array<AssistantMessageEntry | ToolResultEntry>;
   isRunActive: boolean;
+  onReviewWorkspaceChange: WorkspaceChangeReviewHandler;
 }) {
   const turns = buildAssistantRunPresentation(entries, isRunActive);
 
@@ -517,6 +596,7 @@ function AssistantRunRow({
             key={turn.entry.entry_id}
             turn={turn}
             isRunActive={isRunActive}
+            onReviewWorkspaceChange={onReviewWorkspaceChange}
           />
         ))}
       </div>
@@ -527,9 +607,11 @@ function AssistantRunRow({
 function AssistantTurn({
   turn,
   isRunActive,
+  onReviewWorkspaceChange,
 }: {
   turn: AssistantTurnPresentation;
   isRunActive: boolean;
+  onReviewWorkspaceChange: WorkspaceChangeReviewHandler;
 }) {
   const { entry } = turn;
 
@@ -543,6 +625,7 @@ function AssistantTurn({
           isLatestBlock={is_latest_block}
           isRunActive={isRunActive}
           toolResult={tool_result}
+          onReviewWorkspaceChange={onReviewWorkspaceChange}
         />
       ))}
       {turn.waiting_state === "thinking" && <ThinkingDots />}
@@ -567,12 +650,14 @@ function AssistantBlockView({
   isLatestBlock,
   isRunActive,
   toolResult,
+  onReviewWorkspaceChange,
 }: {
   block: AssistantBlock;
   entryStatus: AssistantMessageEntry["status"];
   isLatestBlock: boolean;
   isRunActive: boolean;
   toolResult?: ToolResultEntry;
+  onReviewWorkspaceChange: WorkspaceChangeReviewHandler;
 }) {
   switch (block.type) {
     case "assistant_text":
@@ -622,6 +707,7 @@ function AssistantBlockView({
           block={block}
           result={toolResult}
           isRunActive={isRunActive}
+          onReviewWorkspaceChange={onReviewWorkspaceChange}
         />
       );
   }
@@ -631,10 +717,12 @@ function ToolCallCard({
   block,
   result,
   isRunActive,
+  onReviewWorkspaceChange,
 }: {
   block: ToolCallBlock;
   result?: ToolResultEntry;
   isRunActive: boolean;
+  onReviewWorkspaceChange: WorkspaceChangeReviewHandler;
 }) {
   const status = result
     ? result.is_error
@@ -655,15 +743,14 @@ function ToolCallCard({
         ? "Tool completed"
         : "Tool failed";
   const label = block.label ?? formatToolName(block.tool_name);
+  const fileChange = result?.file_change;
 
   return (
     <div
       className="tool-card"
-      role="status"
-      aria-live="polite"
       aria-busy={status === "running"}
     >
-      <span className="visually-hidden">
+      <span className="visually-hidden" role="status" aria-live="polite">
         {statusLabel}: {label}
       </span>
       <span className={`tool-icon ${status}`} aria-hidden="true">
@@ -687,22 +774,33 @@ function ToolCallCard({
         {!result && !isRunActive && (
           <small>The tool did not return a result.</small>
         )}
-        {result?.file_change && (
+        {fileChange && (
           <span className="tool-file-change">
-            <code title={result.file_change.path}>
-              {result.file_change.path}
+            <code title={fileChange.path}>
+              {fileChange.path}
             </code>
             <span
               className="tool-change-stats"
-              aria-label={`${result.file_change.additions} additions and ${result.file_change.deletions} deletions`}
+              aria-label={`${fileChange.additions} additions and ${fileChange.deletions} deletions`}
             >
               <span className="tool-additions">
-                +{result.file_change.additions}
+                +{fileChange.additions}
               </span>
               <span className="tool-deletions">
-                −{result.file_change.deletions}
+                −{fileChange.deletions}
               </span>
             </span>
+            <button
+              className="tool-review-change"
+              type="button"
+              aria-controls="researchbox-workspace"
+              onClick={(event) =>
+                onReviewWorkspaceChange(fileChange, event.currentTarget)
+              }
+            >
+              <FileDiff size={13} aria-hidden="true" />
+              <span>Review change</span>
+            </button>
           </span>
         )}
       </span>
@@ -753,7 +851,15 @@ function WorkspacePanel({
   currentPath,
   files,
   selectedFile,
+  changeReview,
+  isChangeRevertDisabled,
+  headingRef,
   onClose,
+  onBackToWorkspace,
+  onRetryChangeReview,
+  onRequestChangeRevert,
+  onCancelChangeRevert,
+  onConfirmChangeRevert,
   onEntryClick,
   onNavigateBack,
 }: {
@@ -761,69 +867,242 @@ function WorkspacePanel({
   currentPath: string;
   files: FileEntry[];
   selectedFile: { path: string; content: string } | null;
+  changeReview: WorkspaceChangeReviewView;
+  isChangeRevertDisabled: boolean;
+  headingRef: RefObject<HTMLHeadingElement | null>;
   onClose: () => void;
+  onBackToWorkspace: () => void;
+  onRetryChangeReview: () => void;
+  onRequestChangeRevert: () => void;
+  onCancelChangeRevert: () => void;
+  onConfirmChangeRevert: () => void;
   onEntryClick: (entry: FileEntry) => void;
   onNavigateBack: () => void;
 }) {
+  const reviewShellRef = useRef<HTMLDivElement | null>(null);
+  const revertButtonRef = useRef<HTMLButtonElement | null>(null);
+  const confirmationCancelRef = useRef<HTMLButtonElement | null>(null);
+  const isReviewMode = changeReview.phase !== "idle";
+  const reviewChangeId = isReviewMode
+    ? changeReview.selection.change_id
+    : null;
+
+  useEffect(() => {
+    if (!isOpen || reviewChangeId === null) return;
+    requestAnimationFrame(() => headingRef.current?.focus());
+  }, [headingRef, isOpen, reviewChangeId]);
+
+  useEffect(() => {
+    if (
+      changeReview.phase !== "ready" ||
+      !changeReview.is_confirming ||
+      changeReview.is_reverting
+    ) {
+      return;
+    }
+    requestAnimationFrame(() => confirmationCancelRef.current?.focus());
+  }, [changeReview]);
+
+  const cancelChangeRevert = useCallback(() => {
+    onCancelChangeRevert();
+    requestAnimationFrame(() => revertButtonRef.current?.focus());
+  }, [onCancelChangeRevert]);
+
+  const confirmChangeRevert = useCallback(() => {
+    onConfirmChangeRevert();
+    requestAnimationFrame(() => reviewShellRef.current?.focus());
+  }, [onConfirmChangeRevert]);
+
   return (
-    <aside className={`workspace-panel ${isOpen ? "workspace-open" : ""}`}>
+    <aside
+      id="researchbox-workspace"
+      className={`workspace-panel ${isOpen ? "workspace-open" : ""} ${
+        isReviewMode ? "workspace-review-open" : ""
+      }`}
+      inert={isOpen ? undefined : true}
+      aria-hidden={!isOpen}
+    >
       <div className="workspace-header">
         <div>
-          <span className="eyebrow">Virtual filesystem</span>
-          <h2>Workspace</h2>
+          <span className="eyebrow">
+            {isReviewMode ? "Agent workspace edit" : "Virtual filesystem"}
+          </span>
+          <h2 ref={headingRef} tabIndex={-1}>
+            {isReviewMode ? "Review change" : "Workspace"}
+          </h2>
         </div>
-        <button type="button" aria-label="Close workspace" onClick={onClose}>
-          <X size={18} />
-        </button>
-      </div>
-
-      <div className="path-bar">
-        <button
-          type="button"
-          aria-label="Go to parent folder"
-          disabled={currentPath === "/"}
-          onClick={onNavigateBack}
-        >
-          <ChevronLeft size={16} />
-        </button>
-        <code>{currentPath}</code>
-      </div>
-
-      <div className="file-list">
-        {files.map((entry) => (
+        <div className="workspace-header-actions">
+          {isReviewMode && (
+            <button
+              type="button"
+              aria-label="Back to workspace"
+              onClick={onBackToWorkspace}
+            >
+              <ChevronLeft size={18} />
+            </button>
+          )}
           <button
-            key={entry.path}
             type="button"
-            className={selectedFile?.path === entry.path ? "selected" : ""}
-            onClick={() => onEntryClick(entry)}
+            aria-label="Close workspace"
+            onClick={onClose}
           >
-            <span className={`file-kind ${entry.kind}`}>
-              {entry.kind === "directory" ? (
-                <Folder size={17} />
-              ) : (
-                <FileText size={17} />
-              )}
-            </span>
-            <span className="file-name">{entry.name}</span>
-            {entry.kind === "file" && <small>{formatBytes(entry.size)}</small>}
-            {entry.kind === "directory" && <ChevronRight size={15} />}
+            <X size={18} />
           </button>
-        ))}
+        </div>
       </div>
 
-      {selectedFile ? (
-        <div className="file-preview">
-          <div className="file-preview-heading">
-            <FileText size={15} />
-            <span>{selectedFile.path.split("/").at(-1)}</span>
+      {changeReview.phase === "loading" && (
+        <div className="workspace-change-panel-state" role="status">
+          <LoaderCircle size={20} className="spin" aria-hidden="true" />
+          <strong>Loading the recorded change…</strong>
+          <code>{changeReview.selection.summary.path}</code>
+        </div>
+      )}
+
+      {changeReview.phase === "error" && (
+        <div className="workspace-change-panel-state error" role="alert">
+          <FileDiff size={20} aria-hidden="true" />
+          <strong>Could not load this change</strong>
+          <p>{changeReview.message}</p>
+          <div className="workspace-change-panel-actions">
+            <button type="button" onClick={onBackToWorkspace}>
+              Back
+            </button>
+            <button
+              className="primary"
+              type="button"
+              onClick={onRetryChangeReview}
+            >
+              Retry
+            </button>
           </div>
-          <pre>{selectedFile.content}</pre>
         </div>
-      ) : (
-        <div className="workspace-empty">
-          <MessageSquareText size={20} />
-          <p>Select a file to preview its contents.</p>
+      )}
+
+      {changeReview.phase === "ready" && (
+        <div
+          ref={reviewShellRef}
+          className="workspace-change-review-shell"
+          tabIndex={-1}
+        >
+          {changeReview.action_error && (
+            <div className="workspace-change-action-error" role="alert">
+              {changeReview.action_error}
+            </div>
+          )}
+          <WorkspaceChangeReview
+            change={changeReview.snapshot.change}
+            isReverting={changeReview.is_reverting}
+            isRevertDisabled={
+              isChangeRevertDisabled || changeReview.is_confirming
+            }
+            revertButtonRef={revertButtonRef}
+            onRequestRevert={onRequestChangeRevert}
+          />
+          {changeReview.is_confirming && (
+            <div
+              className="workspace-change-confirmation"
+              role="group"
+              aria-label="Confirm workspace change revert"
+            >
+              <strong>Revert this agent change?</strong>
+              <p>
+                {changeReview.snapshot.change.change_kind === "created"
+                  ? "This removes the file only if it is still the exact agent-created version."
+                  : "This restores the exact previous content only if the file is still this agent-edited version."}{" "}
+                Later edits will never be overwritten.
+              </p>
+              <div className="workspace-change-confirmation-actions">
+                <button
+                  ref={confirmationCancelRef}
+                  type="button"
+                  disabled={changeReview.is_reverting}
+                  onClick={cancelChangeRevert}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="danger"
+                  type="button"
+                  disabled={changeReview.is_reverting}
+                  onClick={confirmChangeRevert}
+                >
+                  {changeReview.is_reverting ? (
+                    <LoaderCircle
+                      size={14}
+                      className="spin"
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <RotateCcw size={14} aria-hidden="true" />
+                  )}
+                  <span>
+                    {changeReview.is_reverting
+                      ? "Reverting…"
+                      : "Revert now"}
+                  </span>
+                </button>
+              </div>
+            </div>
+          )}
         </div>
+      )}
+
+      {!isReviewMode && (
+        <>
+          <div className="path-bar">
+            <button
+              type="button"
+              aria-label="Go to parent folder"
+              disabled={currentPath === "/"}
+              onClick={onNavigateBack}
+            >
+              <ChevronLeft size={16} />
+            </button>
+            <code>{currentPath}</code>
+          </div>
+
+          <div className="file-list">
+            {files.map((entry) => (
+              <button
+                key={entry.path}
+                type="button"
+                className={
+                  selectedFile?.path === entry.path ? "selected" : ""
+                }
+                onClick={() => onEntryClick(entry)}
+              >
+                <span className={`file-kind ${entry.kind}`}>
+                  {entry.kind === "directory" ? (
+                    <Folder size={17} />
+                  ) : (
+                    <FileText size={17} />
+                  )}
+                </span>
+                <span className="file-name">{entry.name}</span>
+                {entry.kind === "file" && (
+                  <small>{formatBytes(entry.size)}</small>
+                )}
+                {entry.kind === "directory" && <ChevronRight size={15} />}
+              </button>
+            ))}
+          </div>
+
+          {selectedFile ? (
+            <div className="file-preview">
+              <div className="file-preview-heading">
+                <FileText size={15} />
+                <span>{selectedFile.path.split("/").at(-1)}</span>
+              </div>
+              <pre>{selectedFile.content}</pre>
+            </div>
+          ) : (
+            <div className="workspace-empty">
+              <MessageSquareText size={20} />
+              <p>Select a file to preview its contents.</p>
+            </div>
+          )}
+        </>
       )}
     </aside>
   );

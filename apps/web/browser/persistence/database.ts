@@ -1,4 +1,4 @@
-export const RESEARCHBOX_DATABASE_VERSION = 5;
+export const RESEARCHBOX_DATABASE_VERSION = 6;
 
 export const databaseStores = {
   meta: "meta",
@@ -14,6 +14,7 @@ export const databaseStores = {
 type ProjectFileSystemRecordBase = {
   project_id: string;
   incarnation_id: string;
+  incarnation_baseline_revision: number;
   workspace_revision: number;
   last_change_at: string | null;
 };
@@ -56,10 +57,13 @@ export type OpfsFileRecord = {
   content_id: string;
   byte_size: number;
   migration_id: string | null;
+  path_revision?: number;
 };
 
 export type StoredWorkspaceChangeTimestamp = {
   created_at?: unknown;
+  applied_workspace_revision?: unknown;
+  reverted_at_workspace_revision?: unknown;
 };
 
 export class ProjectFileSystemMetadataError extends Error {
@@ -198,6 +202,7 @@ function createSchema(
         workspaces.put({
           project_id: String(cursor.primaryKey),
           incarnation_id: crypto.randomUUID(),
+          incarnation_baseline_revision: 0,
           workspace_revision: 0,
           last_change_at: null,
           lifecycle_status: "active",
@@ -239,12 +244,18 @@ export function hasCompleteProjectFileSystemMetadata(
   const hasValidRevision =
     Number.isSafeInteger(record.workspace_revision) &&
     (record.workspace_revision ?? -1) >= 0;
+  const hasValidIncarnationBaseline =
+    Number.isSafeInteger(record.incarnation_baseline_revision) &&
+    (record.incarnation_baseline_revision ?? -1) >= 0 &&
+    (record.incarnation_baseline_revision ?? Number.MAX_SAFE_INTEGER) <=
+      (record.workspace_revision ?? -1);
   return (
     typeof record.project_id === "string" &&
     record.project_id.length > 0 &&
     typeof record.incarnation_id === "string" &&
     record.incarnation_id.length > 0 &&
     hasValidRevision &&
+    hasValidIncarnationBaseline &&
     (record.lifecycle_status !== "deleted" ||
       (record.workspace_revision ?? 0) >= 1) &&
     (record.last_change_at === null ||
@@ -284,6 +295,48 @@ export function repairProjectFileSystemRecord(
         latest === null || candidate > latest ? candidate : latest,
       null,
     );
+  const recoverableReceiptRevision = changes.reduce(
+    (latest, change) =>
+      Math.max(
+        latest,
+        recoverStoredRevision(change.applied_workspace_revision),
+        recoverStoredRevision(change.reverted_at_workspace_revision),
+      ),
+    0,
+  );
+  const workspaceRevision =
+    storedRevision ??
+    Math.max(
+      changes.length + (lifecycleStatus === "deleted" ? 1 : 0),
+      recoverableReceiptRevision,
+    );
+  const storedIncarnationBaseline =
+    record.incarnation_baseline_revision;
+  if (
+    storedIncarnationBaseline !== undefined &&
+    (!Number.isSafeInteger(storedIncarnationBaseline) ||
+      storedIncarnationBaseline < 0 ||
+      storedIncarnationBaseline > workspaceRevision)
+  ) {
+    throw new ProjectFileSystemMetadataError(
+      `Project filesystem has an invalid incarnation baseline: ${record.project_id}`,
+    );
+  }
+  const earliestAppliedRevision = changes.reduce<number | null>(
+    (earliest, change) => {
+      const revision = recoverStoredRevision(
+        change.applied_workspace_revision,
+      );
+      if (revision < 1 || revision > workspaceRevision) return earliest;
+      return earliest === null ? revision : Math.min(earliest, revision);
+    },
+    null,
+  );
+  const incarnationBaselineRevision =
+    storedIncarnationBaseline ??
+    (earliestAppliedRevision === null
+      ? workspaceRevision
+      : earliestAppliedRevision - 1);
 
   const common = {
     project_id: record.project_id,
@@ -292,10 +345,8 @@ export function repairProjectFileSystemRecord(
       record.incarnation_id.length > 0
         ? record.incarnation_id
         : crypto.randomUUID(),
-    workspace_revision: Math.max(
-      storedRevision ?? 0,
-      changes.length + (lifecycleStatus === "deleted" ? 1 : 0),
-    ),
+    incarnation_baseline_revision: incarnationBaselineRevision,
+    workspace_revision: workspaceRevision,
     last_change_at: latestTimestamp,
   };
   if (lifecycleStatus === "deleted") {
@@ -312,6 +363,12 @@ export function repairProjectFileSystemRecord(
     lifecycle_status: "active",
     ...repairActiveProjectFileSystemStorageState(record),
   };
+}
+
+function recoverStoredRevision(value: unknown): number {
+  return Number.isSafeInteger(value) && (value as number) >= 0
+    ? (value as number)
+    : 0;
 }
 
 function migrateProjectFileSystemMetadata(

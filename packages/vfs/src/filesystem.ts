@@ -28,6 +28,18 @@ export type WorkspaceChangeRecord = Omit<
 > & {
   tool_call_block_id: string | null;
   legacy_message_id?: string;
+  /**
+   * The workspace revision that committed this receipt's file contents.
+   *
+   * `null` identifies a legacy receipt whose original path generation cannot
+   * be proven. Such a receipt remains inspectable but must never be reverted.
+   */
+  applied_workspace_revision: number | null;
+  /**
+   * The revision that atomically consumed this receipt, or `null` while it has
+   * never been reverted.
+   */
+  reverted_at_workspace_revision: number | null;
   path: string;
   change_kind: "created" | "updated";
   before_content: string | null;
@@ -70,6 +82,8 @@ export type WorkspaceListResult = {
 
 export type WorkspaceReadResult = {
   workspace_revision: number;
+  /** The workspace revision of this path's most recent mutation. */
+  path_revision: number;
   content: string;
 };
 
@@ -96,6 +110,18 @@ export type WorkspaceChangesResult = {
   changes: WorkspaceChangeRecord[];
 };
 
+export type WorkspaceChangeResult = {
+  workspace_revision: number;
+  change: WorkspaceChangeRecord | null;
+};
+
+export type WorkspaceChangeRevertResult = {
+  workspace_revision: number;
+  revert_outcome: "applied" | "already_reverted";
+  reverted_at_workspace_revision: number;
+  change: WorkspaceChangeRecord;
+};
+
 export class VfsError extends Error {
   public readonly code: VfsErrorCode;
 
@@ -103,6 +129,13 @@ export class VfsError extends Error {
     super(message);
     this.name = "VfsError";
     this.code = code;
+  }
+}
+
+export class WorkspaceCorruptionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkspaceCorruptionError";
   }
 }
 
@@ -148,6 +181,29 @@ export interface WorkspaceWriter {
 
 export interface WorkspaceChangeJournal {
   listChanges(): Promise<WorkspaceChangesResult>;
+  /**
+   * Returns one change and the workspace revision observed by the same
+   * operation. A missing identifier returns `change: null`.
+   *
+   * A returned record is caller-owned and may be mutated without affecting
+   * later journal reads. Once committed, every receipt field is immutable
+   * except `reverted_at_workspace_revision`, which may transition exactly once
+   * from `null` to the revision of its successful revert.
+   */
+  getChange(changeId: string): Promise<WorkspaceChangeResult>;
+  /**
+   * Atomically reverts and consumes one change receipt.
+   *
+   * A missing receipt rejects with `VfsError` code `not_found`. An unconsumed
+   * receipt is revertible only while its path is still the exact file
+   * generation and content committed by the receipt. Any later mutation of
+   * that path, including an edit-away/edit-back ABA cycle, rejects with
+   * `conflict`. A successful first call restores `before_content` (or removes a
+   * created file), marks the receipt consumed, and increments the workspace
+   * revision exactly once. Later calls return `already_reverted` without
+   * mutating the workspace, even if the path has subsequently changed.
+   */
+  revertChange(changeId: string): Promise<WorkspaceChangeRevertResult>;
 }
 
 /**
@@ -168,7 +224,9 @@ export interface WorkspaceChangeJournal {
  * Implementations must commit a changed file, its optional change receipt,
  * receipt clock, and revision atomically. They must also provide exact
  * compare-and-swap behavior through `expected_content`; these guarantees are
- * not optional backend capabilities.
+ * not optional backend capabilities. New receipts must carry their non-null
+ * `applied_workspace_revision`, and every successful read must return the
+ * path's last mutation revision from the same observation as its content.
  */
 export interface Workspace
   extends WorkspaceReader,
@@ -282,6 +340,8 @@ export function createVfsWriteResult(
         ? null
         : {
             ...change,
+            applied_workspace_revision: null,
+            reverted_at_workspace_revision: null,
             path: normalizedPath,
             change_kind: changeKind,
             before_content: beforeContent,
@@ -290,6 +350,252 @@ export function createVfsWriteResult(
             byte_size: new TextEncoder().encode(afterContent).byteLength,
           },
   };
+}
+
+/**
+ * Stamps a journaled write with the revision that atomically committed it.
+ */
+export function applyWorkspaceChangeRevision(
+  result: VfsWriteResult,
+  workspaceRevision: number,
+): VfsWriteResult {
+  if (result.change === null) return result;
+  if (!Number.isSafeInteger(workspaceRevision) || workspaceRevision < 0) {
+    throw new VfsError("conflict", "Workspace revision is invalid.");
+  }
+  return {
+    ...result,
+    change: {
+      ...result.change,
+      applied_workspace_revision: workspaceRevision,
+      reverted_at_workspace_revision: null,
+    },
+  };
+}
+
+/**
+ * Rejects a malformed or temporally impossible workspace change receipt.
+ *
+ * Durable adapters must call this before trusting persisted receipt fields for
+ * a destructive operation. `applied_workspace_revision: null` remains valid
+ * for legacy, inspectable receipts, but such a receipt is not revertible.
+ */
+export function assertValidWorkspaceChangeRecord(
+  value: unknown,
+  workspaceRevision?: number,
+): asserts value is WorkspaceChangeRecord {
+  if (typeof value !== "object" || value === null) {
+    throw invalidWorkspaceChangeRecord("is not an object");
+  }
+  if (
+    workspaceRevision !== undefined &&
+    (!Number.isSafeInteger(workspaceRevision) || workspaceRevision < 0)
+  ) {
+    throw invalidWorkspaceChangeRecord(
+      "was checked against an invalid workspace revision",
+    );
+  }
+
+  const change = value as Partial<
+    Record<keyof WorkspaceChangeRecord, unknown>
+  >;
+  for (const [field, candidate] of [
+    ["change_id", change.change_id],
+    ["session_id", change.session_id],
+    ["tool_call_id", change.tool_call_id],
+  ] as const) {
+    if (typeof candidate !== "string" || candidate.length === 0) {
+      throw invalidWorkspaceChangeRecord(
+        `has an invalid ${field}`,
+      );
+    }
+  }
+  if (
+    change.tool_call_block_id !== null &&
+    (typeof change.tool_call_block_id !== "string" ||
+      change.tool_call_block_id.length === 0)
+  ) {
+    throw invalidWorkspaceChangeRecord(
+      "has an invalid tool_call_block_id",
+    );
+  }
+  if (
+    change.legacy_message_id !== undefined &&
+    (typeof change.legacy_message_id !== "string" ||
+      change.legacy_message_id.length === 0)
+  ) {
+    throw invalidWorkspaceChangeRecord(
+      "has an invalid legacy_message_id",
+    );
+  }
+  if (
+    change.tool_call_block_id === null &&
+    change.legacy_message_id === undefined &&
+    (!Number.isSafeInteger(change.assistant_message_index) ||
+      (change.assistant_message_index as number) < 0)
+  ) {
+    throw invalidWorkspaceChangeRecord(
+      "has no stable assistant message identity",
+    );
+  }
+  if (
+    !Number.isSafeInteger(change.assistant_message_index) ||
+    (change.assistant_message_index as number) < 0
+  ) {
+    throw invalidWorkspaceChangeRecord(
+      "has an invalid assistant_message_index",
+    );
+  }
+  if (
+    change.tool_name !== "write_file" &&
+    change.tool_name !== "replace_text"
+  ) {
+    throw invalidWorkspaceChangeRecord("has an invalid tool_name");
+  }
+  if (
+    typeof change.created_at !== "string" ||
+    canonicalWorkspaceChangeTimestamp(change.created_at) !==
+      change.created_at
+  ) {
+    throw invalidWorkspaceChangeRecord("has an invalid created_at");
+  }
+
+  const appliedRevision = change.applied_workspace_revision;
+  const revertedRevision = change.reverted_at_workspace_revision;
+  if (
+    appliedRevision !== null &&
+    (!Number.isSafeInteger(appliedRevision) ||
+      (appliedRevision as number) < 1)
+  ) {
+    throw invalidWorkspaceChangeRecord(
+      "has an invalid applied_workspace_revision",
+    );
+  }
+  if (
+    revertedRevision !== null &&
+    (!Number.isSafeInteger(revertedRevision) ||
+      (revertedRevision as number) < 1)
+  ) {
+    throw invalidWorkspaceChangeRecord(
+      "has an invalid reverted_at_workspace_revision",
+    );
+  }
+  if (
+    workspaceRevision !== undefined &&
+    ((typeof appliedRevision === "number" &&
+      appliedRevision > workspaceRevision) ||
+      (typeof revertedRevision === "number" &&
+        revertedRevision > workspaceRevision))
+  ) {
+    throw invalidWorkspaceChangeRecord(
+      "contains a revision from the future",
+    );
+  }
+  if (
+    revertedRevision !== null &&
+    (appliedRevision === null ||
+      typeof appliedRevision !== "number" ||
+      typeof revertedRevision !== "number" ||
+      revertedRevision <= appliedRevision)
+  ) {
+    throw invalidWorkspaceChangeRecord(
+      "has an invalid revert disposition",
+    );
+  }
+
+  if (typeof change.path !== "string") {
+    throw invalidWorkspaceChangeRecord("has an invalid path");
+  }
+  let normalizedPath: string;
+  try {
+    normalizedPath = normalizeFilePath(change.path);
+  } catch {
+    throw invalidWorkspaceChangeRecord("has an invalid path");
+  }
+  if (normalizedPath !== change.path) {
+    throw invalidWorkspaceChangeRecord("has a non-canonical path");
+  }
+  if (
+    change.change_kind !== "created" &&
+    change.change_kind !== "updated"
+  ) {
+    throw invalidWorkspaceChangeRecord("has an invalid change_kind");
+  }
+  if (typeof change.after_content !== "string") {
+    throw invalidWorkspaceChangeRecord(
+      "has invalid after_content",
+    );
+  }
+  if (
+    (change.change_kind === "created" &&
+      change.before_content !== null) ||
+    (change.change_kind === "updated" &&
+      typeof change.before_content !== "string")
+  ) {
+    throw invalidWorkspaceChangeRecord(
+      "has inconsistent change content",
+    );
+  }
+  if (change.before_content === change.after_content) {
+    throw invalidWorkspaceChangeRecord(
+      "does not describe a content change",
+    );
+  }
+
+  const beforeContent = change.before_content as string | null;
+  const lineChanges = computeLineChanges(
+    beforeContent ?? "",
+    change.after_content,
+  );
+  if (
+    !Number.isSafeInteger(change.additions) ||
+    (change.additions as number) < 0 ||
+    change.additions !== lineChanges.additions ||
+    !Number.isSafeInteger(change.deletions) ||
+    (change.deletions as number) < 0 ||
+    change.deletions !== lineChanges.deletions
+  ) {
+    throw invalidWorkspaceChangeRecord(
+      "has invalid line change counts",
+    );
+  }
+  if (
+    !Number.isSafeInteger(change.byte_size) ||
+    (change.byte_size as number) < 0 ||
+    change.byte_size !==
+      new TextEncoder().encode(change.after_content).byteLength
+  ) {
+    throw invalidWorkspaceChangeRecord("has an invalid byte_size");
+  }
+}
+
+/**
+ * Normalizes optional revision fields from durable legacy records.
+ */
+export function normalizeStoredWorkspaceRevision(
+  value: unknown,
+): number | null {
+  return Number.isSafeInteger(value) && (value as number) >= 0
+    ? (value as number)
+    : null;
+}
+
+function canonicalWorkspaceChangeTimestamp(value: string): string | null {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return null;
+  try {
+    return new Date(timestamp).toISOString();
+  } catch {
+    return null;
+  }
+}
+
+function invalidWorkspaceChangeRecord(
+  detail: string,
+): WorkspaceCorruptionError {
+  return new WorkspaceCorruptionError(
+    `Workspace change receipt ${detail}.`,
+  );
 }
 
 export function assertVfsWriteExpectation(

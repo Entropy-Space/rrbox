@@ -1,4 +1,6 @@
 import {
+  applyWorkspaceChangeRevision,
+  assertValidWorkspaceChangeRecord,
   assertVfsWriteExpectation,
   compareVfsEntries,
   compareVfsStrings,
@@ -16,6 +18,8 @@ import {
   type VfsSeedSource,
   type VfsWriteOptions,
   type Workspace,
+  type WorkspaceChangeResult,
+  type WorkspaceChangeRevertResult,
   type WorkspaceChangeRecord,
   type WorkspaceChangesResult,
   type WorkspaceFilesSnapshotOptions,
@@ -28,6 +32,7 @@ import {
 
 export class MemoryWorkspace implements Workspace {
   private readonly files = new Map<string, string>();
+  private readonly pathRevisions = new Map<string, number>();
   private readonly changes = new Map<string, WorkspaceChangeRecord>();
   private workspaceRevision = 0;
   private lastChangeAt: string | null = null;
@@ -38,6 +43,7 @@ export class MemoryWorkspace implements Workspace {
       : normalizeVfsSeedFiles(seed as Readonly<Record<string, string>>);
     for (const { path, content } of files) {
       this.files.set(path, content);
+      this.pathRevisions.set(path, 0);
     }
   }
 
@@ -92,6 +98,7 @@ export class MemoryWorkspace implements Workspace {
     if (content !== undefined) {
       return {
         workspace_revision: this.workspaceRevision,
+        path_revision: this.pathRevisions.get(normalizedPath) ?? 0,
         content,
       };
     }
@@ -150,16 +157,24 @@ export class MemoryWorkspace implements Workspace {
     const workspaceRevision = incrementWorkspaceRevision(
       this.workspaceRevision,
     );
+    const committedResult = applyWorkspaceChangeRevision(
+      result,
+      workspaceRevision,
+    );
 
     this.files.set(normalizedPath, content);
-    if (result.change) {
-      this.changes.set(result.change.change_id, { ...result.change });
-      this.lastChangeAt = result.change.created_at;
+    this.pathRevisions.set(normalizedPath, workspaceRevision);
+    if (committedResult.change) {
+      this.changes.set(
+        committedResult.change.change_id,
+        { ...committedResult.change },
+      );
+      this.lastChangeAt = committedResult.change.created_at;
     }
     this.workspaceRevision = workspaceRevision;
     return {
       workspace_revision: this.workspaceRevision,
-      result,
+      result: committedResult,
     };
   }
 
@@ -191,6 +206,7 @@ export class MemoryWorkspace implements Workspace {
       this.workspaceRevision,
     );
     this.files.delete(normalizedPath);
+    this.pathRevisions.delete(normalizedPath);
     this.workspaceRevision = workspaceRevision;
     return {
       workspace_revision: this.workspaceRevision,
@@ -203,6 +219,92 @@ export class MemoryWorkspace implements Workspace {
       changes: [...this.changes.values()]
         .sort(compareWorkspaceChanges)
         .map((change) => ({ ...change })),
+    };
+  }
+
+  async getChange(changeId: string): Promise<WorkspaceChangeResult> {
+    const change = this.changes.get(changeId);
+    return {
+      workspace_revision: this.workspaceRevision,
+      change: change === undefined ? null : { ...change },
+    };
+  }
+
+  async revertChange(
+    changeId: string,
+  ): Promise<WorkspaceChangeRevertResult> {
+    const change = this.changes.get(changeId);
+    if (change === undefined) {
+      throw new VfsError(
+        "not_found",
+        `Workspace change not found: ${changeId}`,
+      );
+    }
+    assertValidWorkspaceChangeRecord(
+      change,
+      this.workspaceRevision,
+    );
+    if (change.reverted_at_workspace_revision !== null) {
+      return {
+        workspace_revision: this.workspaceRevision,
+        revert_outcome: "already_reverted",
+        reverted_at_workspace_revision:
+          change.reverted_at_workspace_revision,
+        change: { ...change },
+      };
+    }
+    if (change.applied_workspace_revision === null) {
+      throw new VfsError(
+        "conflict",
+        `Workspace change has no safe path revision: ${changeId}`,
+      );
+    }
+
+    const content = this.files.get(change.path);
+    const pathRevision = this.pathRevisions.get(change.path);
+    if (
+      content === undefined ||
+      content !== change.after_content ||
+      pathRevision !== change.applied_workspace_revision ||
+      (change.change_kind === "created" &&
+        change.before_content !== null) ||
+      (change.change_kind === "updated" &&
+        change.before_content === null)
+    ) {
+      throw new VfsError(
+        "conflict",
+        `Workspace path changed after receipt was created: ${change.path}`,
+      );
+    }
+
+    const workspaceRevision = incrementWorkspaceRevision(
+      this.workspaceRevision,
+    );
+    if (change.change_kind === "created") {
+      this.files.delete(change.path);
+      this.pathRevisions.delete(change.path);
+    } else {
+      const beforeContent = change.before_content;
+      if (beforeContent === null) {
+        throw new VfsError(
+          "conflict",
+          `Workspace change cannot be safely reverted: ${changeId}`,
+        );
+      }
+      this.files.set(change.path, beforeContent);
+      this.pathRevisions.set(change.path, workspaceRevision);
+    }
+    const revertedChange = {
+      ...change,
+      reverted_at_workspace_revision: workspaceRevision,
+    } satisfies WorkspaceChangeRecord;
+    this.changes.set(changeId, revertedChange);
+    this.workspaceRevision = workspaceRevision;
+    return {
+      workspace_revision: workspaceRevision,
+      revert_outcome: "applied",
+      reverted_at_workspace_revision: workspaceRevision,
+      change: { ...revertedChange },
     };
   }
 

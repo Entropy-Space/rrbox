@@ -8,7 +8,7 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v8 command", () => {
+test("round-trips every protocol-v9 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("project_create", { name: "Docs" }),
@@ -61,6 +61,14 @@ test("round-trips every protocol-v8 command", () => {
     createCommand("workspace_export", { project_id: "p1" }),
     createCommand("workspace_export_cancel", {
       target_request_id: "export-request",
+    }),
+    createCommand("workspace_change_read", {
+      project_id: "p1",
+      change_id: "change-1",
+    }),
+    createCommand("workspace_change_revert", {
+      project_id: "p1",
+      change_id: "change-1",
     }),
     createCommand("fs_list", { project_id: "p1", path: "/" }),
     createCommand("fs_read", { project_id: "p1", path: "/README.md" }),
@@ -410,6 +418,28 @@ test("round-trips every normalized timeline core event", () => {
       },
       "request-export",
     ),
+    coreEvent(
+      "workspace_change_snapshot",
+      {
+        project_id: "project-1",
+        workspace_revision: 2,
+        change: createWorkspaceChangeDetails(),
+      },
+      "request-change-read",
+    ),
+    coreEvent(
+      "workspace_change_reverted",
+      {
+        project_id: "project-1",
+        change_id: "change-1",
+        path: "/README.md",
+        change_kind: "updated",
+        workspace_revision: 3,
+        reverted_at_workspace_revision: 3,
+        revert_outcome: "applied",
+      },
+      "request-change-revert",
+    ),
     coreEvent("error", {
       code: "agent_run_failed",
       message: "Provider failed",
@@ -484,7 +514,7 @@ test("virtual new chat requires an empty timeline and cannot run", () => {
   );
 });
 
-test("requires request correlation for filesystem and draft results", () => {
+test("requires request correlation for filesystem, draft, and workspace change results", () => {
   for (const event of [
     coreEvent("files_snapshot", {
       project_id: "project-1",
@@ -509,8 +539,42 @@ test("requires request correlation for filesystem and draft results", () => {
       workspace_revision: 0,
       files: [],
     }),
+    coreEvent("workspace_change_snapshot", {
+      project_id: "project-1",
+      workspace_revision: 0,
+      change: createWorkspaceChangeDetails(),
+    }),
+    coreEvent("workspace_change_reverted", {
+      project_id: "project-1",
+      change_id: "change-1",
+      path: "/README.md",
+      change_kind: "updated",
+      workspace_revision: 1,
+      reverted_at_workspace_revision: 1,
+      revert_outcome: "applied",
+    }),
   ]) {
     assert.throws(() => parseCoreEvent(event), /require request_id/);
+  }
+
+  for (const code of [
+    "run_in_progress",
+    "workspace_change_not_found",
+    "workspace_change_conflict",
+    "workspace_change_read_failed",
+    "workspace_change_revert_failed",
+  ]) {
+    assert.throws(
+      () =>
+        parseCoreEvent(
+          coreEvent("error", {
+            code,
+            message: "Change operation failed.",
+            project_id: "project-1",
+          }),
+        ),
+      /require request_id/,
+    );
   }
 });
 
@@ -580,6 +644,25 @@ test("strictly parses JSON-only workspace transfer files", () => {
       }),
     /workspace_export_cancel payload must contain exactly/,
   );
+  for (const type of [
+    "workspace_change_read",
+    "workspace_change_revert",
+  ]) {
+    assert.throws(
+      () =>
+        parseViewerCommand({
+          protocol_version: PROTOCOL_VERSION,
+          request_id: `request-extra-${type}`,
+          type,
+          payload: {
+            project_id: "project-1",
+            change_id: "change-1",
+            path: "/README.md",
+          },
+        }),
+      new RegExp(`${type} payload must contain exactly`),
+    );
+  }
   assert.throws(
     () =>
       parseCoreEvent(
@@ -632,6 +715,155 @@ test("validates workspace change identity and numeric fields", () => {
       ),
     /workspace_revision must be a safe integer/,
   );
+
+  for (const invalid of [
+    { ...createWorkspaceChangeDetails(), revert_status: "pending" },
+    { ...createWorkspaceChangeDetails(), current_content: undefined },
+    { ...createWorkspaceChangeDetails(), before_content: 42 },
+    {
+      ...createWorkspaceChangeDetails(),
+      change_kind: "created",
+      before_content: "# Impossible",
+    },
+    { ...createWorkspaceChangeDetails(), before_content: null },
+    {
+      ...createWorkspaceChangeDetails(),
+      current_content: null,
+    },
+    {
+      ...createWorkspaceChangeDetails(),
+      revert_status: "already_reverted",
+    },
+    {
+      ...createWorkspaceChangeDetails(),
+      revert_status: "conflict",
+      reverted_at_workspace_revision: 2,
+    },
+    { ...createWorkspaceChangeDetails(), preview_html: "<p>unsafe</p>" },
+  ]) {
+    assert.throws(
+      () =>
+        parseCoreEvent(
+          coreEvent(
+            "workspace_change_snapshot",
+            {
+              project_id: "project-1",
+              workspace_revision: 2,
+              change: invalid,
+            },
+            "workspace-change-request",
+          ),
+        ),
+      /Workspace change details|revert status|revert revision|before_content|current_content|after_content/,
+    );
+  }
+
+  for (const currentContent of [null, "", "# Changed", "# After"]) {
+    const event = coreEvent(
+      "workspace_change_snapshot",
+      {
+        project_id: "project-1",
+        workspace_revision: 2,
+        change: {
+          ...createWorkspaceChangeDetails(),
+          current_content: currentContent,
+          revert_status: "conflict",
+        },
+      },
+      "workspace-change-request",
+    );
+    assert.deepEqual(parseCoreEvent(event), event);
+  }
+
+  const alreadyReverted = coreEvent(
+    "workspace_change_snapshot",
+    {
+      project_id: "project-1",
+      workspace_revision: 4,
+      change: {
+        ...createWorkspaceChangeDetails(),
+        current_content: "# Later edit",
+        reverted_at_workspace_revision: 3,
+        revert_status: "already_reverted",
+      },
+    },
+    "already-reverted-workspace-change",
+  );
+  assert.deepEqual(parseCoreEvent(alreadyReverted), alreadyReverted);
+
+  const created = coreEvent(
+    "workspace_change_snapshot",
+    {
+      project_id: "project-1",
+      workspace_revision: 2,
+      change: {
+        ...createWorkspaceChangeDetails(),
+        change_kind: "created",
+        before_content: null,
+        after_content: "",
+        current_content: "",
+      },
+    },
+    "created-workspace-change",
+  );
+  assert.deepEqual(parseCoreEvent(created), created);
+
+  assert.throws(
+    () =>
+      parseCoreEvent(
+        coreEvent(
+          "workspace_change_snapshot",
+          {
+            project_id: "project-1",
+            workspace_revision: 2,
+            change: {
+              ...createWorkspaceChangeDetails(),
+              current_content: "# Before",
+              reverted_at_workspace_revision: 3,
+              revert_status: "already_reverted",
+            },
+          },
+          "future-revert-revision",
+        ),
+      ),
+    /cannot exceed workspace_revision/,
+  );
+
+  for (const invalid of [
+    {
+      workspace_revision: 3,
+      reverted_at_workspace_revision: 2,
+      revert_outcome: "applied",
+    },
+    {
+      workspace_revision: 2,
+      reverted_at_workspace_revision: 3,
+      revert_outcome: "already_reverted",
+    },
+    {
+      workspace_revision: 3,
+      reverted_at_workspace_revision: 3,
+      revert_outcome: "pending",
+    },
+  ]) {
+    assert.throws(
+      () =>
+        parseCoreEvent(
+          coreEvent(
+            "workspace_change_reverted",
+            {
+              project_id: "project-1",
+              change_id: "change-1",
+              path: "/README.md",
+              change_kind: "updated",
+              ...invalid,
+            },
+            "invalid-revert-outcome",
+          ),
+        ),
+      /revert outcome|revert revisions/,
+    );
+  }
 });
 
 test("validates provider inventories and active ownership", () => {
@@ -659,7 +891,7 @@ test("rejects older protocol versions and missing nullable session scope", () =>
   assert.throws(
     () =>
       parseViewerCommand({
-        protocol_version: 7,
+        protocol_version: 8,
         request_id: "request-old",
         type: "bootstrap",
         payload: {},
@@ -874,6 +1106,17 @@ function createFileChange() {
     additions: 2,
     deletions: 1,
     byte_size: 42,
+  };
+}
+
+function createWorkspaceChangeDetails() {
+  return {
+    ...createFileChange(),
+    before_content: "# Before",
+    after_content: "# After",
+    current_content: "# After",
+    reverted_at_workspace_revision: null,
+    revert_status: "available",
   };
 }
 

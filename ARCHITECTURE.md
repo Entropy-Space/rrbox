@@ -34,7 +34,7 @@ packages/viewer → browser workspace adapter → browser/archive.worker.ts
                                               └─ packages/workspace-archive
 ```
 
-The viewer and core worker exchange only protocol-v8 JSON values. A
+The viewer and core worker exchange only protocol-v9 JSON values. A
 `project_id` plus nullable `session_id` scopes the active composer: `null`
 identifies that project's single virtual new chat, while incremental run events
 always identify a durable session. Filesystem and draft acknowledgements use a
@@ -44,8 +44,11 @@ state revision. Every workspace operation also carries a project-scoped
 it committed. This is a backend content version, independent from the number
 of change receipts. Mutation events identify the changed path so the viewer can
 refresh its directory and selected file without accepting stale responses.
-Together these prevent late work from replacing a newer project, chat, draft,
-or file-navigation result. The core and LLM workers use a separate protocol-v4
+Correlated change-read events expose the durable before/after receipt plus the
+current file state. A revert event distinguishes a newly applied revert from an
+idempotent replay. Together these prevent late work from replacing a newer
+project, chat, draft, or file-navigation result. The core and LLM workers use a
+separate protocol-v4
 JSON contract so provider discovery, full conversation requests, provider I/O,
 cancellation, and future credentials stay outside the agent runtime. The viewer
 never imports Pi,
@@ -134,7 +137,8 @@ selection.
 
 `write_file` and exact-match `replace_text` use compare-and-swap VFS writes.
 For inline projects, IndexedDB commits the file and an undo-ready before/after
-receipt in one transaction. For OPFS projects, content bytes are immutable
+receipt, its applied path revision, and the workspace revision in one
+transaction. For OPFS projects, content bytes are immutable
 SHA-256-addressed objects written and closed first; one later IndexedDB
 transaction atomically publishes the manifest pointer, receipt, clock, and
 revision. Pre-registered cleanup tasks make unpublished and superseded objects
@@ -145,6 +149,17 @@ correlating its receipt with the internal tool-call block identifier. If a
 worker stops between those checkpoints, reload reconciliation uses the durable
 receipt to record truthful success before the remaining stream is marked
 interrupted.
+
+The viewer can resolve a receipt by `change_id` and render its exact original
+before/after diff. Revert is a required atomic workspace operation, not a
+viewer-composed write/remove sequence. An unconsumed receipt applies only when
+both the current bytes and per-path mutation revision match the generation that
+created it. The same transaction restores the previous content (or removes a
+created file), advances the workspace revision once, and records
+`reverted_at_workspace_revision`. A consumed receipt is permanently
+idempotent: later retries report `already_reverted` without inspecting or
+mutating whatever now occupies the path. Receipts from older storage without a
+provable applied revision are inspectable but never revertible.
 
 A project owns one virtual filesystem and zero or more durable sessions.
 Switching a project restores its last selected session or its virtual new chat.
@@ -163,7 +178,9 @@ The workspace contract is split into structural `WorkspaceReader`,
 `WorkspaceWriter`, and `WorkspaceChangeJournal` capabilities so consumers
 depend only on operations they use. Compare-and-swap writes and atomic
 file-plus-receipt commits are mandatory semantics, not optional capability
-flags. A project id's first workspace starts at revision zero; replacements
+flags. `WorkspaceChangeJournal.revertChange` also has mandatory one-time,
+generation-aware semantics across every backend. A project id's first
+workspace starts at revision zero; replacements
 continue the same sequence so cached content can never mistake a new
 incarnation for older data. Deleting an active workspace reserves exactly one
 revision for its possible replacement, while repeated idempotent deletion does
@@ -204,13 +221,15 @@ Deleted workspace markers retain only the next project-scoped revision so
 reusing an identifier cannot move the viewer's cache backwards; file content
 and change receipts are still removed.
 
-Browser storage version 5 gives each active workspace an explicit
+Browser storage version 6 gives each active workspace an explicit
 `indexeddb` or `opfs` content owner. Migration never performs filesystem I/O in
 an IndexedDB upgrade transaction. Inline content remains authoritative while
 each OPFS candidate is copied and recorded; a final IndexedDB transaction
 rechecks the incarnation, source revision, and exact path coverage before
 flipping ownership. Cleanup of stale inline rows and unreachable OPFS objects
-is idempotent and resumes from durable `meta` records.
+is idempotent and resumes from durable `meta` records. Each incarnation also
+persists its baseline revision; a receipt is revertible only when its applied
+revision is strictly newer than that baseline.
 
 ## Workspace archive boundary
 

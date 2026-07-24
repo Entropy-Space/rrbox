@@ -6,7 +6,13 @@ import {
   VfsError,
   type VfsSeedFile,
   type Workspace,
+  type WorkspaceChangeRecord,
+  type WorkspaceChangeResult,
+  type WorkspaceChangeRevertResult,
+  type WorkspaceChangesResult,
   type WorkspaceFilesSnapshotReader,
+  type WorkspaceReadResult,
+  type WorkspaceWriteResult,
 } from "./filesystem.ts";
 
 export type WorkspaceBackendErrorCode =
@@ -206,14 +212,14 @@ export class MemoryWorkspaceBackend implements WorkspaceBackend {
           )),
       read: (path) =>
         this.runOnRecord(projectId, record, async () =>
-          this.withRevisionOffset(
+          this.withReadRevisionOffset(
             record,
             await record.workspace.read(path),
           )),
       write: (path, content, options) =>
         this.runOnRecord(projectId, record, async () => {
           await this.assertWriteRevisionCapacity(record, path, content);
-          return this.withRevisionOffset(
+          return this.withWriteRevisionOffset(
             record,
             await record.workspace.write(path, content, options),
           );
@@ -230,10 +236,31 @@ export class MemoryWorkspaceBackend implements WorkspaceBackend {
         }),
       listChanges: () =>
         this.runOnRecord(projectId, record, async () =>
-          this.withRevisionOffset(
+          this.withChangesRevisionOffset(
             record,
             await record.workspace.listChanges(),
           )),
+      getChange: (changeId) =>
+        this.runOnRecord(projectId, record, async () =>
+          this.withChangeRevisionOffset(
+            record,
+            await record.workspace.getChange(changeId),
+          )),
+      revertChange: (changeId) =>
+        this.runOnRecord(projectId, record, async () => {
+          const receipt = await record.workspace.getChange(changeId);
+          record.localRevision = receipt.workspace_revision;
+          if (
+            receipt.change !== null &&
+            receipt.change.reverted_at_workspace_revision === null
+          ) {
+            this.assertMutationRevisionCapacity(record);
+          }
+          return this.withChangeRevertRevisionOffset(
+            record,
+            await record.workspace.revertChange(changeId),
+          );
+        }),
     };
     const filesystem = record.workspace;
     if (isWorkspaceFilesSnapshotReader(filesystem)) {
@@ -297,6 +324,103 @@ export class MemoryWorkspaceBackend implements WorkspaceBackend {
     return {
       ...result,
       workspace_revision: workspaceRevision,
+    };
+  }
+
+  private withReadRevisionOffset(
+    record: MemoryWorkspaceRecord,
+    result: WorkspaceReadResult,
+  ): WorkspaceReadResult {
+    return {
+      ...this.withRevisionOffset(record, result),
+      path_revision: offsetWorkspaceRevision(
+        result.path_revision,
+        record.revisionOffset,
+      ),
+    };
+  }
+
+  private withWriteRevisionOffset(
+    record: MemoryWorkspaceRecord,
+    result: WorkspaceWriteResult,
+  ): WorkspaceWriteResult {
+    return {
+      ...this.withRevisionOffset(record, result),
+      result: {
+        ...result.result,
+        change:
+          result.result.change === null
+            ? null
+            : this.withChangeRecordRevisionOffset(
+                record,
+                result.result.change,
+              ),
+      },
+    };
+  }
+
+  private withChangesRevisionOffset(
+    record: MemoryWorkspaceRecord,
+    result: WorkspaceChangesResult,
+  ): WorkspaceChangesResult {
+    return {
+      ...this.withRevisionOffset(record, result),
+      changes: result.changes.map((change) =>
+        this.withChangeRecordRevisionOffset(record, change),
+      ),
+    };
+  }
+
+  private withChangeRevisionOffset(
+    record: MemoryWorkspaceRecord,
+    result: WorkspaceChangeResult,
+  ): WorkspaceChangeResult {
+    return {
+      ...this.withRevisionOffset(record, result),
+      change:
+        result.change === null
+          ? null
+          : this.withChangeRecordRevisionOffset(record, result.change),
+    };
+  }
+
+  private withChangeRevertRevisionOffset(
+    record: MemoryWorkspaceRecord,
+    result: WorkspaceChangeRevertResult,
+  ): WorkspaceChangeRevertResult {
+    return {
+      ...this.withRevisionOffset(record, result),
+      reverted_at_workspace_revision: offsetWorkspaceRevision(
+        result.reverted_at_workspace_revision,
+        record.revisionOffset,
+      ),
+      change: this.withChangeRecordRevisionOffset(
+        record,
+        result.change,
+      ),
+    };
+  }
+
+  private withChangeRecordRevisionOffset(
+    record: MemoryWorkspaceRecord,
+    change: WorkspaceChangeRecord,
+  ): WorkspaceChangeRecord {
+    return {
+      ...change,
+      applied_workspace_revision:
+        change.applied_workspace_revision === null
+          ? null
+          : offsetWorkspaceRevision(
+              change.applied_workspace_revision,
+              record.revisionOffset,
+            ),
+      reverted_at_workspace_revision:
+        change.reverted_at_workspace_revision === null
+          ? null
+          : offsetWorkspaceRevision(
+              change.reverted_at_workspace_revision,
+              record.revisionOffset,
+            ),
     };
   }
 

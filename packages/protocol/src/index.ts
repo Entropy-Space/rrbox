@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 8 as const;
+export const PROTOCOL_VERSION = 9 as const;
 
 export type FileEntry = {
   name: string;
@@ -20,6 +20,19 @@ export type WorkspaceChangeSummary = {
   additions: number;
   deletions: number;
   byte_size: number;
+};
+
+export type WorkspaceChangeRevertStatus =
+  | "available"
+  | "already_reverted"
+  | "conflict";
+
+export type WorkspaceChangeDetails = WorkspaceChangeSummary & {
+  before_content: string | null;
+  after_content: string;
+  current_content: string | null;
+  reverted_at_workspace_revision: number | null;
+  revert_status: WorkspaceChangeRevertStatus;
 };
 
 export type AssistantUsage = {
@@ -236,6 +249,14 @@ export type ViewerCommand =
       "workspace_export_cancel",
       { target_request_id: string }
     >
+  | CommandEnvelope<
+      "workspace_change_read",
+      { project_id: string; change_id: string }
+    >
+  | CommandEnvelope<
+      "workspace_change_revert",
+      { project_id: string; change_id: string }
+    >
   | CommandEnvelope<"fs_list", { project_id: string; path: string }>
   | CommandEnvelope<"fs_read", { project_id: string; path: string }>;
 
@@ -330,6 +351,26 @@ export type CoreEvent =
         project_name: string;
         workspace_revision: number;
         files: WorkspaceTransferFile[];
+      }
+    >
+  | CorrelatedEventEnvelope<
+      "workspace_change_snapshot",
+      {
+        project_id: string;
+        workspace_revision: number;
+        change: WorkspaceChangeDetails;
+      }
+    >
+  | CorrelatedEventEnvelope<
+      "workspace_change_reverted",
+      {
+        project_id: string;
+        change_id: string;
+        path: string;
+        change_kind: "created" | "updated";
+        workspace_revision: number;
+        reverted_at_workspace_revision: number;
+        revert_outcome: "applied" | "already_reverted";
       }
     >
   | EventEnvelope<
@@ -460,6 +501,26 @@ export function parseViewerCommand(value: unknown): ViewerCommand {
       );
       return commandEnvelope("workspace_export_cancel", requestId, {
         target_request_id: requireString(payload, "target_request_id"),
+      });
+    case "workspace_change_read":
+      assertExactKeys(
+        payload,
+        ["project_id", "change_id"],
+        "workspace_change_read payload",
+      );
+      return commandEnvelope("workspace_change_read", requestId, {
+        project_id: requireString(payload, "project_id"),
+        change_id: requireString(payload, "change_id"),
+      });
+    case "workspace_change_revert":
+      assertExactKeys(
+        payload,
+        ["project_id", "change_id"],
+        "workspace_change_revert payload",
+      );
+      return commandEnvelope("workspace_change_revert", requestId, {
+        project_id: requireString(payload, "project_id"),
+        change_id: requireString(payload, "change_id"),
       });
     case "fs_list":
       return commandEnvelope("fs_list", requestId, {
@@ -676,12 +737,90 @@ export function parseCoreEvent(value: unknown): CoreEvent {
         },
         requireEventRequestId(requestId, "workspace_export_snapshot"),
       );
+    case "workspace_change_snapshot":
+      assertExactKeys(
+        payload,
+        ["project_id", "workspace_revision", "change"],
+        "workspace_change_snapshot payload",
+      );
+      const workspaceRevision = requireNonNegativeInteger(
+        payload,
+        "workspace_revision",
+      );
+      const workspaceChange = parseWorkspaceChangeDetails(payload.change);
+      if (
+        workspaceChange.reverted_at_workspace_revision !== null &&
+        workspaceChange.reverted_at_workspace_revision > workspaceRevision
+      ) {
+        throw new Error(
+          "Workspace change revert revision cannot exceed workspace_revision.",
+        );
+      }
+      return eventEnvelope(
+        "workspace_change_snapshot",
+        eventId,
+        {
+          project_id: requireString(payload, "project_id"),
+          workspace_revision: workspaceRevision,
+          change: workspaceChange,
+        },
+        requireEventRequestId(requestId, "workspace_change_snapshot"),
+      );
+    case "workspace_change_reverted":
+      assertExactKeys(
+        payload,
+        [
+          "project_id",
+          "change_id",
+          "path",
+          "change_kind",
+          "workspace_revision",
+          "reverted_at_workspace_revision",
+          "revert_outcome",
+        ],
+        "workspace_change_reverted payload",
+      );
+      const changeKind = parseWorkspaceChangeKind(payload.change_kind);
+      const revertedWorkspaceRevision = requireNonNegativeInteger(
+        payload,
+        "workspace_revision",
+      );
+      const revertedAtWorkspaceRevision = requireNonNegativeInteger(
+        payload,
+        "reverted_at_workspace_revision",
+      );
+      const revertOutcome = parseWorkspaceChangeRevertOutcome(
+        payload.revert_outcome,
+      );
+      if (
+        revertedAtWorkspaceRevision > revertedWorkspaceRevision ||
+        (revertOutcome === "applied" &&
+          revertedAtWorkspaceRevision !== revertedWorkspaceRevision)
+      ) {
+        throw new Error(
+          "Workspace change revert revisions do not match revert_outcome.",
+        );
+      }
+      return eventEnvelope(
+        "workspace_change_reverted",
+        eventId,
+        {
+          project_id: requireString(payload, "project_id"),
+          change_id: requireString(payload, "change_id"),
+          path: requireString(payload, "path"),
+          change_kind: changeKind,
+          workspace_revision: revertedWorkspaceRevision,
+          reverted_at_workspace_revision: revertedAtWorkspaceRevision,
+          revert_outcome: revertOutcome,
+        },
+        requireEventRequestId(requestId, "workspace_change_reverted"),
+      );
     case "error": {
       const projectId = optionalString(payload, "project_id");
       const sessionId = optionalString(payload, "session_id");
       const code = requireString(payload, "code");
       if (
-        (code === "fs_list_failed" || code === "fs_read_failed") &&
+        requiresErrorRequestId(code) &&
         requestId === undefined
       ) {
         throw new Error(`${code} events require request_id.`);
@@ -703,13 +842,27 @@ export function parseCoreEvent(value: unknown): CoreEvent {
   }
 }
 
+function requiresErrorRequestId(code: string): boolean {
+  return (
+    code === "fs_list_failed" ||
+    code === "fs_read_failed" ||
+    code === "run_in_progress" ||
+    code === "workspace_change_not_found" ||
+    code === "workspace_change_conflict" ||
+    code === "workspace_change_read_failed" ||
+    code === "workspace_change_revert_failed"
+  );
+}
+
 function requireEventRequestId(
   requestId: string | undefined,
   eventType:
     | "files_snapshot"
     | "file_content"
     | "input_draft_saved"
-    | "workspace_export_snapshot",
+    | "workspace_export_snapshot"
+    | "workspace_change_snapshot"
+    | "workspace_change_reverted",
 ): string {
   if (requestId === undefined) {
     throw new Error(`${eventType} events require request_id.`);
@@ -1310,10 +1463,7 @@ export function parseWorkspaceChangeSummary(
   if (!isRecord(value)) {
     throw new Error("Workspace change summary must be an object.");
   }
-  const changeKind = value.change_kind;
-  if (changeKind !== "created" && changeKind !== "updated") {
-    throw new Error("Invalid workspace change kind.");
-  }
+  const changeKind = parseWorkspaceChangeKind(value.change_kind);
   return {
     change_id: requireString(value, "change_id"),
     tool_call_id: requireString(value, "tool_call_id"),
@@ -1322,6 +1472,102 @@ export function parseWorkspaceChangeSummary(
     additions: requireNonNegativeInteger(value, "additions"),
     deletions: requireNonNegativeInteger(value, "deletions"),
     byte_size: requireNonNegativeInteger(value, "byte_size"),
+  };
+}
+
+function parseWorkspaceChangeKind(
+  value: unknown,
+): WorkspaceChangeSummary["change_kind"] {
+  if (value !== "created" && value !== "updated") {
+    throw new Error("Invalid workspace change kind.");
+  }
+  return value;
+}
+
+function parseWorkspaceChangeRevertOutcome(
+  value: unknown,
+): "applied" | "already_reverted" {
+  if (value !== "applied" && value !== "already_reverted") {
+    throw new Error("Invalid workspace change revert outcome.");
+  }
+  return value;
+}
+
+export function parseWorkspaceChangeDetails(
+  value: unknown,
+): WorkspaceChangeDetails {
+  if (!isRecord(value)) {
+    throw new Error("Workspace change details must be an object.");
+  }
+  assertExactKeys(
+    value,
+    [
+      "change_id",
+      "tool_call_id",
+      "path",
+      "change_kind",
+      "additions",
+      "deletions",
+      "byte_size",
+      "before_content",
+      "after_content",
+      "current_content",
+      "reverted_at_workspace_revision",
+      "revert_status",
+    ],
+    "Workspace change details",
+  );
+  const summary = parseWorkspaceChangeSummary(value);
+  const revertStatus = value.revert_status;
+  if (
+    revertStatus !== "available" &&
+    revertStatus !== "already_reverted" &&
+    revertStatus !== "conflict"
+  ) {
+    throw new Error("Invalid workspace change revert status.");
+  }
+  const beforeContent = requireNullableString(value, "before_content", true);
+  if (
+    (summary.change_kind === "created" && beforeContent !== null) ||
+    (summary.change_kind === "updated" && beforeContent === null)
+  ) {
+    throw new Error(
+      "Workspace change before_content does not match change_kind.",
+    );
+  }
+  const afterContent = requireString(value, "after_content", true);
+  const currentContent = requireNullableString(
+    value,
+    "current_content",
+    true,
+  );
+  const revertedAtWorkspaceRevision = requireNullableNonNegativeInteger(
+    value,
+    "reverted_at_workspace_revision",
+  );
+  if (
+    (revertStatus === "already_reverted") !==
+    (revertedAtWorkspaceRevision !== null)
+  ) {
+    throw new Error(
+      "Workspace change revert status does not match its revert revision.",
+    );
+  }
+  if (
+    revertStatus === "available" &&
+    currentContent !== afterContent
+  ) {
+    throw new Error(
+      "Available workspace change current_content must match after_content.",
+    );
+  }
+  return {
+    ...summary,
+    before_content: beforeContent,
+    after_content: afterContent,
+    current_content: currentContent,
+    reverted_at_workspace_revision: revertedAtWorkspaceRevision,
+    revert_status: revertStatus,
   };
 }
 
@@ -1383,6 +1629,14 @@ function requireNonNegativeInteger(
   return candidate;
 }
 
+function requireNullableNonNegativeInteger(
+  value: Record<string, unknown>,
+  field: string,
+): number | null {
+  if (value[field] === null) return null;
+  return requireNonNegativeInteger(value, field);
+}
+
 function requireNonNegativeNumber(
   value: Record<string, unknown>,
   field: string,
@@ -1406,11 +1660,21 @@ function optionalString(
 function requireNullableString(
   value: Record<string, unknown>,
   field: string,
+  allowEmpty = false,
 ): string | null {
   const candidate = value[field];
   if (candidate === null) return null;
-  if (typeof candidate === "string" && candidate.length > 0) return candidate;
-  throw new Error(`${field} must be null or a non-empty string.`);
+  if (
+    typeof candidate === "string" &&
+    (allowEmpty || candidate.length > 0)
+  ) {
+    return candidate;
+  }
+  throw new Error(
+    allowEmpty
+      ? `${field} must be null or a string.`
+      : `${field} must be null or a non-empty string.`,
+  );
 }
 
 function requireString(

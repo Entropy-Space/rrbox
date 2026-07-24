@@ -604,6 +604,133 @@ test("workspace changes invalidate stale reads and preserve visible content whil
   assert.equal(state.pending_workspace_refresh, null);
 });
 
+test("an applied created-file revert clears the preview and refreshes its path", () => {
+  let state = coreReducer(
+    initialAgentSessionState,
+    event("ready", { state: snapshot("p1", "s1", 1, "", 4) }),
+  );
+  state = {
+    ...state,
+    current_path: "/notes",
+    files: [fileEntry("created.md", "/notes/created.md")],
+    selected_file: {
+      path: "/notes/created.md",
+      content: "agent content",
+    },
+  };
+  state = coreReducer(state, {
+    type: "fs_list_requested",
+    request_id: "stale-list",
+    path: "/notes",
+    expected_workspace_revision: 4,
+    request_kind: "workspace_refresh",
+  });
+  state = coreReducer(state, {
+    type: "fs_read_requested",
+    request_id: "stale-read",
+    path: "/notes/created.md",
+    expected_workspace_revision: 4,
+    request_kind: "workspace_refresh",
+  });
+
+  state = coreReducer(
+    state,
+    event(
+      "workspace_change_reverted",
+      {
+        project_id: "p1",
+        change_id: "change-created",
+        path: "/notes/created.md",
+        change_kind: "created",
+        workspace_revision: 5,
+        reverted_at_workspace_revision: 5,
+        revert_outcome: "applied",
+      },
+      "revert-created",
+    ),
+  );
+
+  assert.equal(state.workspace_revision, 5);
+  assert.equal(state.selected_file, null);
+  assert.equal(state.pending_fs_list, null);
+  assert.equal(state.pending_fs_read, null);
+  assert.deepEqual(state.pending_workspace_refresh, {
+    workspace_revision: 5,
+    changed_paths: ["/notes/created.md"],
+  });
+});
+
+test("updated reverts refresh previews while stale or idempotent events are no-ops", () => {
+  const initial = {
+    ...coreReducer(
+      initialAgentSessionState,
+      event("ready", { state: snapshot("p1", "s1", 1, "", 4) }),
+    ),
+    selected_file: {
+      path: "/notes/updated.md",
+      content: "agent content",
+    },
+  };
+  const applied = coreReducer(
+    initial,
+    event(
+      "workspace_change_reverted",
+      {
+        project_id: "p1",
+        change_id: "change-updated",
+        path: "/notes/updated.md",
+        change_kind: "updated",
+        workspace_revision: 5,
+        reverted_at_workspace_revision: 5,
+        revert_outcome: "applied",
+      },
+      "revert-updated",
+    ),
+  );
+
+  assert.deepEqual(applied.selected_file, initial.selected_file);
+  assert.deepEqual(applied.pending_workspace_refresh, {
+    workspace_revision: 5,
+    changed_paths: ["/notes/updated.md"],
+  });
+
+  for (const payload of [
+    {
+      project_id: "p2",
+      workspace_revision: 6,
+      reverted_at_workspace_revision: 6,
+      revert_outcome: "applied",
+    },
+    {
+      project_id: "p1",
+      workspace_revision: 4,
+      reverted_at_workspace_revision: 4,
+      revert_outcome: "applied",
+    },
+    {
+      project_id: "p1",
+      workspace_revision: 6,
+      reverted_at_workspace_revision: 5,
+      revert_outcome: "already_reverted",
+    },
+  ]) {
+    const next = coreReducer(
+      initial,
+      event(
+        "workspace_change_reverted",
+        {
+          change_id: "change-updated",
+          path: "/notes/updated.md",
+          change_kind: "updated",
+          ...payload,
+        },
+        "ignored-revert",
+      ),
+    );
+    assert.equal(next, initial);
+  }
+});
+
 test("a newer workspace change carries forward an invalidated selected-file refresh", () => {
   let state = coreReducer(
     initialAgentSessionState,

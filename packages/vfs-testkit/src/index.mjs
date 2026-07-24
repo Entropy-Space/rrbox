@@ -13,6 +13,7 @@ export function defineWorkspaceBackendConformance({
 
     assert.deepEqual(await first.read("/README.md"), {
       workspace_revision: 0,
+      path_revision: 0,
       content: "seed",
     });
     const firstWrite = await first.write("/only-a.txt", "project a", {
@@ -26,6 +27,7 @@ export function defineWorkspaceBackendConformance({
       await (await backend.open("project-a")).read("/only-a.txt"),
       {
         workspace_revision: 1,
+        path_revision: 1,
         content: "project a",
       },
     );
@@ -37,6 +39,7 @@ export function defineWorkspaceBackendConformance({
     const second = await backend.create("project-b");
     assert.deepEqual(await second.read("/README.md"), {
       workspace_revision: 0,
+      path_revision: 0,
       content: "seed",
     });
     const secondWrite = await second.write("/only-b.txt", "project b", {
@@ -76,6 +79,7 @@ export function defineWorkspaceBackendConformance({
     });
     assert.deepEqual(await recreated.read("/README.md"), {
       workspace_revision: 2,
+      path_revision: 2,
       content: "seed",
     });
     assert.deepEqual(
@@ -115,10 +119,12 @@ export function defineWorkspaceBackendConformance({
     });
     assert.deepEqual(await imported.read("/notes/today.md"), {
       workspace_revision: 0,
+      path_revision: 0,
       content: "today",
     });
     assert.deepEqual(await imported.read("/src/index.ts"), {
       workspace_revision: 0,
+      path_revision: 0,
       content: "export {};",
     });
     assert.deepEqual(await imported.listChanges(), {
@@ -133,6 +139,7 @@ export function defineWorkspaceBackendConformance({
     const seeded = await backend.create("seeded-project");
     assert.deepEqual(await seeded.read("/README.md"), {
       workspace_revision: 0,
+      path_revision: 0,
       content: "configured seed",
     });
     const explicitlyUndefined = await backend.create("undefined-project", {
@@ -140,6 +147,7 @@ export function defineWorkspaceBackendConformance({
     });
     assert.deepEqual(await explicitlyUndefined.read("/README.md"), {
       workspace_revision: 0,
+      path_revision: 0,
       content: "configured seed",
     });
 
@@ -158,6 +166,7 @@ export function defineWorkspaceBackendConformance({
     const snapshot = await snapshotCreation;
     assert.deepEqual(await snapshot.read("/original.txt"), {
       workspace_revision: 0,
+      path_revision: 0,
       content: "original",
     });
     await assert.rejects(
@@ -187,6 +196,7 @@ export function defineWorkspaceBackendConformance({
     );
     assert.deepEqual(await existing.read("/README.md"), {
       workspace_revision: 0,
+      path_revision: 0,
       content: "configured seed",
     });
 
@@ -250,6 +260,7 @@ export function defineWorkspaceBackendConformance({
     });
     assert.deepEqual(await recovered.read("/valid.txt"), {
       workspace_revision: 0,
+      path_revision: 0,
       content: "valid",
     });
     await assert.rejects(
@@ -472,10 +483,12 @@ export function defineWorkspaceBackendConformance({
     assert.deepEqual(secondListing.entries, firstListing.entries);
     assert.deepEqual(await firstHandle.read("/second.txt"), {
       workspace_revision: 2,
+      path_revision: writes[1].workspace_revision,
       content: "second",
     });
     assert.deepEqual(await secondHandle.read("/first.txt"), {
       workspace_revision: 2,
+      path_revision: writes[0].workspace_revision,
       content: "first",
     });
   });
@@ -548,6 +561,317 @@ export function defineWorkspaceBackendConformance({
     );
   });
 
+  test(`${name}: individual change lookup is coherent and caller-owned`, async (context) => {
+    const { backend } = await createHarness(context, create_backend);
+    const workspace = await backend.create("project");
+
+    assert.deepEqual(await workspace.getChange("missing-change"), {
+      workspace_revision: 0,
+      change: null,
+    });
+
+    const write = await workspace.write("/tracked.txt", "tracked", {
+      change: changeMetadata(
+        "tracked-change",
+        "2026-07-24T00:00:00.000Z",
+      ),
+    });
+    const expectedChange = structuredClone(write.result.change);
+    assert.deepEqual(await workspace.getChange("tracked-change"), {
+      workspace_revision: 1,
+      change: expectedChange,
+    });
+
+    const callerOwned = await workspace.getChange("tracked-change");
+    callerOwned.change.path = "/tampered.txt";
+    callerOwned.change.after_content = "tampered";
+    assert.deepEqual(await workspace.getChange("tracked-change"), {
+      workspace_revision: 1,
+      change: expectedChange,
+    });
+
+    await workspace.write("/unjournaled.txt", "revision only");
+    assert.deepEqual(await workspace.getChange("tracked-change"), {
+      workspace_revision: 2,
+      change: expectedChange,
+    });
+    assert.deepEqual(await workspace.getChange("still-missing"), {
+      workspace_revision: 2,
+      change: null,
+    });
+  });
+
+  test(`${name}: receipt reverts are atomic and one-time`, async (context) => {
+    const { backend } = await createHarness(context, create_backend, {
+      "/updated.txt": "before",
+    });
+    const firstHandle = await backend.create("project");
+    const secondHandle = await backend.open("project");
+
+    const updated = await firstHandle.write(
+      "/updated.txt",
+      "after",
+      {
+        change: changeMetadata(
+          "updated-change",
+          "2026-07-24T00:00:00.000Z",
+        ),
+      },
+    );
+    assert.equal(
+      updated.result.change.applied_workspace_revision,
+      1,
+    );
+    assert.equal(
+      updated.result.change.reverted_at_workspace_revision,
+      null,
+    );
+    const immutableReceipt = structuredClone(
+      (await firstHandle.getChange("updated-change")).change,
+    );
+    await firstHandle.write("/unrelated.txt", "unrelated");
+
+    const outcomes = await Promise.all([
+      firstHandle.revertChange("updated-change"),
+      secondHandle.revertChange("updated-change"),
+    ]);
+    assert.deepEqual(
+      outcomes.map((result) => result.revert_outcome).sort(),
+      ["already_reverted", "applied"],
+    );
+    assert.ok(
+      outcomes.every(
+        (result) =>
+          result.workspace_revision === 3 &&
+          result.reverted_at_workspace_revision === 3 &&
+          result.change.reverted_at_workspace_revision === 3,
+      ),
+    );
+    const appliedOutcome = outcomes.find(
+      (result) => result.revert_outcome === "applied",
+    );
+    appliedOutcome.change.path = "/tampered-result.txt";
+    const consumedReceipt = (
+      await firstHandle.getChange("updated-change")
+    ).change;
+    assert.deepEqual(
+      {
+        ...consumedReceipt,
+        reverted_at_workspace_revision: null,
+      },
+      immutableReceipt,
+    );
+    assert.equal(
+      consumedReceipt.reverted_at_workspace_revision,
+      3,
+    );
+    assert.equal(
+      (await firstHandle.listChanges()).changes.length,
+      1,
+    );
+    assert.deepEqual(await firstHandle.read("/updated.txt"), {
+      workspace_revision: 3,
+      path_revision: 3,
+      content: "before",
+    });
+
+    await firstHandle.write("/updated.txt", "newer");
+    const replay = await secondHandle.revertChange("updated-change");
+    assert.deepEqual(
+      {
+        workspace_revision: replay.workspace_revision,
+        revert_outcome: replay.revert_outcome,
+        reverted_at_workspace_revision:
+          replay.reverted_at_workspace_revision,
+      },
+      {
+        workspace_revision: 4,
+        revert_outcome: "already_reverted",
+        reverted_at_workspace_revision: 3,
+      },
+    );
+    assert.deepEqual(await firstHandle.read("/updated.txt"), {
+      workspace_revision: 4,
+      path_revision: 4,
+      content: "newer",
+    });
+    assert.equal(
+      (await firstHandle.getChange("updated-change")).change
+        .reverted_at_workspace_revision,
+      3,
+    );
+  });
+
+  test(`${name}: reverting a creation removes only its original path generation`, async (context) => {
+    const { backend } = await createHarness(context, create_backend, {
+      "/empty.txt": "",
+    });
+    const workspace = await backend.create("project");
+    await workspace.write("/empty.txt", "filled", {
+      change: changeMetadata(
+        "empty-update",
+        "2026-07-24T00:00:00.000Z",
+      ),
+    });
+    const restoredEmpty = await workspace.revertChange(
+      "empty-update",
+    );
+    assert.equal(restoredEmpty.workspace_revision, 2);
+    assert.deepEqual(await workspace.read("/empty.txt"), {
+      workspace_revision: 2,
+      path_revision: 2,
+      content: "",
+    });
+
+    await workspace.write("/created.txt", "created", {
+      change: changeMetadata(
+        "created-change",
+        "2026-07-24T00:00:01.000Z",
+      ),
+    });
+
+    const reverted = await workspace.revertChange("created-change");
+    assert.equal(reverted.workspace_revision, 4);
+    assert.equal(reverted.revert_outcome, "applied");
+    assert.equal(reverted.reverted_at_workspace_revision, 4);
+    await assert.rejects(
+      workspace.read("/created.txt"),
+      hasVfsCode("not_found"),
+    );
+    assert.equal(
+      (await workspace.listChanges()).workspace_revision,
+      4,
+    );
+    assert.equal((await workspace.listChanges()).changes.length, 2);
+  });
+
+  test(`${name}: path revisions reject edit-away/edit-back ABA reverts`, async (context) => {
+    const { backend } = await createHarness(context, create_backend, {
+      "/updated.txt": "before",
+    });
+    const workspace = await backend.create("project");
+    await workspace.write("/updated.txt", "after", {
+      change: changeMetadata(
+        "aba-update",
+        "2026-07-24T00:00:00.000Z",
+      ),
+    });
+    await workspace.write("/updated.txt", "before");
+
+    assert.deepEqual(await workspace.read("/updated.txt"), {
+      workspace_revision: 2,
+      path_revision: 2,
+      content: "before",
+    });
+    await assert.rejects(
+      workspace.revertChange("aba-update"),
+      hasVfsCode("conflict"),
+    );
+    await workspace.write("/updated.txt", "after");
+    assert.deepEqual(await workspace.read("/updated.txt"), {
+      workspace_revision: 3,
+      path_revision: 3,
+      content: "after",
+    });
+    assert.equal(
+      (await workspace.getChange("aba-update")).change
+        .reverted_at_workspace_revision,
+      null,
+    );
+
+    await workspace.write("/created.txt", "same", {
+      change: changeMetadata(
+        "aba-create",
+        "2026-07-24T00:00:01.000Z",
+      ),
+    });
+    await workspace.remove("/created.txt");
+    await assert.rejects(
+      workspace.revertChange("aba-create"),
+      hasVfsCode("conflict"),
+    );
+    await workspace.write("/created.txt", "same");
+    await assert.rejects(
+      workspace.revertChange("aba-create"),
+      hasVfsCode("conflict"),
+    );
+    assert.deepEqual(await workspace.read("/created.txt"), {
+      workspace_revision: 6,
+      path_revision: 6,
+      content: "same",
+    });
+  });
+
+  test(`${name}: missing receipts and conflicted reverts never mutate`, async (context) => {
+    const { backend } = await createHarness(context, create_backend);
+    const workspace = await backend.create("project");
+
+    await assert.rejects(
+      workspace.revertChange("missing-change"),
+      hasVfsCode("not_found"),
+    );
+    assert.equal((await workspace.list("/")).workspace_revision, 0);
+
+    await workspace.write("/tracked.txt", "original", {
+      change: changeMetadata(
+        "tracked-change",
+        "2026-07-24T00:00:00.000Z",
+      ),
+    });
+    await workspace.write("/tracked.txt", "changed");
+    await assert.rejects(
+      workspace.revertChange("tracked-change"),
+      hasVfsCode("conflict"),
+    );
+    assert.deepEqual(await workspace.read("/tracked.txt"), {
+      workspace_revision: 2,
+      path_revision: 2,
+      content: "changed",
+    });
+  });
+
+  test(`${name}: receipt path revisions follow recreated project sequences`, async (context) => {
+    const { backend } = await createHarness(context, create_backend);
+    const original = await backend.create("project");
+    await original.write("/old.txt", "old");
+    await backend.delete("project");
+
+    const recreated = await backend.create("project", {
+      initial_files: [{ path: "/notes.txt", content: "before" }],
+    });
+    const write = await recreated.write("/notes.txt", "after", {
+      change: changeMetadata(
+        "recreated-change",
+        "2026-07-24T00:00:00.000Z",
+      ),
+    });
+    assert.equal(write.workspace_revision, 3);
+    assert.equal(
+      write.result.change.applied_workspace_revision,
+      3,
+    );
+    assert.deepEqual(await recreated.read("/notes.txt"), {
+      workspace_revision: 3,
+      path_revision: 3,
+      content: "after",
+    });
+
+    const reverted = await recreated.revertChange(
+      "recreated-change",
+    );
+    assert.equal(reverted.workspace_revision, 4);
+    assert.equal(reverted.reverted_at_workspace_revision, 4);
+    assert.equal(
+      reverted.change.applied_workspace_revision,
+      3,
+    );
+    assert.deepEqual(await recreated.read("/notes.txt"), {
+      workspace_revision: 4,
+      path_revision: 4,
+      content: "before",
+    });
+  });
+
   test(`${name}: guarded removal preserves changed content`, async (context) => {
     const { backend } = await createHarness(context, create_backend, {
       "/notes/today.md": "current",
@@ -562,6 +886,7 @@ export function defineWorkspaceBackendConformance({
     );
     assert.deepEqual(await workspace.read("/notes/today.md"), {
       workspace_revision: 0,
+      path_revision: 0,
       content: "current",
     });
     await assert.rejects(
@@ -594,6 +919,7 @@ export function defineWorkspaceBackendConformance({
     await assertWorkspaceAccessRejected(openedHandle, "conflict");
     assert.deepEqual(await current.read("/current.txt"), {
       workspace_revision: 3,
+      path_revision: 3,
       content: "current",
     });
     await assert.rejects(
@@ -612,6 +938,49 @@ export function defineDurableWorkspaceBackendConformance({
   name,
   create_backend,
 }) {
+  test(`${name}: reverted receipts remain consumed after reopening`, async (context) => {
+    const harness = await createHarness(
+      context,
+      create_backend,
+      { "/notes.txt": "before" },
+    );
+    assert.equal(
+      typeof harness.reopen,
+      "function",
+      "A durable backend harness must provide reopen().",
+    );
+    const workspace = await harness.backend.create("project");
+    await workspace.write("/notes.txt", "after", {
+      change: changeMetadata(
+        "durable-revert",
+        "2026-07-24T00:00:00.000Z",
+      ),
+    });
+    const applied = await workspace.revertChange("durable-revert");
+    assert.equal(applied.reverted_at_workspace_revision, 2);
+
+    const reopenedBackend = await harness.reopen();
+    const reopened = await reopenedBackend.open("project");
+    const persisted = await reopened.getChange("durable-revert");
+    assert.equal(
+      persisted.change.applied_workspace_revision,
+      1,
+    );
+    assert.equal(
+      persisted.change.reverted_at_workspace_revision,
+      2,
+    );
+    const replay = await reopened.revertChange("durable-revert");
+    assert.equal(replay.workspace_revision, 2);
+    assert.equal(replay.revert_outcome, "already_reverted");
+    assert.equal(replay.reverted_at_workspace_revision, 2);
+    assert.deepEqual(await reopened.read("/notes.txt"), {
+      workspace_revision: 2,
+      path_revision: 2,
+      content: "before",
+    });
+  });
+
   test(`${name}: workspaces survive backend reopening`, async (context) => {
     const harness = await createHarness(context, create_backend);
     assert.equal(
@@ -630,6 +999,7 @@ export function defineDurableWorkspaceBackendConformance({
     const reopened = await reopenedBackend.open("project");
     assert.deepEqual(await reopened.read("/persisted.txt"), {
       workspace_revision: 1,
+      path_revision: 1,
       content: "persisted",
     });
     assert.deepEqual(
@@ -637,6 +1007,14 @@ export function defineDurableWorkspaceBackendConformance({
         (change) => change.change_id,
       ),
       ["persistent-change"],
+    );
+    const persistentChange = await reopened.getChange(
+      "persistent-change",
+    );
+    assert.equal(persistentChange.workspace_revision, 1);
+    assert.equal(
+      persistentChange.change?.change_id,
+      "persistent-change",
     );
   });
 
@@ -660,10 +1038,12 @@ export function defineDurableWorkspaceBackendConformance({
     const reopened = await reopenedBackend.open("project");
     assert.deepEqual(await reopened.read("/imported.txt"), {
       workspace_revision: 0,
+      path_revision: 0,
       content: "imported",
     });
     assert.deepEqual(await reopened.read("/nested/file.txt"), {
       workspace_revision: 0,
+      path_revision: 0,
       content: "nested",
     });
     assert.deepEqual(await reopened.listChanges(), {
@@ -705,6 +1085,7 @@ export function defineDurableWorkspaceBackendConformance({
     const reopened = await reopenedBackend.open("project");
     assert.deepEqual(await reopened.read("/kept.txt"), {
       workspace_revision: 3,
+      path_revision: 1,
       content: "kept",
     });
     assert.deepEqual(await reopened.list("/"), {
@@ -834,6 +1215,14 @@ async function assertWorkspaceAccessRejected(workspace, code) {
   );
   await assert.rejects(workspace.remove("/old.txt"), hasVfsCode(code));
   await assert.rejects(workspace.listChanges(), hasVfsCode(code));
+  await assert.rejects(
+    workspace.getChange("old-change"),
+    hasVfsCode(code),
+  );
+  await assert.rejects(
+    workspace.revertChange("old-change"),
+    hasVfsCode(code),
+  );
 }
 
 function changeMetadata(changeId, createdAt) {

@@ -20,15 +20,20 @@ import {
   type ToolCallBlock,
   type ToolResultEntry,
   type ViewerCommand,
+  type WorkspaceChangeDetails,
   type WorkspaceChangeSummary,
   type WorkspaceTransferFile,
 } from "@researchbox/protocol";
 import {
+  assertValidWorkspaceChangeRecord,
   isWorkspaceOrphanReconciler,
+  VfsError,
+  WorkspaceCorruptionError,
   type VfsSeedFile,
   type VfsEntry,
   type WorkspaceBackend,
   type WorkspaceChangeRecord,
+  type WorkspaceChangeRevertResult,
 } from "@researchbox/vfs";
 import {
   capturePortableWorkspace,
@@ -263,6 +268,12 @@ export class ResearchBoxCore {
           command.payload.files,
           command.request_id,
         );
+        return;
+      case "workspace_change_read":
+        await this.readWorkspaceChange(command);
+        return;
+      case "workspace_change_revert":
+        await this.revertWorkspaceChange(command);
         return;
       case "project_update":
         await this.updateProject(
@@ -1204,6 +1215,158 @@ export class ResearchBoxCore {
     }
   }
 
+  private async readWorkspaceChange(
+    command: Extract<ViewerCommand, { type: "workspace_change_read" }>,
+  ): Promise<void> {
+    const { project_id: projectId, change_id: changeId } = command.payload;
+    if (!this.getProject(projectId, command.request_id)) return;
+
+    try {
+      const workspace = await this.getWorkspaceController(projectId);
+      const inspection = await inspectWorkspaceChange(workspace, changeId);
+      this.emit(
+        "workspace_change_snapshot",
+        {
+          project_id: projectId,
+          workspace_revision: inspection.workspace_revision,
+          change: workspaceChangeDetails(
+            inspection.change,
+            inspection.current_content,
+            inspection.revert_status,
+          ),
+        },
+        command.request_id,
+      );
+    } catch (error) {
+      this.emitWorkspaceChangeError(
+        "read",
+        error,
+        command.request_id,
+        projectId,
+      );
+    }
+  }
+
+  private async revertWorkspaceChange(
+    command: Extract<ViewerCommand, { type: "workspace_change_revert" }>,
+  ): Promise<void> {
+    const { project_id: projectId, change_id: changeId } = command.payload;
+    if (!this.getProject(projectId, command.request_id)) return;
+    if (
+      !this.ensureWorkspaceChangeRevertIdle(
+        command.request_id,
+        projectId,
+      )
+    ) {
+      return;
+    }
+
+    try {
+      const workspace = await this.getWorkspaceController(projectId);
+      const preflight = await workspace.getChange(changeId);
+      const preflightChange = preflight.change;
+      if (preflightChange === null) {
+        throw new WorkspaceChangeNotFoundError(changeId);
+      }
+      assertValidWorkspaceChangeRecord(
+        preflightChange,
+        preflight.workspace_revision,
+      );
+      if (preflightChange.change_id !== changeId) {
+        throw invalidWorkspaceChangeRevertResult(
+          "preflight receipt does not match the requested change",
+        );
+      }
+      const result = await workspace.revertChange(changeId);
+      assertValidWorkspaceChangeRevertResult(
+        result,
+        {
+          workspace_revision: preflight.workspace_revision,
+          change: preflightChange,
+        },
+        changeId,
+      );
+      this.emitWorkspaceChangeReverted(command, result);
+    } catch (error) {
+      this.emitWorkspaceChangeError(
+        "revert",
+        error,
+        command.request_id,
+        projectId,
+      );
+    }
+  }
+
+  private emitWorkspaceChangeReverted(
+    command: Extract<ViewerCommand, { type: "workspace_change_revert" }>,
+    result: WorkspaceChangeRevertResult,
+  ): void {
+    const { change } = result;
+    this.emit(
+      "workspace_change_reverted",
+      {
+        project_id: command.payload.project_id,
+        change_id: change.change_id,
+        path: change.path,
+        change_kind: change.change_kind,
+        workspace_revision: result.workspace_revision,
+        reverted_at_workspace_revision:
+          result.reverted_at_workspace_revision,
+        revert_outcome: result.revert_outcome,
+      },
+      command.request_id,
+    );
+  }
+
+  private emitWorkspaceChangeError(
+    operation: "read" | "revert",
+    error: unknown,
+    requestId: string,
+    projectId: string,
+  ): void {
+    if (
+      error instanceof WorkspaceChangeNotFoundError ||
+      (operation === "revert" &&
+        error instanceof VfsError &&
+        error.code === "not_found")
+    ) {
+      this.emitError(
+        "workspace_change_not_found",
+        error.message,
+        requestId,
+        projectId,
+      );
+      return;
+    }
+    if (
+      error instanceof WorkspaceChangeConflictError ||
+      (operation === "revert" &&
+        error instanceof VfsError &&
+        error.code === "conflict")
+    ) {
+      this.emitError(
+        "workspace_change_conflict",
+        error.message,
+        requestId,
+        projectId,
+      );
+      return;
+    }
+    this.emitError(
+      operation === "read"
+        ? "workspace_change_read_failed"
+        : "workspace_change_revert_failed",
+      toErrorMessage(
+        error,
+        operation === "read"
+          ? "The workspace change could not be read."
+          : "The workspace change could not be reverted.",
+      ),
+      requestId,
+      projectId,
+    );
+  }
+
   private emitWorkspaceExportCanceled(
     command: Extract<ViewerCommand, { type: "workspace_export" }>,
   ): void {
@@ -1440,6 +1603,27 @@ export class ResearchBoxCore {
     return false;
   }
 
+  private ensureWorkspaceChangeRevertIdle(
+    requestId: string,
+    projectId: string,
+  ): boolean {
+    if (
+      !this.runtime?.is_running ||
+      this.requireState().active_project_id !== projectId
+    ) {
+      return true;
+    }
+    const state = this.requireState();
+    this.emitError(
+      "run_in_progress",
+      "Wait for the current response to finish before reverting a workspace change.",
+      requestId,
+      state.active_project_id,
+      state.active_session_id ?? undefined,
+    );
+    return false;
+  }
+
   private enqueueMutation<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.mutationTail.then(operation, operation);
     this.mutationTail = result.then(
@@ -1640,6 +1824,251 @@ function workspaceChangeSummary(
     deletions: record.deletions,
     byte_size: record.byte_size,
   };
+}
+
+function workspaceChangeDetails(
+  record: WorkspaceChangeRecord,
+  currentContent: string | null,
+  revertStatus: WorkspaceChangeDetails["revert_status"],
+): WorkspaceChangeDetails {
+  return {
+    ...workspaceChangeSummary(record),
+    before_content: record.before_content,
+    after_content: record.after_content,
+    current_content: currentContent,
+    reverted_at_workspace_revision:
+      record.reverted_at_workspace_revision,
+    revert_status: revertStatus,
+  };
+}
+
+type WorkspaceChangeInspection = {
+  workspace_revision: number;
+  change: WorkspaceChangeRecord;
+  current_content: string | null;
+  revert_status: WorkspaceChangeDetails["revert_status"];
+};
+
+type WorkspacePathState =
+  | {
+      kind: "file";
+      content: string;
+      path_revision: number;
+      workspace_revision: number;
+    }
+  | { kind: "missing" | "directory" | "obstructed" };
+
+const WORKSPACE_CHANGE_INSPECTION_ATTEMPTS = 8;
+
+async function inspectWorkspaceChange(
+  workspace: WorkspaceController,
+  changeId: string,
+): Promise<WorkspaceChangeInspection> {
+  for (
+    let attempt = 0;
+    attempt < WORKSPACE_CHANGE_INSPECTION_ATTEMPTS;
+    attempt += 1
+  ) {
+    const initial = await workspace.getChange(changeId);
+    if (!initial.change) throw new WorkspaceChangeNotFoundError(changeId);
+    assertValidWorkspaceChangeRecord(
+      initial.change,
+      initial.workspace_revision,
+    );
+
+    let pathState: WorkspacePathState;
+    try {
+      const current = await workspace.read(initial.change.path);
+      pathState = {
+        kind: "file",
+        content: current.content,
+        path_revision: current.path_revision,
+        workspace_revision: current.workspace_revision,
+      };
+    } catch (error) {
+      if (!(error instanceof VfsError)) throw error;
+      if (error.code === "not_found") {
+        pathState = { kind: "missing" };
+      } else if (error.code === "is_directory") {
+        pathState = { kind: "directory" };
+      } else if (error.code === "not_directory") {
+        pathState = { kind: "obstructed" };
+      } else {
+        throw error;
+      }
+    }
+
+    const confirmed = await workspace.getChange(changeId);
+    if (!confirmed.change) throw new WorkspaceChangeNotFoundError(changeId);
+    assertValidWorkspaceChangeRecord(
+      confirmed.change,
+      confirmed.workspace_revision,
+    );
+    if (
+      !sameWorkspaceChangeReceipt(initial.change, confirmed.change) ||
+      (initial.change.reverted_at_workspace_revision !== null &&
+        initial.change.reverted_at_workspace_revision !==
+          confirmed.change.reverted_at_workspace_revision)
+    ) {
+      throw new Error("The workspace change receipt was mutated.");
+    }
+    const observedRevision =
+      pathState.kind === "file"
+        ? pathState.workspace_revision
+        : initial.workspace_revision;
+    if (confirmed.workspace_revision !== observedRevision) continue;
+
+    const currentContent =
+      pathState.kind === "file" ? pathState.content : null;
+    return {
+      workspace_revision: confirmed.workspace_revision,
+      change: confirmed.change,
+      current_content: currentContent,
+      revert_status: classifyWorkspaceChangeRevert(
+        confirmed.change,
+        pathState,
+      ),
+    };
+  }
+
+  throw new WorkspaceChangeConflictError(
+    "The workspace kept changing while this change was inspected.",
+  );
+}
+
+function classifyWorkspaceChangeRevert(
+  change: WorkspaceChangeRecord,
+  pathState: WorkspacePathState,
+): WorkspaceChangeDetails["revert_status"] {
+  if (change.reverted_at_workspace_revision !== null) {
+    return "already_reverted";
+  }
+  return pathState.kind === "file" &&
+    change.applied_workspace_revision !== null &&
+    pathState.path_revision === change.applied_workspace_revision &&
+    pathState.content === change.after_content
+    ? "available"
+    : "conflict";
+}
+
+function sameWorkspaceChangeReceipt(
+  left: WorkspaceChangeRecord,
+  right: WorkspaceChangeRecord,
+): boolean {
+  return (
+    left.change_id === right.change_id &&
+    left.session_id === right.session_id &&
+    left.tool_call_block_id === right.tool_call_block_id &&
+    left.legacy_message_id === right.legacy_message_id &&
+    left.assistant_message_index === right.assistant_message_index &&
+    left.tool_call_id === right.tool_call_id &&
+    left.tool_name === right.tool_name &&
+    left.created_at === right.created_at &&
+    left.applied_workspace_revision ===
+      right.applied_workspace_revision &&
+    left.path === right.path &&
+    left.change_kind === right.change_kind &&
+    left.before_content === right.before_content &&
+    left.after_content === right.after_content &&
+    left.additions === right.additions &&
+    left.deletions === right.deletions &&
+    left.byte_size === right.byte_size
+  );
+}
+
+function assertValidWorkspaceChangeRevertResult(
+  result: WorkspaceChangeRevertResult,
+  preflight: {
+    workspace_revision: number;
+    change: WorkspaceChangeRecord;
+  },
+  expectedChangeId: string,
+): void {
+  assertValidWorkspaceChangeRecord(
+    result.change,
+    result.workspace_revision,
+  );
+  if (
+    result.change.change_id !== expectedChangeId ||
+    !sameWorkspaceChangeReceipt(result.change, preflight.change)
+  ) {
+    throw invalidWorkspaceChangeRevertResult(
+      "receipt identity changed during the operation",
+    );
+  }
+  if (
+    !Number.isSafeInteger(result.reverted_at_workspace_revision) ||
+    result.reverted_at_workspace_revision < 1 ||
+    result.change.reverted_at_workspace_revision !==
+      result.reverted_at_workspace_revision
+  ) {
+    throw invalidWorkspaceChangeRevertResult(
+      "returned an invalid disposition revision",
+    );
+  }
+  if (result.workspace_revision < preflight.workspace_revision) {
+    throw invalidWorkspaceChangeRevertResult(
+      "moved the workspace revision backwards",
+    );
+  }
+  if (
+    preflight.change.reverted_at_workspace_revision !== null &&
+    preflight.change.reverted_at_workspace_revision !==
+      result.reverted_at_workspace_revision
+  ) {
+    throw invalidWorkspaceChangeRevertResult(
+      "changed an existing revert disposition",
+    );
+  }
+  if (result.revert_outcome === "applied") {
+    if (
+      preflight.change.reverted_at_workspace_revision !== null ||
+      result.reverted_at_workspace_revision !==
+        result.workspace_revision ||
+      result.workspace_revision <= preflight.workspace_revision
+    ) {
+      throw invalidWorkspaceChangeRevertResult(
+        "returned inconsistent applied revisions",
+      );
+    }
+    return;
+  }
+  if (result.revert_outcome === "already_reverted") {
+    if (
+      result.reverted_at_workspace_revision >
+      result.workspace_revision
+    ) {
+      throw invalidWorkspaceChangeRevertResult(
+        "returned a future disposition revision",
+      );
+    }
+    return;
+  }
+  throw invalidWorkspaceChangeRevertResult(
+    "returned an invalid outcome",
+  );
+}
+
+function invalidWorkspaceChangeRevertResult(
+  detail: string,
+): WorkspaceCorruptionError {
+  return new WorkspaceCorruptionError(
+    `Workspace change revert ${detail}.`,
+  );
+}
+
+class WorkspaceChangeNotFoundError extends Error {
+  constructor(changeId: string) {
+    super(`Workspace change not found: ${changeId}`);
+    this.name = "WorkspaceChangeNotFoundError";
+  }
+}
+
+class WorkspaceChangeConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkspaceChangeConflictError";
+  }
 }
 
 function workspaceChangeActivitySummary(change: WorkspaceChangeSummary): string {

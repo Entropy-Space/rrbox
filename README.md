@@ -22,6 +22,8 @@ remote hosts.
   `write_file`, and exact-match `replace_text` tools
 - Atomic file-change receipts with line statistics, live workspace refresh, and
   reload recovery when a write commits before its transcript checkpoint
+- Exact before/after change review with a bounded unified diff and a confirmed,
+  conflict-safe one-time revert
 - Versioned timeline checkpoints that restore the supported text and tool
   surface back into Pi messages after reload
 - Interactive workspace browser and text-file preview
@@ -103,7 +105,13 @@ Existing chats retain their own model selection.
 
 An OPFS mutation closes its immutable object before one IndexedDB transaction
 publishes the new manifest pointer, optional receipt, monotonic receipt clock,
-and durable revision. Failed publication leaves an unreachable object, never a
+path generation, and durable revision. Reverting a receipt is one atomic
+operation: it verifies that the path is still the exact generation written by
+that receipt, restores or removes the file, and permanently marks the receipt
+consumed. This rejects edit-away/edit-back ABA cycles and ensures a later file
+is never changed even if its bytes happen to match an older agent edit. Legacy
+receipts without a provable path generation remain reviewable but fail closed
+for revert. Failed OPFS publication leaves an unreachable object, never a
 partially committed workspace; durable cleanup records remove those objects
 under an origin-wide storage lock. Existing inline workspaces migrate
 resumably: IndexedDB remains authoritative while candidate objects are copied,

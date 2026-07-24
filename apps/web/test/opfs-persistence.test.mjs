@@ -7,6 +7,7 @@ import {
   defineDurableWorkspaceBackendConformance,
   defineWorkspaceBackendConformance,
 } from "@researchbox/vfs-testkit";
+import { WorkspaceCorruptionError } from "@researchbox/vfs";
 import { capturePortableWorkspace } from "@researchbox/workspace-archive/snapshot";
 import {
   BrowserWorkspaceBackend,
@@ -47,6 +48,322 @@ const opfsConformance = {
 
 defineWorkspaceBackendConformance(opfsConformance);
 defineDurableWorkspaceBackendConformance(opfsConformance);
+
+test("independent OPFS backends atomically consume one revert receipt", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-opfs-concurrent-revert-${crypto.randomUUID()}`,
+  );
+  const objects = new MemoryWorkspaceObjectStore();
+  const runUncoordinated = (operation) => operation();
+  const firstBackend = new OpfsWorkspaceBackend(
+    database,
+    objects,
+    { "/notes.txt": "before" },
+    runUncoordinated,
+  );
+  const first = await firstBackend.create("project-1");
+  await first.write("/notes.txt", "after", {
+    change: changeMetadata(
+      "concurrent-revert",
+      "2026-07-24T00:00:00.000Z",
+    ),
+  });
+  const second = await new OpfsWorkspaceBackend(
+    database,
+    objects,
+    {},
+    runUncoordinated,
+  ).open("project-1");
+
+  const outcomes = await Promise.all([
+    first.revertChange("concurrent-revert"),
+    second.revertChange("concurrent-revert"),
+  ]);
+  assert.deepEqual(
+    outcomes.map((result) => result.revert_outcome).sort(),
+    ["already_reverted", "applied"],
+  );
+  assert.ok(
+    outcomes.every(
+      (result) =>
+        result.workspace_revision === 2 &&
+        result.reverted_at_workspace_revision === 2,
+    ),
+  );
+  assert.deepEqual(await first.read("/notes.txt"), {
+    workspace_revision: 2,
+    path_revision: 2,
+    content: "before",
+  });
+  database.close();
+});
+
+test("OPFS reverts fail before staging corrupt persisted state", async (t) => {
+  const cases = [
+    {
+      name: "invalid change kind",
+      corrupts_receipt: true,
+      corrupt({ change }) {
+        change.change_kind = "removed";
+      },
+    },
+    {
+      name: "future applied revision",
+      corrupts_receipt: true,
+      corrupt({ change, marker }) {
+        change.applied_workspace_revision =
+          marker.workspace_revision + 1;
+      },
+    },
+    {
+      name: "malformed receipt content",
+      corrupts_receipt: true,
+      corrupt({ change }) {
+        change.after_content = 42;
+      },
+    },
+    {
+      name: "non-canonical receipt path",
+      corrupts_receipt: true,
+      corrupt({ change }) {
+        change.path = "notes.txt";
+      },
+    },
+    {
+      name: "future manifest path revision",
+      corrupt({ file, marker }) {
+        file.path_revision = marker.workspace_revision + 1;
+      },
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      const factory = new IDBFactory();
+      const database = new ResearchBoxDatabase(
+        factory,
+        `researchbox-opfs-corrupt-revert-${crypto.randomUUID()}`,
+      );
+      const objects = new MemoryWorkspaceObjectStore();
+      const backend = new OpfsWorkspaceBackend(database, objects, {
+        "/notes.txt": "before",
+      });
+      const workspace = await backend.create("project-1");
+      await workspace.write("/notes.txt", "after", {
+        change: changeMetadata(
+          "corrupt-revert",
+          "2026-07-24T00:00:00.000Z",
+        ),
+      });
+
+      const connection = await database.open();
+      const damage = connection.transaction(
+        ["project_filesystems", "opfs_files", "file_changes"],
+        "readwrite",
+      );
+      const completion = transactionComplete(damage);
+      const [marker, file, change] = await Promise.all([
+        requestValue(
+          damage
+            .objectStore("project_filesystems")
+            .get("project-1"),
+        ),
+        requestValue(
+          damage
+            .objectStore("opfs_files")
+            .get(["project-1", "/notes.txt"]),
+        ),
+        requestValue(
+          damage
+            .objectStore("file_changes")
+            .get(["project-1", "corrupt-revert"]),
+        ),
+      ]);
+      const contentId = file.content_id;
+      testCase.corrupt({ marker, file, change });
+      damage.objectStore("opfs_files").put(file);
+      damage.objectStore("file_changes").put(change);
+      await completion;
+      const writeAttempts = objects.write_attempts;
+
+      if (testCase.corrupts_receipt) {
+        await assert.rejects(
+          workspace.getChange("corrupt-revert"),
+          (error) => error instanceof WorkspaceCorruptionError,
+        );
+        await assert.rejects(
+          workspace.listChanges(),
+          (error) => error instanceof WorkspaceCorruptionError,
+        );
+      }
+      await assert.rejects(
+        workspace.revertChange("corrupt-revert"),
+        (error) => error instanceof WorkspaceCorruptionError,
+      );
+      assert.equal(objects.write_attempts, writeAttempts);
+
+      const verification = connection.transaction(
+        ["project_filesystems", "opfs_files", "file_changes"],
+        "readonly",
+      );
+      const verificationComplete = transactionComplete(verification);
+      const [currentMarker, currentFile, currentChange] =
+        await Promise.all([
+          requestValue(
+            verification
+              .objectStore("project_filesystems")
+              .get("project-1"),
+          ),
+          requestValue(
+            verification
+              .objectStore("opfs_files")
+              .get(["project-1", "/notes.txt"]),
+          ),
+          requestValue(
+            verification
+              .objectStore("file_changes")
+              .get(["project-1", "corrupt-revert"]),
+          ),
+        ]);
+      await verificationComplete;
+      assert.equal(currentMarker.workspace_revision, 1);
+      assert.equal(currentFile.content_id, contentId);
+      assert.equal(currentChange.reverted_at_workspace_revision, null);
+      assert.equal(
+        await objects.read(
+          currentFile.storage_id,
+          currentFile.content_id,
+        ),
+        "after",
+      );
+      database.close();
+    });
+  }
+});
+
+test("OPFS rejects receipts forged at a replacement incarnation baseline", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-opfs-baseline-forgery-${crypto.randomUUID()}`,
+  );
+  const objects = new MemoryWorkspaceObjectStore();
+  const backend = new OpfsWorkspaceBackend(database, objects, {});
+  await backend.create("project-1");
+  await backend.delete("project-1");
+  const workspace = await backend.create("project-1", {
+    initial_files: [{ path: "/notes.txt", content: "after" }],
+  });
+  await workspace.write("/receipt-source.txt", "source", {
+    change: changeMetadata(
+      "baseline-forgery",
+      "2026-07-24T00:00:00.000Z",
+    ),
+  });
+
+  const connection = await database.open();
+  const damage = connection.transaction(
+    ["project_filesystems", "file_changes"],
+    "readwrite",
+  );
+  const completion = transactionComplete(damage);
+  const marker = await requestValue(
+    damage.objectStore("project_filesystems").get("project-1"),
+  );
+  const change = await requestValue(
+    damage
+      .objectStore("file_changes")
+      .get(["project-1", "baseline-forgery"]),
+  );
+  Object.assign(change, {
+    path: "/notes.txt",
+    change_kind: "updated",
+    before_content: "before",
+    after_content: "after",
+    additions: 1,
+    deletions: 1,
+    byte_size: 5,
+    applied_workspace_revision:
+      marker.incarnation_baseline_revision,
+  });
+  damage.objectStore("file_changes").put(change);
+  await completion;
+  const writeAttempts = objects.write_attempts;
+
+  assert.equal(marker.incarnation_baseline_revision, 1);
+  await assert.rejects(
+    workspace.revertChange("baseline-forgery"),
+    (error) => error instanceof WorkspaceCorruptionError,
+  );
+  assert.equal(objects.write_attempts, writeAttempts);
+  assert.deepEqual(await workspace.read("/notes.txt"), {
+    workspace_revision: 2,
+    path_revision: 1,
+    content: "after",
+  });
+  database.close();
+});
+
+test("an OPFS write racing a revert never loses the later content", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-opfs-revert-write-race-${crypto.randomUUID()}`,
+  );
+  const objects = new MemoryWorkspaceObjectStore();
+  const runUncoordinated = (operation) => operation();
+  const firstBackend = new OpfsWorkspaceBackend(
+    database,
+    objects,
+    { "/notes.txt": "before" },
+    runUncoordinated,
+  );
+  const first = await firstBackend.create("project-1");
+  await first.write("/notes.txt", "after", {
+    change: changeMetadata(
+      "raced-revert",
+      "2026-07-24T00:00:00.000Z",
+    ),
+  });
+  const second = await new OpfsWorkspaceBackend(
+    database,
+    objects,
+    {},
+    runUncoordinated,
+  ).open("project-1");
+
+  const [revert, write] = await Promise.allSettled([
+    first.revertChange("raced-revert"),
+    second.write("/notes.txt", "later"),
+  ]);
+  assert.equal(write.status, "fulfilled");
+  if (revert.status === "rejected") {
+    assert.equal(revert.reason?.code, "conflict");
+  } else {
+    assert.equal(revert.value.revert_outcome, "applied");
+  }
+
+  const current = await first.read("/notes.txt");
+  assert.equal(current.content, "later");
+  assert.equal(current.path_revision, current.workspace_revision);
+  const receipt = await first.getChange("raced-revert");
+  if (revert.status === "fulfilled") {
+    assert.equal(current.workspace_revision, 3);
+    assert.equal(
+      receipt.change.reverted_at_workspace_revision,
+      2,
+    );
+  } else {
+    assert.equal(current.workspace_revision, 2);
+    assert.equal(
+      receipt.change.reverted_at_workspace_revision,
+      null,
+    );
+  }
+  database.close();
+});
 
 test("OPFS export captures metadata once and reads each immutable object once", async () => {
   const factory = new IDBFactory();
@@ -171,6 +488,7 @@ test("browser storage selects OPFS after one successful root probe", async () =>
   const workspace = await workspaceCreation;
   assert.deepEqual(await workspace.read("/imported/file.txt"), {
     workspace_revision: 0,
+    path_revision: 0,
     content: "imported",
   });
   await assert.rejects(
@@ -428,10 +746,12 @@ test("OPFS migration preserves inline files, receipts, and revision", async () =
 
   assert.deepEqual(await migrated.read("/README.md"), {
     workspace_revision: 2,
+    path_revision: 0,
     content: "legacy seed",
   });
   assert.deepEqual(await migrated.read("/notes.txt"), {
     workspace_revision: 2,
+    path_revision: 2,
     content: "second",
   });
   assert.deepEqual(
@@ -471,9 +791,70 @@ test("OPFS migration preserves inline files, receipts, and revision", async () =
   ).open("project-1");
   assert.deepEqual(await reopened.read("/notes.txt"), {
     workspace_revision: 2,
+    path_revision: 2,
     content: "second",
   });
   reopenedDatabase.close();
+});
+
+test("OPFS migration keeps legacy receipts readable but not revertible", async () => {
+  const factory = new IDBFactory();
+  const databaseName =
+    `researchbox-opfs-legacy-receipt-${crypto.randomUUID()}`;
+  const database = new ResearchBoxDatabase(factory, databaseName);
+  const inlineBackend = new IndexedDbWorkspaceBackend(database, {});
+  const inline = await inlineBackend.create("project-1");
+  await inline.write("/legacy.txt", "legacy", {
+    change: changeMetadata(
+      "legacy-change",
+      "2026-07-24T01:00:00.000Z",
+    ),
+  });
+
+  const connection = await database.open();
+  const damage = connection.transaction(
+    ["files", "file_changes"],
+    "readwrite",
+  );
+  const damageComplete = transactionComplete(damage);
+  const fileStore = damage.objectStore("files");
+  const changeStore = damage.objectStore("file_changes");
+  const storedFile = await requestValue(
+    fileStore.get(["project-1", "/legacy.txt"]),
+  );
+  const storedChange = await requestValue(
+    changeStore.get(["project-1", "legacy-change"]),
+  );
+  delete storedFile.path_revision;
+  delete storedChange.applied_workspace_revision;
+  delete storedChange.reverted_at_workspace_revision;
+  fileStore.put(storedFile);
+  changeStore.put(storedChange);
+  await damageComplete;
+
+  const objects = new MemoryWorkspaceObjectStore();
+  const migrated = await new OpfsWorkspaceBackend(
+    database,
+    objects,
+    {},
+  ).open("project-1");
+  assert.deepEqual(await migrated.read("/legacy.txt"), {
+    workspace_revision: 1,
+    path_revision: 0,
+    content: "legacy",
+  });
+  const receipt = await migrated.getChange("legacy-change");
+  assert.equal(receipt.change.applied_workspace_revision, null);
+  assert.equal(
+    receipt.change.reverted_at_workspace_revision,
+    null,
+  );
+  await assert.rejects(
+    migrated.revertChange("legacy-change"),
+    (error) => error?.code === "conflict",
+  );
+  assert.equal((await migrated.list("/")).workspace_revision, 1);
+  database.close();
 });
 
 test("core bootstrap migrates and reopens an inline project through OPFS", async () => {

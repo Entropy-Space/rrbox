@@ -1,4 +1,5 @@
 import {
+  applyWorkspaceChangeRevision,
   assertVfsWriteExpectation,
   compareVfsEntries,
   compareVfsStrings,
@@ -7,6 +8,7 @@ import {
   incrementWorkspaceRevision,
   normalizeFilePath,
   normalizePath,
+  normalizeStoredWorkspaceRevision,
   normalizeWorkspaceChangeTimestamp,
   normalizeVfsInitialFiles,
   normalizeVfsSeedFiles,
@@ -20,7 +22,9 @@ import {
   type Workspace,
   type WorkspaceBackend,
   type WorkspaceCreateOptions,
+  type WorkspaceChangeResult,
   type WorkspaceChangeRecord,
+  type WorkspaceChangeRevertResult,
   type WorkspaceChangesResult,
   type WorkspaceFilesSnapshotOptions,
   type WorkspaceFilesSnapshotReader,
@@ -44,20 +48,17 @@ import type {
   WorkspaceObjectStore,
   WorkspaceObjectWriteResult,
 } from "./opfs-object-store.ts";
+import {
+  assertValidStoredPathRevision,
+  assertValidStoredWorkspaceChangeRecord,
+  type WorkspaceChangeStorageRecord,
+} from "./workspace-change-storage.ts";
 
 type InlineFileRecord = {
   project_id: string;
   path: string;
   content: string;
-};
-
-type WorkspaceChangeStorageRecord = Omit<
-  WorkspaceChangeRecord,
-  "tool_call_block_id" | "legacy_message_id"
-> & {
-  project_id: string;
-  tool_call_block_id?: string | null;
-  message_id?: string;
+  path_revision?: number;
 };
 
 type ActiveOpfsMarker = ProjectFileSystemRecord & {
@@ -84,6 +85,10 @@ type PreparedMigrationMarker = ActiveInlineMarker & {
 type OpfsWorkspaceSnapshot = {
   marker: ActiveOpfsMarker;
   files: OpfsFileRecord[];
+};
+
+type OpfsWorkspaceChangeSnapshot = OpfsWorkspaceSnapshot & {
+  change: WorkspaceChangeRecord;
 };
 
 export type OpfsWorkspaceExclusiveRunner = <T>(
@@ -234,6 +239,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
           workspaceStore.put({
             project_id: projectId,
             incarnation_id: incarnationId,
+            incarnation_baseline_revision: workspaceRevision,
             workspace_revision: workspaceRevision,
             last_change_at: null,
             lifecycle_status: "active",
@@ -251,6 +257,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
               content_id: object.content_id,
               byte_size: object.byte_size,
               migration_id: null,
+              path_revision: workspaceRevision,
             } satisfies OpfsFileRecord);
           }
           transaction
@@ -479,6 +486,22 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
         this.enqueue(() =>
           this.listWorkspaceChanges(projectId, incarnationId),
         ),
+      getChange: (changeId) =>
+        this.enqueue(() =>
+          this.getWorkspaceChange(
+            projectId,
+            incarnationId,
+            changeId,
+          ),
+        ),
+      revertChange: (changeId) =>
+        this.enqueue(() =>
+          this.revertWorkspaceChange(
+            projectId,
+            incarnationId,
+            changeId,
+          ),
+        ),
     };
   }
 
@@ -565,6 +588,8 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
     assertObjectByteSize(record, content);
     return {
       workspace_revision: marker.workspace_revision,
+      path_revision:
+        normalizeStoredWorkspaceRevision(record.path_revision) ?? 0,
       content,
     };
   }
@@ -646,7 +671,10 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
         );
         return {
           workspace_revision: workspaceRevision,
-          result,
+          result: applyWorkspaceChangeRevision(
+            result,
+            workspaceRevision,
+          ),
         };
       } catch (error) {
         if (error instanceof RetryOpfsOperation) continue;
@@ -696,31 +724,39 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
         throw new RetryOpfsOperation();
       }
 
-      if (change) {
+      const workspaceRevision = incrementWorkspaceRevision(
+        marker.workspace_revision,
+      );
+      const committedChange =
+        change === null
+          ? null
+          : {
+              ...change,
+              applied_workspace_revision: workspaceRevision,
+              reverted_at_workspace_revision: null,
+            } satisfies WorkspaceChangeRecord;
+      if (committedChange) {
         const changeStore = transaction.objectStore(
           databaseStores.file_changes,
         );
         const existingChange = await requestResult(
           changeStore.get([
             snapshot.marker.project_id,
-            change.change_id,
+            committedChange.change_id,
           ]),
         );
         if (existingChange !== undefined) {
           throw new VfsError(
             "conflict",
-            `Workspace change already exists: ${change.change_id}`,
+            `Workspace change already exists: ${committedChange.change_id}`,
           );
         }
         changeStore.add({
-          ...change,
+          ...committedChange,
           project_id: snapshot.marker.project_id,
         } satisfies WorkspaceChangeStorageRecord);
       }
 
-      const workspaceRevision = incrementWorkspaceRevision(
-        marker.workspace_revision,
-      );
       opfsStore.put({
         project_id: marker.project_id,
         path,
@@ -729,6 +765,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
         content_id: object.content_id,
         byte_size: object.byte_size,
         migration_id: null,
+        path_revision: workspaceRevision,
       } satisfies OpfsFileRecord);
       transaction
         .objectStore(databaseStores.meta)
@@ -738,7 +775,8 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
         .put({
           ...marker,
           workspace_revision: workspaceRevision,
-          last_change_at: change?.created_at ?? marker.last_change_at,
+          last_change_at:
+            committedChange?.created_at ?? marker.last_change_at,
         } satisfies ProjectFileSystemRecord);
       if (
         previous &&
@@ -919,8 +957,424 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
       return {
         workspace_revision: marker.workspace_revision,
         changes: changes
-          .sort(compareWorkspaceChanges)
-          .map(toWorkspaceChangeRecord),
+          .map((change) =>
+            assertValidStoredWorkspaceChangeRecord(change, {
+              project_id: projectId,
+              change_id: change.change_id,
+              incarnation_baseline_revision:
+                marker.incarnation_baseline_revision,
+              workspace_revision: marker.workspace_revision,
+            }),
+          )
+          .sort(compareWorkspaceChanges),
+      };
+    } catch (error) {
+      return abortTransaction(transaction, completion, error);
+    }
+  }
+
+  private async getWorkspaceChange(
+    projectId: string,
+    incarnationId: string,
+    changeId: string,
+  ): Promise<WorkspaceChangeResult> {
+    const database = await this.database.open();
+    const transaction = database.transaction(
+      [databaseStores.project_filesystems, databaseStores.file_changes],
+      "readonly",
+    );
+    const completion = transactionDone(transaction);
+    try {
+      const marker = await readActiveOpfsMarker(
+        transaction,
+        projectId,
+        incarnationId,
+      );
+      const change = (await requestResult(
+        transaction
+          .objectStore(databaseStores.file_changes)
+          .get([projectId, changeId]),
+      )) as WorkspaceChangeStorageRecord | undefined;
+      await completion;
+      return {
+        workspace_revision: marker.workspace_revision,
+        change:
+          change === undefined
+            ? null
+            : assertValidStoredWorkspaceChangeRecord(change, {
+                project_id: projectId,
+                change_id: changeId,
+                incarnation_baseline_revision:
+                  marker.incarnation_baseline_revision,
+                workspace_revision: marker.workspace_revision,
+              }),
+      };
+    } catch (error) {
+      return abortTransaction(transaction, completion, error);
+    }
+  }
+
+  private async revertWorkspaceChange(
+    projectId: string,
+    incarnationId: string,
+    changeId: string,
+  ): Promise<WorkspaceChangeRevertResult> {
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
+      const snapshot = await this.loadOpfsChangeSnapshot(
+        projectId,
+        incarnationId,
+        changeId,
+      );
+      const { change } = snapshot;
+      if (change.reverted_at_workspace_revision !== null) {
+        return {
+          workspace_revision: snapshot.marker.workspace_revision,
+          revert_outcome: "already_reverted",
+          reverted_at_workspace_revision:
+            change.reverted_at_workspace_revision,
+          change,
+        };
+      }
+      if (change.applied_workspace_revision === null) {
+        throw new VfsError(
+          "conflict",
+          `Workspace change has no safe path revision: ${changeId}`,
+        );
+      }
+      if (
+        (change.change_kind === "created" &&
+          change.before_content !== null) ||
+        (change.change_kind === "updated" &&
+          change.before_content === null)
+      ) {
+        throw new VfsError(
+          "conflict",
+          `Workspace change cannot be safely reverted: ${changeId}`,
+        );
+      }
+
+      const previous = snapshot.files.find(
+        (file) => file.path === change.path,
+      );
+      const pathRevision =
+        previous === undefined
+          ? null
+          : assertValidStoredPathRevision(
+              previous.path_revision,
+              snapshot.marker.workspace_revision,
+              change.path,
+            );
+      if (
+        previous === undefined ||
+        pathRevision !== change.applied_workspace_revision
+      ) {
+        throw new VfsError(
+          "conflict",
+          `Workspace path changed after receipt was created: ${change.path}`,
+        );
+      }
+      let currentContent: string;
+      try {
+        currentContent = await this.objects.read(
+          previous.storage_id,
+          previous.content_id,
+        );
+        assertObjectByteSize(previous, currentContent);
+      } catch {
+        throw new VfsError(
+          "conflict",
+          `Workspace path cannot be verified for revert: ${change.path}`,
+        );
+      }
+      if (currentContent !== change.after_content) {
+        throw new VfsError(
+          "conflict",
+          `Workspace path changed after receipt was created: ${change.path}`,
+        );
+      }
+
+      let replacement: WorkspaceObjectWriteResult | null = null;
+      let cleanupKey: string | null = null;
+      if (
+        change.change_kind === "updated" &&
+        change.before_content !== null
+      ) {
+        const identified = await this.objects.identify(
+          change.before_content,
+        );
+        assertObjectWriteResult(identified, change.before_content);
+        const cleanup = await this.scheduleCleanup(
+          snapshot.marker.opfs_storage_id,
+          identified.content_id,
+        );
+        cleanupKey = cleanup.key;
+        replacement = await this.objects.write(
+          snapshot.marker.opfs_storage_id,
+          change.before_content,
+        );
+        assertObjectWriteResult(replacement, change.before_content);
+        if (
+          replacement.content_id !== identified.content_id ||
+          replacement.byte_size !== identified.byte_size
+        ) {
+          throw new VfsError(
+            "conflict",
+            "The OPFS revert object identity changed while it was written.",
+          );
+        }
+      }
+
+      try {
+        return await this.commitWorkspaceChangeRevert(
+          snapshot,
+          previous,
+          replacement,
+          cleanupKey,
+        );
+      } catch (error) {
+        if (error instanceof RetryOpfsOperation) continue;
+        throw error;
+      }
+    }
+    throw new VfsError(
+      "conflict",
+      `Workspace remained busy while reverting change: ${changeId}`,
+    );
+  }
+
+  private async commitWorkspaceChangeRevert(
+    snapshot: OpfsWorkspaceChangeSnapshot,
+    previous: OpfsFileRecord,
+    replacement: WorkspaceObjectWriteResult | null,
+    cleanupKey: string | null,
+  ): Promise<WorkspaceChangeRevertResult> {
+    const database = await this.database.open();
+    const transaction = database.transaction(
+      [
+        databaseStores.project_filesystems,
+        databaseStores.opfs_files,
+        databaseStores.file_changes,
+        databaseStores.meta,
+      ],
+      "readwrite",
+    );
+    const completion = transactionDone(transaction);
+    try {
+      const marker = await readActiveOpfsMarker(
+        transaction,
+        snapshot.marker.project_id,
+        snapshot.marker.incarnation_id,
+      );
+      const changeStore = transaction.objectStore(
+        databaseStores.file_changes,
+      );
+      const storedChange = (await requestResult(
+        changeStore.get([
+          snapshot.marker.project_id,
+          snapshot.change.change_id,
+        ]),
+      )) as WorkspaceChangeStorageRecord | undefined;
+      if (storedChange === undefined) {
+        throw new VfsError(
+          "not_found",
+          `Workspace change not found: ${snapshot.change.change_id}`,
+        );
+      }
+      const change = assertValidStoredWorkspaceChangeRecord(
+        storedChange,
+        {
+          project_id: snapshot.marker.project_id,
+          change_id: snapshot.change.change_id,
+          incarnation_baseline_revision:
+            marker.incarnation_baseline_revision,
+          workspace_revision: marker.workspace_revision,
+        },
+      );
+      if (!sameImmutableWorkspaceChange(change, snapshot.change)) {
+        throw new VfsError(
+          "conflict",
+          `Workspace change receipt was modified: ${change.change_id}`,
+        );
+      }
+      if (change.reverted_at_workspace_revision !== null) {
+        await completion;
+        return {
+          workspace_revision: marker.workspace_revision,
+          revert_outcome: "already_reverted",
+          reverted_at_workspace_revision:
+            change.reverted_at_workspace_revision,
+          change,
+        };
+      }
+
+      const opfsStore = transaction.objectStore(
+        databaseStores.opfs_files,
+      );
+      const current = (await requestResult(
+        opfsStore.get([
+          snapshot.marker.project_id,
+          snapshot.change.path,
+        ]),
+      )) as OpfsFileRecord | undefined;
+      if (current !== undefined) {
+        assertValidStoredPathRevision(
+          current.path_revision,
+          marker.workspace_revision,
+          snapshot.change.path,
+        );
+      }
+      if (
+        marker.workspace_revision !==
+          snapshot.marker.workspace_revision ||
+        marker.opfs_storage_id !==
+          snapshot.marker.opfs_storage_id ||
+        !sameOpfsFile(current, previous)
+      ) {
+        throw new RetryOpfsOperation();
+      }
+
+      const workspaceRevision = incrementWorkspaceRevision(
+        marker.workspace_revision,
+      );
+      if (change.change_kind === "created") {
+        opfsStore.delete([
+          snapshot.marker.project_id,
+          change.path,
+        ]);
+      } else {
+        if (replacement === null || cleanupKey === null) {
+          throw new VfsError(
+            "conflict",
+            `Workspace revert was not fully prepared: ${change.change_id}`,
+          );
+        }
+        opfsStore.put({
+          project_id: marker.project_id,
+          path: change.path,
+          incarnation_id: marker.incarnation_id,
+          storage_id: marker.opfs_storage_id,
+          content_id: replacement.content_id,
+          byte_size: replacement.byte_size,
+          migration_id: null,
+          path_revision: workspaceRevision,
+        } satisfies OpfsFileRecord);
+        transaction
+          .objectStore(databaseStores.meta)
+          .delete(cleanupKey);
+      }
+
+      const revertedChange = {
+        ...storedChange,
+        applied_workspace_revision:
+          change.applied_workspace_revision,
+        reverted_at_workspace_revision: workspaceRevision,
+      } satisfies WorkspaceChangeStorageRecord;
+      changeStore.put(revertedChange);
+      transaction
+        .objectStore(databaseStores.project_filesystems)
+        .put({
+          ...marker,
+          workspace_revision: workspaceRevision,
+        } satisfies ProjectFileSystemRecord);
+      if (
+        !snapshot.files.some(
+          (file) =>
+            file.path !== change.path &&
+            file.storage_id === previous.storage_id &&
+            file.content_id === previous.content_id,
+        )
+      ) {
+        transaction
+          .objectStore(databaseStores.meta)
+          .put(
+            this.createCleanupRecord(
+              previous.storage_id,
+              previous.content_id,
+            ),
+          );
+      }
+      await completion;
+      return {
+        workspace_revision: workspaceRevision,
+        revert_outcome: "applied",
+        reverted_at_workspace_revision: workspaceRevision,
+        change: assertValidStoredWorkspaceChangeRecord(
+          revertedChange,
+          {
+            project_id: marker.project_id,
+            change_id: change.change_id,
+            incarnation_baseline_revision:
+              marker.incarnation_baseline_revision,
+            workspace_revision: workspaceRevision,
+          },
+        ),
+      };
+    } catch (error) {
+      return abortTransaction(transaction, completion, error);
+    }
+  }
+
+  private async loadOpfsChangeSnapshot(
+    projectId: string,
+    incarnationId: string,
+    changeId: string,
+  ): Promise<OpfsWorkspaceChangeSnapshot> {
+    const database = await this.database.open();
+    const transaction = database.transaction(
+      [
+        databaseStores.project_filesystems,
+        databaseStores.opfs_files,
+        databaseStores.file_changes,
+      ],
+      "readonly",
+    );
+    const completion = transactionDone(transaction);
+    try {
+      const marker = await readActiveOpfsMarker(
+        transaction,
+        projectId,
+        incarnationId,
+      );
+      const [files, storedChange] = await Promise.all([
+        requestResult(
+          transaction
+            .objectStore(databaseStores.opfs_files)
+            .index("by_project")
+            .getAll(projectId),
+        ) as Promise<OpfsFileRecord[]>,
+        requestResult(
+          transaction
+            .objectStore(databaseStores.file_changes)
+            .get([projectId, changeId]),
+        ) as Promise<WorkspaceChangeStorageRecord | undefined>,
+      ]);
+      if (storedChange === undefined) {
+        throw new VfsError(
+          "not_found",
+          `Workspace change not found: ${changeId}`,
+        );
+      }
+      assertOpfsFileSet(marker, files);
+      await completion;
+      return {
+        marker,
+        files: files.sort((left, right) =>
+          left.path < right.path
+            ? -1
+            : left.path > right.path
+              ? 1
+              : 0,
+        ),
+        change: assertValidStoredWorkspaceChangeRecord(
+          storedChange,
+          {
+            project_id: projectId,
+            change_id: changeId,
+            incarnation_baseline_revision:
+              marker.incarnation_baseline_revision,
+            workspace_revision: marker.workspace_revision,
+          },
+        ),
       };
     } catch (error) {
       return abortTransaction(transaction, completion, error);
@@ -1020,7 +1474,13 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
         candidate.storage_id === prepared.opfs_migration.storage_id &&
         candidate.migration_id ===
           prepared.opfs_migration.migration_id &&
-        candidate.byte_size === utf8ByteSize(file.content)
+        candidate.byte_size === utf8ByteSize(file.content) &&
+        (normalizeStoredWorkspaceRevision(
+          candidate.path_revision,
+        ) ?? 0) ===
+          (normalizeStoredWorkspaceRevision(
+            file.path_revision,
+          ) ?? 0)
       ) {
         try {
           const existing = await this.objects.read(
@@ -1239,6 +1699,10 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
         content_id: object.content_id,
         byte_size: object.byte_size,
         migration_id: prepared.opfs_migration.migration_id,
+        path_revision:
+          normalizeStoredWorkspaceRevision(
+            inlineFile.path_revision,
+          ) ?? 0,
       } satisfies OpfsFileRecord);
       transaction.objectStore(databaseStores.meta).delete(cleanupKey);
       await completion;
@@ -1327,7 +1791,13 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
           return (
             opfsFile === undefined ||
             !SHA256_CONTENT_ID_PATTERN.test(opfsFile.content_id) ||
-            opfsFile.byte_size !== utf8ByteSize(inlineFile.content)
+            opfsFile.byte_size !== utf8ByteSize(inlineFile.content) ||
+            (normalizeStoredWorkspaceRevision(
+              opfsFile.path_revision,
+            ) ?? 0) !==
+              (normalizeStoredWorkspaceRevision(
+                inlineFile.path_revision,
+              ) ?? 0)
           );
         })
       ) {
@@ -1710,6 +2180,13 @@ function assertOpfsFileSet(
 ): void {
   const paths = new Set<string>();
   for (const file of files) {
+    if (file.path_revision !== undefined) {
+      assertValidStoredPathRevision(
+        file.path_revision,
+        marker.workspace_revision,
+        file.path,
+      );
+    }
     if (
       file.project_id !== marker.project_id ||
       file.incarnation_id !== marker.incarnation_id ||
@@ -1865,7 +2342,34 @@ function sameOpfsFile(
     left.storage_id === right.storage_id &&
     left.content_id === right.content_id &&
     left.byte_size === right.byte_size &&
-    left.migration_id === right.migration_id
+    left.migration_id === right.migration_id &&
+    (normalizeStoredWorkspaceRevision(left.path_revision) ?? 0) ===
+      (normalizeStoredWorkspaceRevision(right.path_revision) ?? 0)
+  );
+}
+
+function sameImmutableWorkspaceChange(
+  left: WorkspaceChangeRecord,
+  right: WorkspaceChangeRecord,
+): boolean {
+  return (
+    left.change_id === right.change_id &&
+    left.session_id === right.session_id &&
+    left.tool_call_block_id === right.tool_call_block_id &&
+    left.legacy_message_id === right.legacy_message_id &&
+    left.assistant_message_index === right.assistant_message_index &&
+    left.tool_call_id === right.tool_call_id &&
+    left.tool_name === right.tool_name &&
+    left.created_at === right.created_at &&
+    left.applied_workspace_revision ===
+      right.applied_workspace_revision &&
+    left.path === right.path &&
+    left.change_kind === right.change_kind &&
+    left.before_content === right.before_content &&
+    left.after_content === right.after_content &&
+    left.additions === right.additions &&
+    left.deletions === right.deletions &&
+    left.byte_size === right.byte_size
   );
 }
 
@@ -1920,41 +2424,6 @@ function isOpfsCleanupRecord(
       (typeof record.content_id === "string" &&
         SHA256_CONTENT_ID_PATTERN.test(record.content_id)))
   );
-}
-
-function toWorkspaceChangeRecord(
-  record: WorkspaceChangeStorageRecord,
-): WorkspaceChangeRecord {
-  const toolCallBlockId =
-    typeof record.tool_call_block_id === "string" &&
-    record.tool_call_block_id.length > 0
-      ? record.tool_call_block_id
-      : null;
-  const legacyMessageId =
-    toolCallBlockId === null &&
-    typeof record.message_id === "string" &&
-    record.message_id.length > 0
-      ? record.message_id
-      : undefined;
-  return {
-    change_id: record.change_id,
-    session_id: record.session_id,
-    tool_call_block_id: toolCallBlockId,
-    ...(legacyMessageId === undefined
-      ? {}
-      : { legacy_message_id: legacyMessageId }),
-    assistant_message_index: record.assistant_message_index,
-    tool_call_id: record.tool_call_id,
-    tool_name: record.tool_name,
-    created_at: record.created_at,
-    path: record.path,
-    change_kind: record.change_kind,
-    before_content: record.before_content,
-    after_content: record.after_content,
-    additions: record.additions,
-    deletions: record.deletions,
-    byte_size: record.byte_size,
-  };
 }
 
 async function runWithNavigatorOpfsLock<T>(

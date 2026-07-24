@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { PROTOCOL_VERSION } from "@researchbox/protocol";
 import {
   createWorkerTerminator,
   requestWorkspaceExport,
@@ -358,7 +359,7 @@ test("workspace transfer status supports cancellation and restores focus", async
   );
   assert.match(
     session,
-    /!handledWorkspaceTransfer \|\|\s*event\.type === "state_snapshot"/,
+    /\(!handledWorkspaceTransfer && !handledWorkspaceChange\) \|\|\s*event\.type === "state_snapshot"/,
   );
   assert.match(
     transfer,
@@ -372,7 +373,7 @@ test("workspace transfer status supports cancellation and restores focus", async
 
 function coreEvent(type, payload, requestId) {
   return {
-    protocol_version: 8,
+    protocol_version: PROTOCOL_VERSION,
     event_id: crypto.randomUUID(),
     request_id: requestId,
     type,

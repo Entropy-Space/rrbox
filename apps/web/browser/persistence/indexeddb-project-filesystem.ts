@@ -1,4 +1,5 @@
 import {
+  applyWorkspaceChangeRevision,
   assertVfsWriteExpectation,
   compareVfsEntries,
   compareVfsStrings,
@@ -8,6 +9,7 @@ import {
   normalizeFilePath,
   normalizePath,
   normalizeWorkspaceChangeTimestamp,
+  normalizeStoredWorkspaceRevision,
   normalizeVfsInitialFiles,
   normalizeVfsSeedFiles,
   snapshotWorkspaceCreateOptions,
@@ -20,7 +22,8 @@ import {
   type Workspace,
   type WorkspaceBackend,
   type WorkspaceCreateOptions,
-  type WorkspaceChangeRecord,
+  type WorkspaceChangeResult,
+  type WorkspaceChangeRevertResult,
   type WorkspaceChangesResult,
   type WorkspaceFilesSnapshotOptions,
   type WorkspaceFilesSnapshotResult,
@@ -40,20 +43,17 @@ import {
   ResearchBoxDatabase,
   transactionDone,
 } from "./database.ts";
+import {
+  assertValidStoredPathRevision,
+  assertValidStoredWorkspaceChangeRecord,
+  type WorkspaceChangeStorageRecord,
+} from "./workspace-change-storage.ts";
 
 type FileRecord = {
   project_id: string;
   path: string;
   content: string;
-};
-
-type WorkspaceChangeStorageRecord = Omit<
-  WorkspaceChangeRecord,
-  "tool_call_block_id" | "legacy_message_id"
-> & {
-  project_id: string;
-  tool_call_block_id?: string | null;
-  message_id?: string;
+  path_revision?: number;
 };
 
 export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
@@ -139,6 +139,7 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
       workspaceStore.put({
         project_id: projectId,
         incarnation_id: incarnationId,
+        incarnation_baseline_revision: workspaceRevision,
         workspace_revision: workspaceRevision,
         last_change_at: null,
         lifecycle_status: "active",
@@ -151,6 +152,7 @@ export class IndexedDbWorkspaceBackend implements WorkspaceBackend {
           project_id: projectId,
           path,
           content,
+          path_revision: workspaceRevision,
         } satisfies FileRecord);
       }
       await completion;
@@ -449,6 +451,8 @@ class IndexedDbWorkspace implements Workspace {
     if (record) {
       return {
         workspace_revision: marker.workspace_revision,
+        path_revision:
+          normalizeStoredWorkspaceRevision(record.path_revision) ?? 0,
         content: record.content,
       };
     }
@@ -516,31 +520,40 @@ class IndexedDbWorkspace implements Workspace {
         change,
       );
       let workspaceRevision = marker.workspace_revision;
+      let committedResult = result;
       if (result.change_kind !== "unchanged") {
         workspaceRevision = incrementWorkspaceRevision(
           marker.workspace_revision,
+        );
+        committedResult = applyWorkspaceChangeRevision(
+          result,
+          workspaceRevision,
         );
         store.put({
           project_id: this.projectId,
           path: normalizedPath,
           content,
+          path_revision: workspaceRevision,
         } satisfies FileRecord);
-        if (result.change) {
+        if (committedResult.change) {
           const changeStore = transaction.objectStore(
             databaseStores.file_changes,
           );
           const existingChange = await requestResult(
-            changeStore.get([this.projectId, result.change.change_id]),
+            changeStore.get([
+              this.projectId,
+              committedResult.change.change_id,
+            ]),
           );
           if (existingChange !== undefined) {
             throw new VfsError(
               "conflict",
-              `Workspace change already exists: ${result.change.change_id}`,
+              `Workspace change already exists: ${committedResult.change.change_id}`,
             );
           }
           await requestResult(
             changeStore.add({
-              ...result.change,
+              ...committedResult.change,
               project_id: this.projectId,
             } satisfies WorkspaceChangeStorageRecord),
           );
@@ -551,13 +564,13 @@ class IndexedDbWorkspace implements Workspace {
             ...marker,
             workspace_revision: workspaceRevision,
             last_change_at:
-              result.change?.created_at ?? marker.last_change_at,
+              committedResult.change?.created_at ?? marker.last_change_at,
           } satisfies ProjectFileSystemRecord);
       }
       await completion;
       return {
         workspace_revision: workspaceRevision,
-        result,
+        result: committedResult,
       };
     } catch (error) {
       return abortTransaction(transaction, completion, error);
@@ -653,8 +666,191 @@ class IndexedDbWorkspace implements Workspace {
       return {
         workspace_revision: marker.workspace_revision,
         changes: records
-          .sort(compareWorkspaceChanges)
-          .map(toWorkspaceChangeRecord),
+          .map((record) =>
+            assertValidStoredWorkspaceChangeRecord(record, {
+              project_id: this.projectId,
+              change_id: record.change_id,
+              incarnation_baseline_revision:
+                marker.incarnation_baseline_revision,
+              workspace_revision: marker.workspace_revision,
+            }),
+          )
+          .sort(compareWorkspaceChanges),
+      };
+    } catch (error) {
+      return abortTransaction(transaction, completion, error);
+    }
+  }
+
+  async getChange(changeId: string): Promise<WorkspaceChangeResult> {
+    const database = await this.database.open();
+    const transaction = database.transaction(
+      [databaseStores.project_filesystems, databaseStores.file_changes],
+      "readonly",
+    );
+    const completion = transactionDone(transaction);
+    try {
+      const marker = await assertActiveProjectFileSystem(
+        transaction,
+        this.projectId,
+        this.incarnationId,
+      );
+      const record = (await requestResult(
+        transaction
+          .objectStore(databaseStores.file_changes)
+          .get([this.projectId, changeId]),
+      )) as WorkspaceChangeStorageRecord | undefined;
+      await completion;
+      return {
+        workspace_revision: marker.workspace_revision,
+        change:
+          record === undefined
+            ? null
+            : assertValidStoredWorkspaceChangeRecord(record, {
+                project_id: this.projectId,
+                change_id: changeId,
+                incarnation_baseline_revision:
+                  marker.incarnation_baseline_revision,
+                workspace_revision: marker.workspace_revision,
+              }),
+      };
+    } catch (error) {
+      return abortTransaction(transaction, completion, error);
+    }
+  }
+
+  async revertChange(
+    changeId: string,
+  ): Promise<WorkspaceChangeRevertResult> {
+    const database = await this.database.open();
+    const transaction = database.transaction(
+      [
+        databaseStores.project_filesystems,
+        databaseStores.files,
+        databaseStores.file_changes,
+      ],
+      "readwrite",
+    );
+    const completion = transactionDone(transaction);
+    try {
+      const marker = await assertActiveProjectFileSystem(
+        transaction,
+        this.projectId,
+        this.incarnationId,
+      );
+      const changeStore = transaction.objectStore(
+        databaseStores.file_changes,
+      );
+      const storedChange = (await requestResult(
+        changeStore.get([this.projectId, changeId]),
+      )) as WorkspaceChangeStorageRecord | undefined;
+      if (storedChange === undefined) {
+        throw new VfsError(
+          "not_found",
+          `Workspace change not found: ${changeId}`,
+        );
+      }
+      const change = assertValidStoredWorkspaceChangeRecord(
+        storedChange,
+        {
+          project_id: this.projectId,
+          change_id: changeId,
+          incarnation_baseline_revision:
+            marker.incarnation_baseline_revision,
+          workspace_revision: marker.workspace_revision,
+        },
+      );
+      if (change.reverted_at_workspace_revision !== null) {
+        await completion;
+        return {
+          workspace_revision: marker.workspace_revision,
+          revert_outcome: "already_reverted",
+          reverted_at_workspace_revision:
+            change.reverted_at_workspace_revision,
+          change,
+        };
+      }
+      if (change.applied_workspace_revision === null) {
+        throw new VfsError(
+          "conflict",
+          `Workspace change has no safe path revision: ${changeId}`,
+        );
+      }
+
+      const fileStore = transaction.objectStore(databaseStores.files);
+      const storedFile = (await requestResult(
+        fileStore.get([this.projectId, change.path]),
+      )) as FileRecord | undefined;
+      const pathRevision =
+        storedFile === undefined
+          ? null
+          : assertValidStoredPathRevision(
+              storedFile.path_revision,
+              marker.workspace_revision,
+              change.path,
+            );
+      if (
+        storedFile === undefined ||
+        storedFile.project_id !== this.projectId ||
+        storedFile.path !== change.path ||
+        typeof storedFile.content !== "string" ||
+        storedFile.content !== change.after_content ||
+        pathRevision !== change.applied_workspace_revision
+      ) {
+        throw new VfsError(
+          "conflict",
+          `Workspace path changed after receipt was created: ${change.path}`,
+        );
+      }
+
+      const workspaceRevision = incrementWorkspaceRevision(
+        marker.workspace_revision,
+      );
+      if (change.change_kind === "created") {
+        fileStore.delete([this.projectId, change.path]);
+      } else {
+        const beforeContent = change.before_content;
+        if (beforeContent === null) {
+          throw new VfsError(
+            "conflict",
+            `Workspace change cannot be safely reverted: ${changeId}`,
+          );
+        }
+        fileStore.put({
+          project_id: this.projectId,
+          path: change.path,
+          content: beforeContent,
+          path_revision: workspaceRevision,
+        } satisfies FileRecord);
+      }
+      const revertedChange = {
+        ...storedChange,
+        applied_workspace_revision:
+          change.applied_workspace_revision,
+        reverted_at_workspace_revision: workspaceRevision,
+      } satisfies WorkspaceChangeStorageRecord;
+      changeStore.put(revertedChange);
+      transaction
+        .objectStore(databaseStores.project_filesystems)
+        .put({
+          ...marker,
+          workspace_revision: workspaceRevision,
+        } satisfies ProjectFileSystemRecord);
+      await completion;
+      return {
+        workspace_revision: workspaceRevision,
+        revert_outcome: "applied",
+        reverted_at_workspace_revision: workspaceRevision,
+        change: assertValidStoredWorkspaceChangeRecord(
+          revertedChange,
+          {
+            project_id: this.projectId,
+            change_id: changeId,
+            incarnation_baseline_revision:
+              marker.incarnation_baseline_revision,
+            workspace_revision: workspaceRevision,
+          },
+        ),
       };
     } catch (error) {
       return abortTransaction(transaction, completion, error);
@@ -788,41 +984,6 @@ function readIncarnationId(
     record.incarnation_id.length > 0
     ? record.incarnation_id
     : null;
-}
-
-function toWorkspaceChangeRecord(
-  record: WorkspaceChangeStorageRecord,
-): WorkspaceChangeRecord {
-  const toolCallBlockId =
-    typeof record.tool_call_block_id === "string" &&
-    record.tool_call_block_id.length > 0
-      ? record.tool_call_block_id
-      : null;
-  const legacyMessageId =
-    toolCallBlockId === null &&
-    typeof record.message_id === "string" &&
-    record.message_id.length > 0
-      ? record.message_id
-      : undefined;
-  return {
-    change_id: record.change_id,
-    session_id: record.session_id,
-    tool_call_block_id: toolCallBlockId,
-    ...(legacyMessageId === undefined
-      ? {}
-      : { legacy_message_id: legacyMessageId }),
-    assistant_message_index: record.assistant_message_index,
-    tool_call_id: record.tool_call_id,
-    tool_name: record.tool_name,
-    created_at: record.created_at,
-    path: record.path,
-    change_kind: record.change_kind,
-    before_content: record.before_content,
-    after_content: record.after_content,
-    additions: record.additions,
-    deletions: record.deletions,
-    byte_size: record.byte_size,
-  };
 }
 
 async function abortTransaction(

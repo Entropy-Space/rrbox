@@ -5,6 +5,7 @@ import {
   defineDurableWorkspaceBackendConformance,
   defineWorkspaceBackendConformance,
 } from "@researchbox/vfs-testkit";
+import { WorkspaceCorruptionError } from "@researchbox/vfs";
 import { capturePortableWorkspace } from "@researchbox/workspace-archive/snapshot";
 import {
   IndexedDbWorkspaceBackend,
@@ -279,6 +280,7 @@ test("IndexedDB atomically persists file writes and workspace change receipts", 
   const reopened = await reopenedProvider.open("project-1");
   assert.deepEqual(await reopened.read("/notes.txt"), {
     workspace_revision: 2,
+    path_revision: 2,
     content: "alpha\ngamma\n",
   });
   assert.deepEqual(
@@ -328,6 +330,188 @@ test("IndexedDB atomically persists file writes and workspace change receipts", 
     changes: [],
   });
   reopenedDatabase.close();
+});
+
+test("IndexedDB reverts fail closed on corrupt persisted state", async (t) => {
+  const cases = [
+    {
+      name: "invalid change kind",
+      corrupts_receipt: true,
+      corrupt({ change }) {
+        change.change_kind = "removed";
+      },
+    },
+    {
+      name: "future applied revision",
+      corrupts_receipt: true,
+      corrupt({ change, marker }) {
+        change.applied_workspace_revision =
+          marker.workspace_revision + 1;
+      },
+    },
+    {
+      name: "malformed receipt content",
+      corrupts_receipt: true,
+      corrupt({ change }) {
+        change.after_content = 42;
+      },
+    },
+    {
+      name: "non-canonical receipt path",
+      corrupts_receipt: true,
+      corrupt({ change }) {
+        change.path = "notes.txt";
+      },
+    },
+    {
+      name: "future file path revision",
+      corrupt({ file, marker }) {
+        file.path_revision = marker.workspace_revision + 1;
+      },
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      const factory = new IDBFactory();
+      const database = new ResearchBoxDatabase(
+        factory,
+        `researchbox-corrupt-revert-${crypto.randomUUID()}`,
+      );
+      const backend = new IndexedDbWorkspaceBackend(database, {
+        "/notes.txt": "before",
+      });
+      const workspace = await backend.create("project-1");
+      await workspace.write("/notes.txt", "after", {
+        change: workspaceChangeMetadata(
+          "corrupt-revert",
+          "write_file",
+        ),
+      });
+
+      const connection = await database.open();
+      const damage = connection.transaction(
+        ["project_filesystems", "files", "file_changes"],
+        "readwrite",
+      );
+      const completion = transactionComplete(damage);
+      const [marker, file, change] = await Promise.all([
+        requestValue(
+          damage
+            .objectStore("project_filesystems")
+            .get("project-1"),
+        ),
+        requestValue(
+          damage
+            .objectStore("files")
+            .get(["project-1", "/notes.txt"]),
+        ),
+        requestValue(
+          damage
+            .objectStore("file_changes")
+            .get(["project-1", "corrupt-revert"]),
+        ),
+      ]);
+      testCase.corrupt({ marker, file, change });
+      damage.objectStore("files").put(file);
+      damage.objectStore("file_changes").put(change);
+      await completion;
+
+      if (testCase.corrupts_receipt) {
+        await assert.rejects(
+          workspace.getChange("corrupt-revert"),
+          (error) => error instanceof WorkspaceCorruptionError,
+        );
+        await assert.rejects(
+          workspace.listChanges(),
+          (error) => error instanceof WorkspaceCorruptionError,
+        );
+      }
+      await assert.rejects(
+        workspace.revertChange("corrupt-revert"),
+        (error) => error instanceof WorkspaceCorruptionError,
+      );
+      const current = await workspace.read("/notes.txt");
+      assert.equal(current.workspace_revision, 1);
+      assert.equal(current.content, "after");
+      const verification = connection.transaction(
+        "file_changes",
+        "readonly",
+      );
+      const verificationComplete = transactionComplete(verification);
+      const currentChange = await requestValue(
+        verification
+          .objectStore("file_changes")
+          .get(["project-1", "corrupt-revert"]),
+      );
+      await verificationComplete;
+      assert.equal(
+        currentChange.reverted_at_workspace_revision,
+        null,
+      );
+      database.close();
+    });
+  }
+});
+
+test("IndexedDB rejects receipts forged at a replacement incarnation baseline", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-baseline-forgery-${crypto.randomUUID()}`,
+  );
+  const backend = new IndexedDbWorkspaceBackend(database, {});
+  await backend.create("project-1");
+  await backend.delete("project-1");
+  const workspace = await backend.create("project-1", {
+    initial_files: [{ path: "/notes.txt", content: "after" }],
+  });
+  await workspace.write("/receipt-source.txt", "source", {
+    change: workspaceChangeMetadata(
+      "baseline-forgery",
+      "write_file",
+    ),
+  });
+
+  const connection = await database.open();
+  const damage = connection.transaction(
+    ["project_filesystems", "file_changes"],
+    "readwrite",
+  );
+  const completion = transactionComplete(damage);
+  const marker = await requestValue(
+    damage.objectStore("project_filesystems").get("project-1"),
+  );
+  const change = await requestValue(
+    damage
+      .objectStore("file_changes")
+      .get(["project-1", "baseline-forgery"]),
+  );
+  Object.assign(change, {
+    path: "/notes.txt",
+    change_kind: "updated",
+    before_content: "before",
+    after_content: "after",
+    additions: 1,
+    deletions: 1,
+    byte_size: 5,
+    applied_workspace_revision:
+      marker.incarnation_baseline_revision,
+  });
+  damage.objectStore("file_changes").put(change);
+  await completion;
+
+  assert.equal(marker.incarnation_baseline_revision, 1);
+  await assert.rejects(
+    workspace.revertChange("baseline-forgery"),
+    (error) => error instanceof WorkspaceCorruptionError,
+  );
+  assert.deepEqual(await workspace.read("/notes.txt"), {
+    workspace_revision: 2,
+    path_revision: 1,
+    content: "after",
+  });
+  database.close();
 });
 
 test("concurrent IndexedDB compare-and-swap writes allow one winner", async () => {
@@ -749,6 +933,7 @@ test("IndexedDB v2 filesystem markers gain stable incarnation ids", async () => 
   const filesystem = await provider.open("legacy-project");
   assert.deepEqual(await filesystem.read("/legacy.txt"), {
     workspace_revision: 0,
+    path_revision: 0,
     content: "legacy",
   });
 
@@ -777,6 +962,7 @@ test("IndexedDB v2 filesystem markers gain stable incarnation ids", async () => 
   });
   assert.deepEqual(await filesystem.read("/legacy.txt"), {
     workspace_revision: 1,
+    path_revision: 1,
     content: "updated",
   });
   database.close();
@@ -837,6 +1023,20 @@ test("IndexedDB v3 workspace markers gain durable revision metadata", async () =
     workspace_revision: 4,
     entries: [],
   });
+  const legacyChange = await workspace.getChange("later-change");
+  assert.equal(
+    legacyChange.change.applied_workspace_revision,
+    null,
+  );
+  assert.equal(
+    legacyChange.change.reverted_at_workspace_revision,
+    null,
+  );
+  await assert.rejects(
+    workspace.revertChange("later-change"),
+    (error) => error?.code === "conflict",
+  );
+  assert.equal((await workspace.list("/")).workspace_revision, 4);
 
   const connection = await database.open();
   const verification = connection.transaction(
@@ -851,6 +1051,7 @@ test("IndexedDB v3 workspace markers gain durable revision metadata", async () =
   assert.deepEqual(marker, {
     project_id: "legacy-project",
     incarnation_id: "stable-incarnation",
+    incarnation_baseline_revision: 4,
     workspace_revision: 4,
     last_change_at: "2026-07-24T00:00:00.010Z",
     lifecycle_status: "active",
@@ -905,7 +1106,7 @@ test("IndexedDB v4 workspace markers gain explicit content storage state", async
 
   const database = new ResearchBoxDatabase(factory, databaseName);
   const connection = await database.open();
-  assert.equal(connection.version, 5);
+  assert.equal(connection.version, 6);
   assert.equal(connection.objectStoreNames.contains("opfs_files"), true);
   const verification = connection.transaction(
     ["project_filesystems", "opfs_files"],
@@ -925,6 +1126,7 @@ test("IndexedDB v4 workspace markers gain explicit content storage state", async
     {
       project_id: "active-project",
       incarnation_id: "active-incarnation",
+      incarnation_baseline_revision: 2,
       workspace_revision: 2,
       last_change_at: null,
       lifecycle_status: "active",
@@ -940,6 +1142,7 @@ test("IndexedDB v4 workspace markers gain explicit content storage state", async
     {
       project_id: "deleted-project",
       incarnation_id: "deleted-incarnation",
+      incarnation_baseline_revision: 7,
       workspace_revision: 7,
       last_change_at: null,
       lifecycle_status: "deleted",
@@ -1119,10 +1322,12 @@ test("current IndexedDB markers lazily repair revision metadata", async () => {
   const repairedHandle = await provider.open("project-1");
   assert.deepEqual(await repairedHandle.read("/notes.txt"), {
     workspace_revision: 1,
+    path_revision: 1,
     content: "persisted",
   });
   assert.deepEqual(await originalHandle.read("/notes.txt"), {
     workspace_revision: 1,
+    path_revision: 1,
     content: "persisted",
   });
 
@@ -1138,6 +1343,7 @@ test("current IndexedDB markers lazily repair revision metadata", async () => {
   assert.deepEqual(repairedMarker, {
     project_id: "project-1",
     incarnation_id: originalMarker.incarnation_id,
+    incarnation_baseline_revision: 0,
     workspace_revision: 1,
     last_change_at: expectedTimestamp,
     lifecycle_status: "active",
@@ -1145,6 +1351,64 @@ test("current IndexedDB markers lazily repair revision metadata", async () => {
     opfs_storage_id: null,
     opfs_migration: null,
   });
+  database.close();
+});
+
+test("IndexedDB marker repair preserves a consumed receipt revision", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-revert-revision-repair-${crypto.randomUUID()}`,
+  );
+  const provider = new IndexedDbWorkspaceBackend(database, {
+    "/notes.txt": "before",
+  });
+  const originalHandle = await provider.create("project-1");
+  await originalHandle.write("/notes.txt", "after", {
+    change: workspaceChangeMetadata(
+      "repaired-revert",
+      "write_file",
+    ),
+  });
+  await originalHandle.revertChange("repaired-revert");
+
+  const connection = await database.open();
+  const readMarker = connection.transaction(
+    "project_filesystems",
+    "readonly",
+  );
+  const readMarkerComplete = transactionComplete(readMarker);
+  const originalMarker = await requestValue(
+    readMarker.objectStore("project_filesystems").get("project-1"),
+  );
+  await readMarkerComplete;
+
+  const damage = connection.transaction(
+    "project_filesystems",
+    "readwrite",
+  );
+  const damageComplete = transactionComplete(damage);
+  damage.objectStore("project_filesystems").put({
+    project_id: "project-1",
+    incarnation_id: originalMarker.incarnation_id,
+  });
+  await damageComplete;
+
+  const repaired = await provider.open("project-1");
+  assert.deepEqual(await repaired.read("/notes.txt"), {
+    workspace_revision: 2,
+    path_revision: 2,
+    content: "before",
+  });
+  const receipt = await repaired.getChange("repaired-revert");
+  assert.equal(receipt.workspace_revision, 2);
+  assert.equal(
+    receipt.change.reverted_at_workspace_revision,
+    2,
+  );
+  const replay = await repaired.revertChange("repaired-revert");
+  assert.equal(replay.workspace_revision, 2);
+  assert.equal(replay.revert_outcome, "already_reverted");
   database.close();
 });
 
@@ -1227,6 +1491,7 @@ test("current IndexedDB markers missing incarnation ids are repaired lazily", as
   const repairedHandle = await provider.open("project-1");
   assert.deepEqual(await repairedHandle.read("/notes.txt"), {
     workspace_revision: 0,
+    path_revision: 1,
     content: "persisted",
   });
   await assert.rejects(
@@ -1267,7 +1532,7 @@ test("a blocked IndexedDB upgrade can be retried without leaking its late connec
 
   legacyDatabase.close();
   const connection = await database.open();
-  assert.equal(connection.version, 5);
+  assert.equal(connection.version, 6);
 
   database.close();
   await Promise.resolve();

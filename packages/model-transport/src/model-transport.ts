@@ -1,6 +1,7 @@
 export type ModelToolName =
   | "list_files"
   | "read_file"
+  | "search_files"
   | "write_file"
   | "replace_text";
 
@@ -14,6 +15,10 @@ export type ModelToolCall =
   | ModelToolCallEnvelope<
       "list_files" | "read_file",
       { path: string }
+    >
+  | ModelToolCallEnvelope<
+      "search_files",
+      { path: string; query: string }
     >
   | ModelToolCallEnvelope<
       "write_file",
@@ -509,6 +514,15 @@ export function parseModelToolCall(value: unknown): ModelToolCall {
         tool_name: toolName,
         arguments: { path },
       };
+    case "search_files":
+      return {
+        tool_call_id: toolCallId,
+        tool_name: toolName,
+        arguments: {
+          path,
+          query: requireString(value.arguments, "query"),
+        },
+      };
     case "write_file":
       return {
         tool_call_id: toolCallId,
@@ -557,6 +571,7 @@ export function isModelToolName(value: unknown): value is ModelToolName {
   return (
     value === "list_files" ||
     value === "read_file" ||
+    value === "search_files" ||
     value === "write_file" ||
     value === "replace_text"
   );

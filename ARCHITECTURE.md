@@ -48,7 +48,7 @@ Correlated change-read events expose the durable before/after receipt plus the
 current file state. A revert event distinguishes a newly applied revert from an
 idempotent replay. Together these prevent late work from replacing a newer
 project, chat, draft, or file-navigation result. The core and LLM workers use a
-separate protocol-v4
+separate protocol-v5
 JSON contract so provider discovery, full conversation requests, provider I/O,
 cancellation, and future credentials stay outside the agent runtime. The viewer
 never imports Pi,
@@ -134,6 +134,12 @@ timeline is the viewer state and maps back into the currently supported
 text-only user and tool-result Pi surface. Projects persist their virtual
 new-chat draft and model selection; durable sessions persist their own model
 selection.
+
+`search_files` is a read-only, case-sensitive literal search over a coherent
+workspace snapshot. It accepts either a file or directory scope and returns
+deterministically ordered, bounded line matches with Unicode-aware positions.
+Because it is implemented against the portable workspace contract in
+TypeScript, it does not depend on a shell or host Bun process.
 
 `write_file` and exact-match `replace_text` use compare-and-swap VFS writes.
 For inline projects, IndexedDB commits the file and an undo-ready before/after

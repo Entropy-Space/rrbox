@@ -31,6 +31,7 @@ import {
   finalizeAssistantEntry,
   timelineToAgentMessages,
 } from "./session-codec.ts";
+import { searchWorkspaceText } from "./workspace-search.ts";
 import { repairUnansweredToolCalls } from "./tool-transcript.ts";
 import { WorkspaceController } from "./workspace-controller.ts";
 
@@ -579,6 +580,42 @@ export class SessionRuntime {
       },
     };
 
+    const searchParameters = Type.Object({
+      path: Type.String({ description: "Absolute file or directory path" }),
+      query: Type.String({
+        minLength: 1,
+        description: "Case-sensitive, single-line literal text to find",
+      }),
+    });
+    const searchFiles: AgentTool<
+      typeof searchParameters,
+      { summary: string }
+    > = {
+      name: "search_files",
+      label: "Search files",
+      description:
+        "Search workspace text files for a literal query, returning bounded line matches.",
+      parameters: searchParameters,
+      execute: async (_toolCallId, params, signal) => {
+        const result = await searchWorkspaceText(
+          this.workspace,
+          params,
+          signal,
+        );
+        const matchLabel = result.matches.length === 1 ? "match" : "matches";
+        const fileLabel = result.files_scanned === 1 ? "file" : "files";
+        return {
+          content: [{ type: "text", text: JSON.stringify(result) }],
+          details: {
+            summary:
+              `${result.matches.length} ${matchLabel} in ` +
+              `${result.files_scanned} ${fileLabel}` +
+              (result.truncated ? " (truncated)" : ""),
+          },
+        };
+      },
+    };
+
     const readFile: AgentTool<typeof pathParameters, { summary: string }> = {
       name: "read_file",
       label: "Read file",
@@ -669,7 +706,7 @@ export class SessionRuntime {
       },
     };
 
-    return [listFiles, readFile, writeFile, replaceText];
+    return [listFiles, searchFiles, readFile, writeFile, replaceText];
   }
 
   private appendTimelineEntry(
@@ -1238,6 +1275,8 @@ function toolLabel(toolName: string, args: unknown): string {
   switch (toolName) {
     case "read_file":
       return `Reading ${path}`;
+    case "search_files":
+      return `Searching ${path}`;
     case "write_file":
       return `Writing ${path}`;
     case "replace_text":

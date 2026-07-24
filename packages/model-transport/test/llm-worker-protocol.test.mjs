@@ -99,6 +99,42 @@ test("round-trips exact mutation arguments through the LLM worker protocol", () 
   assert.deepEqual(parseLlmWorkerEvent(argumentsEvent), argumentsEvent);
 });
 
+test("round-trips exact search arguments through the LLM worker protocol", () => {
+  const searchCall = {
+    tool_call_id: "search-1",
+    tool_name: "search_files",
+    arguments: {
+      path: "/src",
+      query: "ModelToolName",
+    },
+  };
+  const command = createLlmStreamStart("stream-search", {
+    ...modelRequest,
+    messages: [
+      { role: "user", content: "Find the model tool type." },
+      {
+        role: "assistant",
+        content_blocks: [{ type: "tool_call", ...searchCall }],
+      },
+      {
+        role: "tool",
+        tool_call_id: "search-1",
+        tool_name: "search_files",
+        content: "/src/model-transport.ts:1:export type ModelToolName",
+        is_error: false,
+      },
+    ],
+  });
+  const event = createLlmStreamEvent("stream-search", {
+    type: "tool_call_end",
+    content_index: 0,
+    tool_call: searchCall,
+  });
+
+  assert.deepEqual(parseLlmWorkerCommand(command), command);
+  assert.deepEqual(parseLlmWorkerEvent(event), event);
+});
+
 test("rejects malformed nested model events", () => {
   assert.throws(
     () =>
@@ -120,7 +156,7 @@ test("rejects malformed nested model events", () => {
 });
 
 test("keeps the LLM protocol version independent and validated", () => {
-  assert.equal(LLM_WORKER_PROTOCOL_VERSION, 4);
+  assert.equal(LLM_WORKER_PROTOCOL_VERSION, 5);
   assert.throws(
     () =>
       parseLlmWorkerCommand({

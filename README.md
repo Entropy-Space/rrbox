@@ -18,8 +18,9 @@ remote hosts.
 - Streaming mock-model service with a real tool-result continuation loop
 - One canonical, ordered timeline that preserves reasoning, assistant text,
   tool calls, tool results, and multi-turn continuations exactly as they stream
-- Project-isolated IndexedDB virtual filesystems with `list_files`, `read_file`,
-  `write_file`, and exact-match `replace_text` tools
+- Project-isolated IndexedDB virtual filesystems with `list_files`, bounded
+  literal `search_files`, `read_file`, `write_file`, and exact-match
+  `replace_text` tools
 - Atomic file-change receipts with line statistics, live workspace refresh, and
   reload recovery when a write commits before its transcript checkpoint
 - Exact before/after change review with a bounded unified diff and a confirmed,
@@ -138,6 +139,11 @@ same atomic read or mutation; revisions include unjournaled writes and removals
 and therefore are not derived from change-receipt count. Recreating a deleted
 project id continues its sequence through a durable tombstone instead of
 resetting cached content to an apparently older revision.
+
+`search_files` captures one coherent workspace revision, searches a file or
+directory in deterministic path order, and returns bounded line previews with
+Unicode-aware positions. It is a portable TypeScript tool and requires neither
+a host shell nor Bun, so the same contract can run entirely in a browser.
 
 Archive export uses each browser backend's revision-stable bulk snapshot
 capability, avoiding recursive listings and repeated full-project reads. On

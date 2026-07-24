@@ -56,6 +56,22 @@ type MockTextResponse = {
   deltas?: string[];
 };
 
+type MockSearchMatch = {
+  path: string;
+  line_number: number;
+  column_number: number;
+  preview: string;
+};
+
+type MockSearchResult = {
+  workspace_revision: number;
+  path: string;
+  query: string;
+  matches: MockSearchMatch[];
+  files_scanned: number;
+  truncated: boolean;
+};
+
 export async function handleMockModelRequest(
   request: Request,
 ): Promise<Response> {
@@ -127,6 +143,7 @@ function createMockResponse(request: ModelRequest): ModelStreamEvent[] {
   const shouldCreateNote =
     normalizedPrompt.includes("create") &&
     normalizedPrompt.includes("note");
+  const searchQuery = workspaceSearchQuery(prompt);
   const shouldInspectFiles = ["file", "workspace", "readme", "project"].some(
     (term) => normalizedPrompt.includes(term),
   );
@@ -164,6 +181,29 @@ function createMockResponse(request: ModelRequest): ModelStreamEvent[] {
     ];
   }
 
+  if (searchQuery !== null && toolResults.length === 0) {
+    const toolCall: ModelToolCall = {
+      tool_call_id: crypto.randomUUID(),
+      tool_name: "search_files",
+      arguments: {
+        path: "/",
+        query: searchQuery,
+      },
+    };
+    return [
+      ...reasoningEvents(
+        "A literal workspace search will locate the requested text before I summarize it.",
+        0,
+      ),
+      ...textEvents(
+        `I’ll search the workspace for ${JSON.stringify(searchQuery)}.`,
+        1,
+      ),
+      ...toolCallEvents(toolCall, 2),
+      { type: "done", stop_reason: "tool_use" },
+    ];
+  }
+
   if (shouldInspectFiles && toolResults.length === 0) {
     const toolCall: ModelToolCall = normalizedPrompt.includes("readme")
       ? {
@@ -187,11 +227,12 @@ function createMockResponse(request: ModelRequest): ModelStreamEvent[] {
     ];
   }
 
-  const response: MockTextResponse = shouldCreateNote || shouldInspectFiles
-    ? responseFromToolResult(toolResults[0])
-    : {
-        text: "This prototype is running through a versioned JSON boundary. The viewer only renders events; the agent core owns the conversation and tools inside a Web Worker. That gives us a clean path from today’s mock model to Pi without coupling the interface to either one.",
-      };
+  const response: MockTextResponse =
+    shouldCreateNote || searchQuery !== null || shouldInspectFiles
+      ? responseFromToolResult(toolResults[0])
+      : {
+          text: "This prototype is running through a versioned JSON boundary. The viewer only renders events; the agent core owns the conversation and tools inside a Web Worker. That gives us a clean path from today’s mock model to Pi without coupling the interface to either one.",
+        };
 
   return [
     ...reasoningEvents(
@@ -296,9 +337,135 @@ function responseFromToolResult(
       text: "I read the project README. It confirms the intended architecture: a versioned viewer protocol, a worker-hosted agent core, and storage behind a virtual filesystem interface. The next useful step is an OPFS adapter so this workspace persists across browser sessions without changing the agent tools.",
     };
   }
+  if (result.tool_name === "search_files") {
+    const searchResult = parseSearchResult(result.content);
+    if (!searchResult) {
+      return {
+        text: "The search tool completed, but its result was not valid search-result JSON, so I can’t safely summarize any matches.",
+      };
+    }
+    return {
+      text: summarizeSearchResult(searchResult),
+    };
+  }
   return {
     text: "I inspected the browser workspace and found the README, notes, and source directories. The separation between the viewer, worker-hosted core, and virtual filesystem is already visible. The next useful step is an OPFS adapter so the same files survive refreshes without changing any agent tools.",
   };
+}
+
+function workspaceSearchQuery(prompt: string): string | null {
+  const requestsSearch = /\b(?:find|search)\b/i.test(prompt);
+  const namesWorkspace = /\b(?:files?|project|workspace)\b/i.test(prompt);
+  if (!requestsSearch || !namesWorkspace) return null;
+
+  const quotedQuery = prompt.match(/["“]([^"\n”]+)["”]/u)?.[1];
+  return quotedQuery?.trim() ? quotedQuery : null;
+}
+
+function parseSearchResult(content: string): MockSearchResult | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(content);
+  } catch {
+    return null;
+  }
+  if (!isRecord(value)) return null;
+  if (
+    !isNonNegativeSafeInteger(value.workspace_revision) ||
+    typeof value.path !== "string" ||
+    value.path.length === 0 ||
+    typeof value.query !== "string" ||
+    value.query.length === 0 ||
+    /[\r\n\u2028\u2029]/u.test(value.query) ||
+    !Array.isArray(value.matches) ||
+    !isNonNegativeSafeInteger(value.files_scanned) ||
+    typeof value.truncated !== "boolean"
+  ) {
+    return null;
+  }
+
+  const matches: MockSearchMatch[] = [];
+  for (const match of value.matches) {
+    if (
+      !isRecord(match) ||
+      typeof match.path !== "string" ||
+      match.path.length === 0 ||
+      !isPositiveSafeInteger(match.line_number) ||
+      !isPositiveSafeInteger(match.column_number) ||
+      typeof match.preview !== "string"
+    ) {
+      return null;
+    }
+    matches.push({
+      path: match.path,
+      line_number: match.line_number,
+      column_number: match.column_number,
+      preview: match.preview,
+    });
+  }
+
+  return {
+    workspace_revision: value.workspace_revision,
+    path: value.path,
+    query: value.query,
+    matches,
+    files_scanned: value.files_scanned,
+    truncated: value.truncated,
+  };
+}
+
+function summarizeSearchResult(result: MockSearchResult): string {
+  const matchCount = result.matches.length;
+  const summary = [
+    `The search returned ${matchCount} matching ${
+      matchCount === 1 ? "line" : "lines"
+    } for ${JSON.stringify(result.query)} under ${JSON.stringify(
+      result.path,
+    )} across ${result.files_scanned} scanned ${
+      result.files_scanned === 1 ? "file" : "files"
+    } at workspace revision ${result.workspace_revision}.`,
+  ];
+  const displayedMatches = result.matches.slice(0, 5);
+  if (displayedMatches.length > 0) {
+    summary.push(
+      "",
+      ...displayedMatches.map(
+        (match) =>
+          `- ${JSON.stringify(
+            `${match.path}:${match.line_number}:${match.column_number}`,
+          )} — ${JSON.stringify(match.preview)}`,
+      ),
+    );
+  }
+  if (result.matches.length > displayedMatches.length) {
+    summary.push(
+      "",
+      `${result.matches.length - displayedMatches.length} additional returned ${
+        result.matches.length - displayedMatches.length === 1
+          ? "match is"
+          : "matches are"
+      } omitted from this summary.`,
+    );
+  }
+  if (result.truncated) {
+    summary.push(
+      "",
+      "The bounded result was truncated, so more matching lines may exist.",
+    );
+  }
+  return summary.join("\n");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 1;
 }
 
 function errorResponse(error: string): Response {

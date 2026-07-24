@@ -206,6 +206,15 @@ test("parses each model tool with its exact discriminated arguments", () => {
       arguments: { path: "/README.md" },
     },
     {
+      tool_call_id: "search-1",
+      tool_name: "search_files",
+      arguments: {
+        path: "/src",
+        query: "ModelToolName",
+        ignored: "not forwarded",
+      },
+    },
+    {
       tool_call_id: "write-1",
       tool_name: "write_file",
       arguments: { path: "/notes.md", content: multilineContent },
@@ -228,12 +237,18 @@ test("parses each model tool with its exact discriminated arguments", () => {
       arguments: { path: "/src" },
     },
     calls[1],
-    calls[2],
+    {
+      tool_call_id: "search-1",
+      tool_name: "search_files",
+      arguments: { path: "/src", query: "ModelToolName" },
+    },
     calls[3],
+    calls[4],
   ]);
   for (const name of [
     "list_files",
     "read_file",
+    "search_files",
     "write_file",
     "replace_text",
   ]) {
@@ -243,6 +258,24 @@ test("parses each model tool with its exact discriminated arguments", () => {
 });
 
 test("validates tool arguments according to the tool name", () => {
+  assert.throws(
+    () =>
+      parseModelToolCall({
+        tool_call_id: "search-1",
+        tool_name: "search_files",
+        arguments: { path: "/src" },
+      }),
+    /query must be a string/,
+  );
+  assert.throws(
+    () =>
+      parseModelToolCall({
+        tool_call_id: "search-1",
+        tool_name: "search_files",
+        arguments: { path: "/src", query: "" },
+      }),
+    /query must be a string/,
+  );
   assert.throws(
     () =>
       parseModelToolCall({

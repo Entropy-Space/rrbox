@@ -1027,6 +1027,98 @@ test("timeline preserves reasoning, text, tool, result, and final text order acr
   );
 });
 
+test("search_files returns bounded structured matches through the agent loop", async () => {
+  const store = new MemoryProjectStore();
+  const workspace = new MemoryFileSystem({
+    "/README.md": "A browser-native workspace.\nUse versioned JSON.",
+    "/notes/design.md": "Viewer and core use versioned JSON messages.",
+    "/src/agent.ts": "export const runtime = 'browser';",
+  });
+  const provider = new MemoryWorkspaceBackend(() => workspace);
+  const events = [];
+  const requests = [];
+  const core = createCore(store, provider, events, {
+    async *stream(request) {
+      requests.push(structuredClone(request));
+      if (requests.length === 1) {
+        yield* toolCallEvents(
+          {
+            tool_call_id: "search-workspace",
+            tool_name: "search_files",
+            arguments: { path: "/", query: "versioned JSON" },
+          },
+          0,
+        );
+        yield { type: "done", stop_reason: "tool_use" };
+        return;
+      }
+      yield* textEvents("The search found two matching lines.");
+      yield { type: "done", stop_reason: "stop" };
+    },
+  });
+
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await core.handle(
+    createCommand("prompt", {
+      project_id: initial.active_project_id,
+      session_id: null,
+      text: "Search the workspace",
+    }),
+  );
+
+  assert.equal(requests.length, 2);
+  const searchDefinition = requests[0].tools.find(
+    (tool) => tool.name === "search_files",
+  );
+  assert.deepEqual(searchDefinition?.parameters.required, ["path", "query"]);
+  const toolMessage = requests[1].messages.find(
+    (message) =>
+      message.role === "tool" && message.tool_name === "search_files",
+  );
+  assert.ok(toolMessage);
+  const result = JSON.parse(toolMessage.content);
+  assert.deepEqual(result, {
+    workspace_revision: 0,
+    path: "/",
+    query: "versioned JSON",
+    matches: [
+      {
+        path: "/README.md",
+        line_number: 2,
+        column_number: 5,
+        preview: "Use versioned JSON.",
+      },
+      {
+        path: "/notes/design.md",
+        line_number: 1,
+        column_number: 21,
+        preview: "Viewer and core use versioned JSON messages.",
+      },
+    ],
+    files_scanned: 3,
+    truncated: false,
+  });
+
+  const timeline = (await store.load()).documents[0].timeline;
+  const toolCall = timeline
+    .filter((entry) => entry.type === "assistant_message")
+    .flatMap((entry) => entry.blocks)
+    .find(
+      (block) =>
+        block.type === "tool_call" &&
+        block.tool_call_id === "search-workspace",
+    );
+  assert.equal(toolCall?.label, "Searching /");
+  const toolResult = timeline.find(
+    (entry) =>
+      entry.type === "tool_result" &&
+      entry.tool_call_id === "search-workspace",
+  );
+  assert.equal(toolResult?.summary, "2 matches in 3 files");
+  assert.equal(toolResult?.is_error, false);
+});
+
 test("overlapping tool calls keep start order and block identities when ends interleave", async () => {
   const store = new MemoryProjectStore();
   const provider = createWorkspaceProvider();
@@ -3134,7 +3226,13 @@ function promptFromRequest(request) {
   assert.equal(request.system_prompt, "You are a test agent.");
   assert.deepEqual(
     request.tools.map((tool) => tool.name),
-    ["list_files", "read_file", "write_file", "replace_text"],
+    [
+      "list_files",
+      "search_files",
+      "read_file",
+      "write_file",
+      "replace_text",
+    ],
   );
   const message = [...request.messages]
     .reverse()

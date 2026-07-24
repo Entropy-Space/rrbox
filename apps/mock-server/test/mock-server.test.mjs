@@ -31,6 +31,143 @@ test("streams reasoning, text, then a tool call for workspace inspection", async
   );
 });
 
+test("routes a quoted literal search before generic workspace inspection", async () => {
+  const response = await handleMockModelRequest(
+    createRequest(
+      createModelRequest('Search the workspace for "Versioned JSON".'),
+    ),
+  );
+  const events = await readEvents(response);
+
+  assertToolTurnLifecycle(events);
+  assert.match(blockText(events, "reasoning"), /literal workspace search/i);
+  assert.match(
+    blockText(events, "text"),
+    /search the workspace for "Versioned JSON"/i,
+  );
+  const toolCall = events.find((event) => event.type === "tool_call_end")
+    ?.tool_call;
+  assert.deepEqual(
+    {
+      tool_name: toolCall?.tool_name,
+      arguments: toolCall?.arguments,
+    },
+    {
+      tool_name: "search_files",
+      arguments: {
+        path: "/",
+        query: "Versioned JSON",
+      },
+    },
+  );
+});
+
+test("continues a workspace search from the returned matches", async () => {
+  const request = createModelRequest(
+    'Search the workspace for "versioned JSON".',
+  );
+  request.messages.push(
+    {
+      role: "assistant",
+      content_blocks: [
+        {
+          type: "tool_call",
+          tool_call_id: "search-workspace",
+          tool_name: "search_files",
+          arguments: {
+            path: "/",
+            query: "versioned JSON",
+          },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: "search-workspace",
+      tool_name: "search_files",
+      content: JSON.stringify({
+        workspace_revision: 7,
+        path: "/",
+        query: "versioned JSON",
+        matches: [
+          {
+            path: "/README.md",
+            line_number: 12,
+            column_number: 9,
+            preview: "The boundary uses versioned JSON messages.",
+          },
+          {
+            path: "/notes/agent-note.md",
+            line_number: 8,
+            column_number: 32,
+            preview: "- Viewer and core communicate through versioned JSON.",
+          },
+        ],
+        files_scanned: 4,
+        truncated: true,
+      }),
+      is_error: false,
+    },
+  );
+
+  const response = await handleMockModelRequest(createRequest(request));
+  const events = await readEvents(response);
+  assert.deepEqual(nonDeltaLifecycle(events), [
+    { type: "reasoning_start", content_index: 0 },
+    { type: "reasoning_end", content_index: 0 },
+    { type: "text_start", content_index: 1 },
+    { type: "text_end", content_index: 1 },
+    { type: "done" },
+  ]);
+  const text = blockText(events, "text");
+  assert.match(text, /2 matching lines/);
+  assert.match(text, /"versioned JSON"/);
+  assert.match(text, /4 scanned files/);
+  assert.match(text, /workspace revision 7/);
+  assert.match(text, /"\/README\.md:12:9"/);
+  assert.match(text, /boundary uses versioned JSON messages/);
+  assert.match(text, /"\/notes\/agent-note\.md:8:32"/);
+  assert.match(text, /bounded result was truncated/i);
+});
+
+test("does not invent matches from a malformed search result", async () => {
+  const request = createModelRequest(
+    'Search the workspace for "versioned JSON".',
+  );
+  request.messages.push(
+    {
+      role: "assistant",
+      content_blocks: [
+        {
+          type: "tool_call",
+          tool_call_id: "search-workspace",
+          tool_name: "search_files",
+          arguments: {
+            path: "/",
+            query: "versioned JSON",
+          },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: "search-workspace",
+      tool_name: "search_files",
+      content: JSON.stringify({
+        query: "versioned JSON",
+        matches: [{ path: "/invented.md" }],
+      }),
+      is_error: false,
+    },
+  );
+
+  const response = await handleMockModelRequest(createRequest(request));
+  const events = await readEvents(response);
+  const text = blockText(events, "text");
+  assert.match(text, /not valid search-result JSON/i);
+  assert.doesNotMatch(text, /invented\.md/);
+});
+
 test("creates a workspace note and continues from the write result", async () => {
   const firstResponse = await handleMockModelRequest(
     createRequest(createModelRequest("Create a workspace note")),
@@ -186,6 +323,18 @@ function createModelRequest(prompt) {
           type: "object",
           properties: { path: { type: "string" } },
           required: ["path"],
+        },
+      },
+      {
+        name: "search_files",
+        description: "Search workspace files for a literal text query.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string" },
+            query: { type: "string" },
+          },
+          required: ["path", "query"],
         },
       },
       {

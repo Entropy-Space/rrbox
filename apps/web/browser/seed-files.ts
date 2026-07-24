@@ -24,6 +24,6 @@ export const researchBoxSeedFiles: Record<string, string> = {
     "};",
   ].join("\n"),
   "/src/tools.ts": [
-    'export const tools = ["list_files", "read_file", "write_file", "replace_text"];',
+    'export const tools = ["list_files", "search_files", "read_file", "write_file", "replace_text"];',
   ].join("\n"),
 };

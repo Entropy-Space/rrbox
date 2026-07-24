@@ -19,6 +19,7 @@ import {
   Paperclip,
   Plus,
   RotateCcw,
+  Search,
   SlidersHorizontal,
   Sparkles,
   ThumbsDown,
@@ -88,9 +89,9 @@ const suggestions = [
     prompt: "Read the README and suggest the next implementation step.",
   },
   {
-    icon: Sparkles,
-    label: "Explain the architecture",
-    prompt: "Explain how the core and viewer communicate in this prototype.",
+    icon: Search,
+    label: "Search the workspace",
+    prompt: 'Search the workspace for "versioned JSON".',
   },
 ];
 

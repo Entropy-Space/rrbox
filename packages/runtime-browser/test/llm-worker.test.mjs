@@ -114,6 +114,77 @@ test("multiplexes LLM worker streams without cross-talk", async () => {
   transport.close();
 });
 
+test("round-trips search_files through the LLM worker boundary", async () => {
+  const { host, worker } = createWorkerPair();
+  const searchCall = {
+    tool_call_id: "search-1",
+    tool_name: "search_files",
+    arguments: {
+      path: "/src",
+      query: "ModelToolName",
+    },
+  };
+  const searchRequest = {
+    ...request("find the model tool type"),
+    tools: [
+      {
+        name: "search_files",
+        description: "Search text files in the workspace.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string" },
+            query: { type: "string" },
+          },
+          required: ["path", "query"],
+        },
+      },
+    ],
+  };
+  let receivedRequest;
+  attachLlmWorkerHost(host, {
+    async *stream(modelRequest) {
+      receivedRequest = modelRequest;
+      yield { type: "tool_call_start", content_index: 0 };
+      yield {
+        type: "tool_call_delta",
+        content_index: 0,
+        tool_call_id_delta: searchCall.tool_call_id,
+        tool_name_delta: searchCall.tool_name,
+        arguments_delta: JSON.stringify(searchCall.arguments),
+      };
+      yield {
+        type: "tool_call_end",
+        content_index: 0,
+        tool_call: searchCall,
+      };
+      yield { type: "done", stop_reason: "tool_use" };
+    },
+  });
+  const transport = new WorkerModelTransport(worker);
+
+  const events = await collect(transport, searchRequest);
+
+  assert.deepEqual(receivedRequest, searchRequest);
+  assert.deepEqual(events, [
+    { type: "tool_call_start", content_index: 0 },
+    {
+      type: "tool_call_delta",
+      content_index: 0,
+      tool_call_id_delta: "search-1",
+      tool_name_delta: "search_files",
+      arguments_delta: '{"path":"/src","query":"ModelToolName"}',
+    },
+    {
+      type: "tool_call_end",
+      content_index: 0,
+      tool_call: searchCall,
+    },
+    { type: "done", stop_reason: "tool_use" },
+  ]);
+  transport.close();
+});
+
 test("correlates model discovery results by request and provider", async () => {
   const { worker, emitMessage, commands } = createDetachedWorker();
   const transport = new WorkerModelTransport(worker);

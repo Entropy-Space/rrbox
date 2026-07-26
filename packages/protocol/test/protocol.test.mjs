@@ -11,6 +11,10 @@ import {
 test("round-trips every protocol-v11 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
+    createCommand("bootstrap", {
+      active_project_id: "p1",
+      active_session_id: null,
+    }),
     createCommand("project_create", { name: "Docs" }),
     createCommand("project_import", {
       name: "Imported docs",
@@ -991,6 +995,16 @@ test("validates provider inventories and active ownership", () => {
 });
 
 test("rejects older protocol versions and missing nullable session scope", () => {
+  assert.throws(
+    () =>
+      parseViewerCommand({
+        protocol_version: PROTOCOL_VERSION,
+        request_id: "request-invalid-bootstrap",
+        type: "bootstrap",
+        payload: { active_session_id: null },
+      }),
+    /requires active_project_id/,
+  );
   assert.throws(
     () =>
       parseViewerCommand({

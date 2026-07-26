@@ -150,18 +150,11 @@ export function assertProjectStoreInvariants(state: ProjectStoreState): void {
 
   const activeProject = projects.get(state.active_project_id);
   if (!activeProject) throw new Error("Active project does not exist.");
-  if (state.active_session_id === null) {
-    if (activeProject.last_session_id !== null) {
-      throw new Error("Active new chat must be the active project's last view.");
-    }
-  } else {
+  if (state.active_session_id !== null) {
     const activeSession = sessions.get(state.active_session_id);
     if (!activeSession) throw new Error("Active session does not exist.");
     if (activeSession.project_id !== activeProject.project_id) {
       throw new Error("Active session does not belong to the active project.");
-    }
-    if (activeProject.last_session_id !== activeSession.session_id) {
-      throw new Error("Active session must be the active project's last session.");
     }
   }
 

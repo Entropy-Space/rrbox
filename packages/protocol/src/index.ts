@@ -201,6 +201,11 @@ export type CoreStateSnapshot = {
   is_running: boolean;
 };
 
+export type BootstrapSelection = {
+  active_project_id?: string;
+  active_session_id?: string | null;
+};
+
 type CommandEnvelope<TType extends string, TPayload extends object> = {
   protocol_version: typeof PROTOCOL_VERSION;
   request_id: string;
@@ -209,7 +214,7 @@ type CommandEnvelope<TType extends string, TPayload extends object> = {
 };
 
 export type ViewerCommand =
-  | CommandEnvelope<"bootstrap", Record<string, never>>
+  | CommandEnvelope<"bootstrap", BootstrapSelection>
   | CommandEnvelope<"project_create", { name: string }>
   | CommandEnvelope<
       "project_import",
@@ -426,8 +431,32 @@ export function parseViewerCommand(value: unknown): ViewerCommand {
 
   const payload = value.payload;
   switch (value.type) {
-    case "bootstrap":
-      return commandEnvelope("bootstrap", requestId, {});
+    case "bootstrap": {
+      assertAllowedKeys(
+        payload,
+        ["active_project_id", "active_session_id"],
+        "bootstrap payload",
+      );
+      const activeProjectId = optionalString(payload, "active_project_id");
+      const hasActiveSession = "active_session_id" in payload;
+      if (activeProjectId === undefined && hasActiveSession) {
+        throw new Error(
+          "bootstrap active_session_id requires active_project_id.",
+        );
+      }
+      const activeSessionId =
+        payload.active_session_id === null
+          ? null
+          : optionalString(payload, "active_session_id");
+      return commandEnvelope("bootstrap", requestId, {
+        ...(activeProjectId === undefined
+          ? {}
+          : { active_project_id: activeProjectId }),
+        ...(hasActiveSession
+          ? { active_session_id: activeSessionId ?? null }
+          : {}),
+      });
+    }
     case "project_create":
       return commandEnvelope("project_create", requestId, {
         name: requireString(payload, "name"),
@@ -1736,6 +1765,18 @@ function assertExactKeys(
   throw new Error(
     `${label} must contain exactly: ${expected.join(", ")}.`,
   );
+}
+
+function assertAllowedKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  label: string,
+): void {
+  const unexpected = Object.keys(value).find(
+    (key) => !allowed.includes(key),
+  );
+  if (unexpected === undefined) return;
+  throw new Error(`${label} contains an unexpected field: ${unexpected}.`);
 }
 
 function requireBoolean(

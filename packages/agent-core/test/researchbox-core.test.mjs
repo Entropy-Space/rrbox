@@ -416,7 +416,12 @@ test("model selection is chat-scoped and survives first send and reload", async 
 
   const reloadedEvents = [];
   const reloaded = createConfiguredCore((event) => reloadedEvents.push(event));
-  await reloaded.handle(createCommand("bootstrap", {}));
+  await reloaded.handle(
+    createCommand("bootstrap", {
+      active_project_id: projectId,
+      active_session_id: null,
+    }),
+  );
   assert.deepEqual(latestState(reloadedEvents).active_model, {
     provider_id: localModel.provider,
     model_id: localModel.id,
@@ -2907,6 +2912,49 @@ test("projects keep isolated filesystems without requiring a session", async () 
   assert.equal(replacement.sessions.length, 0);
 });
 
+test("project selection remains local across cores sharing one store", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const seedEvents = [];
+  const seedCore = createCore(store, provider, seedEvents);
+  await seedCore.handle(createCommand("bootstrap", {}));
+  const firstProjectId = latestState(seedEvents).active_project_id;
+  await seedCore.handle(createCommand("project_create", { name: "Second" }));
+  const secondProjectId = latestState(seedEvents).active_project_id;
+  const persistedBeforeSelection = await store.load();
+
+  const firstEvents = [];
+  const secondEvents = [];
+  const firstCore = createCore(store, provider, firstEvents);
+  const secondCore = createCore(store, provider, secondEvents);
+  await firstCore.handle(
+    createCommand("bootstrap", {
+      active_project_id: firstProjectId,
+      active_session_id: null,
+    }),
+  );
+  await secondCore.handle(
+    createCommand("bootstrap", {
+      active_project_id: secondProjectId,
+      active_session_id: null,
+    }),
+  );
+
+  assert.equal(latestState(firstEvents).active_project_id, firstProjectId);
+  assert.equal(latestState(secondEvents).active_project_id, secondProjectId);
+  await firstCore.handle(
+    createCommand("project_select", { project_id: secondProjectId }),
+  );
+  assert.equal(latestState(firstEvents).active_project_id, secondProjectId);
+  assert.equal(latestState(secondEvents).active_project_id, secondProjectId);
+  await firstCore.handle(
+    createCommand("project_select", { project_id: firstProjectId }),
+  );
+  assert.equal(latestState(firstEvents).active_project_id, firstProjectId);
+  assert.equal(latestState(secondEvents).active_project_id, secondProjectId);
+  assert.deepEqual(await store.load(), persistedBeforeSelection);
+});
+
 test("imports a validated workspace as a revision-zero project", async () => {
   const store = new MemoryProjectStore();
   const provider = createWorkspaceProvider();
@@ -3075,11 +3123,15 @@ test("rolls back an imported workspace when project persistence fails", async ()
     rolledBackProjectId = projectId;
     return remove(projectId);
   };
-  const save = store.save.bind(store);
-  store.save = async (state, expectedRevision) => {
-    if (state.projects.length > 1) throw new Error("Disk full");
-    return save(state, expectedRevision);
-  };
+  const mutate = store.mutate.bind(store);
+  store.mutate = (mutation) =>
+    mutate((draft) => {
+      const result = mutation(draft);
+      if (result && result.projects.length > 1) {
+        throw new Error("Disk full");
+      }
+      return result;
+    });
 
   await assert.rejects(
     core.handle(
@@ -3434,11 +3486,15 @@ test("a failed first-session commit never starts transport or creates a session"
   });
   await core.handle(createCommand("bootstrap", {}));
   const state = latestState(events);
-  const save = store.save.bind(store);
-  store.save = async (next, expectedRevision) => {
-    if (next.sessions.length > 0) throw new Error("Disk full");
-    await save(next, expectedRevision);
-  };
+  const mutate = store.mutate.bind(store);
+  store.mutate = (mutation) =>
+    mutate((draft) => {
+      const result = mutation(draft);
+      if (result && result.sessions.length > 0) {
+        throw new Error("Disk full");
+      }
+      return result;
+    });
 
   await core.handle(
     createCommand("prompt", {

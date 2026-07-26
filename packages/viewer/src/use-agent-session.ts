@@ -2,6 +2,7 @@ import {
   createCommand,
   parseCoreEvent,
   type AssistantBlock,
+  type BootstrapSelection,
   type CoreEvent,
   type CoreLifecyclePhase,
   type CoreStateSnapshot,
@@ -25,6 +26,8 @@ import {
   WorkspaceTransferRequests,
   type WorkspaceExportSnapshot,
 } from "./workspace-transfer.ts";
+
+const SESSION_SELECTION_STORAGE_KEY = "researchbox:session-selection:v1";
 
 export type AgentSessionState = {
   state_revision: number;
@@ -382,6 +385,9 @@ export function useAgentSession(createWorker: () => Worker) {
         ) {
           dispatch(event);
         }
+        if (event.type === "state_snapshot") {
+          saveSessionSelection(event.payload.state);
+        }
         if (
           event.request_id === pendingManagementRequestRef.current &&
           (event.type === "state_snapshot" || event.type === "error")
@@ -422,7 +428,9 @@ export function useAgentSession(createWorker: () => Worker) {
     worker.onerror = () => {
       failWorker("The browser core stopped. Refresh to try again.");
     };
-    worker.postMessage(createCommand("bootstrap", {}));
+    worker.postMessage(
+      createCommand("bootstrap", loadSessionSelection()),
+    );
 
     return () => {
       workspaceTransferRequestsRef.current?.rejectAll(
@@ -798,6 +806,49 @@ export function useAgentSession(createWorker: () => Worker) {
     openFile,
     navigateToParent,
   };
+}
+
+function loadSessionSelection(): BootstrapSelection {
+  try {
+    const serialized = window.sessionStorage.getItem(
+      SESSION_SELECTION_STORAGE_KEY,
+    );
+    if (serialized === null) return {};
+    const value: unknown = JSON.parse(serialized);
+    if (typeof value !== "object" || value === null) return {};
+    const selection = value as Record<string, unknown>;
+    if (
+      typeof selection.active_project_id !== "string" ||
+      selection.active_project_id.length === 0 ||
+      !(
+        selection.active_session_id === null ||
+        (typeof selection.active_session_id === "string" &&
+          selection.active_session_id.length > 0)
+      )
+    ) {
+      return {};
+    }
+    return {
+      active_project_id: selection.active_project_id,
+      active_session_id: selection.active_session_id,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function saveSessionSelection(state: CoreStateSnapshot): void {
+  try {
+    window.sessionStorage.setItem(
+      SESSION_SELECTION_STORAGE_KEY,
+      JSON.stringify({
+        active_project_id: state.active_project_id,
+        active_session_id: state.active_session_id,
+      } satisfies Required<BootstrapSelection>),
+    );
+  } catch {
+    // Session storage is optional in restricted or ephemeral browser contexts.
+  }
 }
 
 function requestWorkspaceChange(

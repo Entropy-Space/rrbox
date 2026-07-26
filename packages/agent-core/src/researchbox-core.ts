@@ -3,7 +3,6 @@ import type { ModelTransport } from "@researchbox/model-transport";
 import {
   PROJECT_STORE_SCHEMA_VERSION,
   SESSION_DOCUMENT_FORMAT_VERSION,
-  assertProjectStoreInvariants,
   cloneProjectStoreState,
   type ProjectRecord,
   type ProjectStore,
@@ -100,6 +99,10 @@ export class ResearchBoxCore {
   private readonly eventSink: CoreEventSink;
   private readonly workspaceTransferOptions: WorkspaceArchiveOptions | undefined;
   private readonly workspaces = new Map<string, WorkspaceController>();
+  private readonly selectedSessionByProject = new Map<
+    string,
+    string | null
+  >();
   private state: ProjectStoreState | null = null;
   private workspace: WorkspaceController | null = null;
   private runtime: SessionRuntime | null = null;
@@ -115,6 +118,13 @@ export class ResearchBoxCore {
   private hasEmittedWorkspaceChangeQuarantineStatus = false;
   private emittedWorkspaceChangeQuarantineSignature: string | null = null;
   private providerRefreshObserverStarted = false;
+  private submittedDraft:
+    | {
+        project_id: string;
+        session_id: string;
+        input_draft: string;
+      }
+    | null = null;
 
   constructor(options: ResearchBoxCoreOptions) {
     this.projectStore = options.projectStore;
@@ -176,6 +186,7 @@ export class ResearchBoxCore {
     switch (command.type) {
       case "bootstrap":
         await this.mutationTail;
+        await this.restoreBootstrapSelection(command.payload);
         this.emit("ready", { state: await this.createCoreState() }, command.request_id);
         this.emitWorkspaceChangeQuarantineStatus();
         this.startProviderRefreshes();
@@ -232,6 +243,7 @@ export class ResearchBoxCore {
     );
     if (loaded) {
       this.state = loaded;
+      this.initializeLocalSelection(loaded);
       const workspaceChangeReconciliation =
         await reconcileWorkspaceChanges(
           loaded,
@@ -262,6 +274,7 @@ export class ResearchBoxCore {
         throw error;
       }
       this.state = state;
+      this.initializeLocalSelection(state);
     }
     this.ensurePersistedModelsRegistered();
     await this.activateSelection();
@@ -404,23 +417,40 @@ export class ResearchBoxCore {
       }
 
       if (command.payload.session_id === null) {
-        const draft = cloneProjectStoreState(this.requireState());
+        const currentProject = this.requireProject(
+          command.payload.project_id,
+        );
+        const submittedDraft = currentProject.new_chat_draft;
         const created = createSessionRecord(
           command.payload.project_id,
           deriveSessionTitle(promptText),
           false,
-          findProject(draft, command.payload.project_id).new_chat_model,
+          currentProject.new_chat_model,
         );
         const staged = stagePrompt(created.document, promptText);
-        draft.sessions.push(created.session);
-        draft.documents.push(created.document);
-        const project = findProject(draft, command.payload.project_id);
-        project.last_session_id = created.session.session_id;
-        project.new_chat_draft = "";
-        project.updated_at = created.session.updated_at;
-        draft.active_session_id = created.session.session_id;
         try {
-          await this.commitDraft(draft);
+          await this.commitMutation(
+            (draft) => {
+              draft.sessions.push(created.session);
+              draft.documents.push(created.document);
+              const project = findProject(
+                draft,
+                command.payload.project_id,
+              );
+              project.last_session_id = created.session.session_id;
+              if (project.new_chat_draft === submittedDraft) {
+                project.new_chat_draft = "";
+              }
+              project.updated_at = created.session.updated_at;
+              draft.active_project_id = command.payload.project_id;
+              draft.active_session_id = created.session.session_id;
+              return draft;
+            },
+            {
+              project_id: command.payload.project_id,
+              session_id: created.session.session_id,
+            },
+          );
         } catch (error) {
           this.emitError(
             "persistence_failed",
@@ -439,12 +469,24 @@ export class ResearchBoxCore {
         return;
       }
 
+      this.submittedDraft = {
+        project_id: command.payload.project_id,
+        session_id: command.payload.session_id,
+        input_draft: this.requireDocument(
+          command.payload.session_id,
+        ).input_draft,
+      };
       runPromise = this.requireRuntime().startPrompt(
         promptText,
         command.request_id,
       );
     });
-    if (runPromise) await runPromise;
+    if (!runPromise) return;
+    try {
+      await runPromise;
+    } finally {
+      this.submittedDraft = null;
+    }
   }
 
   private async abort(
@@ -515,14 +557,10 @@ export class ResearchBoxCore {
   ): Promise<void> {
     await this.stopActiveRun();
 
-    const draft = cloneProjectStoreState(this.requireState());
     const project = createProjectRecord(
       normalizedName,
       this.defaultModelSelection,
     );
-    draft.projects.push(project);
-    draft.active_project_id = project.project_id;
-    draft.active_session_id = null;
 
     const createdWorkspace = await this.workspaceBackend.create(
       project.project_id,
@@ -540,7 +578,18 @@ export class ResearchBoxCore {
         files: mapEntries(initialListing.entries),
         workspace_revision: initialListing.workspace_revision,
       };
-      await this.commitDraft(draft);
+      await this.commitMutation(
+        (draft) => {
+          draft.projects.push(project);
+          draft.active_project_id = project.project_id;
+          draft.active_session_id = null;
+          return draft;
+        },
+        {
+          project_id: project.project_id,
+          session_id: null,
+        },
+      );
     } catch (error) {
       await this.workspaceBackend
         .delete(project.project_id)
@@ -565,11 +614,12 @@ export class ResearchBoxCore {
     if (!project || !normalizedName) return;
     if (!this.ensureManagementIdle(requestId)) return;
     await this.stopActiveRun();
-    const draft = cloneProjectStoreState(this.requireState());
-    const draftProject = findProject(draft, projectId);
-    draftProject.name = normalizedName;
-    draftProject.updated_at = new Date().toISOString();
-    await this.commitDraft(draft);
+    await this.commitMutation((draft) => {
+      const draftProject = findProject(draft, projectId);
+      draftProject.name = normalizedName;
+      draftProject.updated_at = new Date().toISOString();
+      return draft;
+    });
     await this.emitStateSnapshot(requestId);
   }
 
@@ -580,42 +630,46 @@ export class ResearchBoxCore {
     if (!this.getProject(projectId, requestId)) return;
     if (!this.ensureManagementIdle(requestId)) return;
     await this.stopActiveRun();
-    const previousState = this.requireState();
-    const draft = cloneProjectStoreState(previousState);
-    const activeChanged = draft.active_project_id === projectId;
-    const sessionIds = new Set(
-      draft.sessions
-        .filter((session) => session.project_id === projectId)
-        .map((session) => session.session_id),
-    );
-    draft.projects = draft.projects.filter(
-      (project) => project.project_id !== projectId,
-    );
-    draft.sessions = draft.sessions.filter(
-      (session) => session.project_id !== projectId,
-    );
-    draft.documents = draft.documents.filter(
-      (document) => !sessionIds.has(document.session_id),
-    );
+    const activeChanged =
+      this.requireState().active_project_id === projectId;
 
+    let replacementProject: ProjectRecord | null = null;
     let replacementProjectId: string | null = null;
-    if (draft.projects.length === 0) {
-      const replacement = createProjectRecord(
+    if (this.requireState().projects.length === 1) {
+      replacementProject = createProjectRecord(
         "Local workspace",
         this.defaultModelSelection,
       );
-      draft.projects.push(replacement);
-      replacementProjectId = replacement.project_id;
-      await this.workspaceBackend.create(replacement.project_id);
-    }
-    if (activeChanged) {
-      const nextProject = newestProject(draft.projects);
-      draft.active_project_id = nextProject.project_id;
-      draft.active_session_id = nextProject.last_session_id;
+      replacementProjectId = replacementProject.project_id;
+      await this.workspaceBackend.create(replacementProject.project_id);
     }
 
     try {
-      await this.commitDraft(draft);
+      await this.commitMutation((draft) => {
+        const sessionIds = new Set(
+          draft.sessions
+            .filter((session) => session.project_id === projectId)
+            .map((session) => session.session_id),
+        );
+        draft.projects = draft.projects.filter(
+          (project) => project.project_id !== projectId,
+        );
+        draft.sessions = draft.sessions.filter(
+          (session) => session.project_id !== projectId,
+        );
+        draft.documents = draft.documents.filter(
+          (document) => !sessionIds.has(document.session_id),
+        );
+        if (draft.projects.length === 0) {
+          if (!replacementProject) {
+            throw new Error(
+              "Deleting the final project requires a replacement.",
+            );
+          }
+          draft.projects.push(replacementProject);
+        }
+        return draft;
+      });
     } catch (error) {
       if (replacementProjectId) {
         await this.workspaceBackend
@@ -663,10 +717,11 @@ export class ResearchBoxCore {
     }
     if (!this.ensureManagementIdle(requestId)) return;
     await this.stopActiveRun();
-    const draft = cloneProjectStoreState(this.requireState());
-    draft.active_project_id = projectId;
-    draft.active_session_id = findProject(draft, projectId).last_session_id;
-    await this.commitDraft(draft);
+    this.setLocalSelection(
+      projectId,
+      this.selectedSessionByProject.get(projectId) ??
+        project.last_session_id,
+    );
     await this.activateSelection();
     await this.emitStateSnapshot(requestId);
   }
@@ -687,12 +742,7 @@ export class ResearchBoxCore {
     if (!this.ensureManagementIdle(requestId)) return;
     await this.stopActiveRun();
 
-    const draft = cloneProjectStoreState(state);
-    const project = findProject(draft, projectId);
-    project.last_session_id = null;
-    draft.active_project_id = projectId;
-    draft.active_session_id = null;
-    await this.commitDraft(draft);
+    this.setLocalSelection(projectId, null);
     await this.activateSelection();
     await this.emitStateSnapshot(requestId);
   }
@@ -735,18 +785,19 @@ export class ResearchBoxCore {
       return;
     }
 
-    const draft = cloneProjectStoreState(this.requireState());
     const now = new Date().toISOString();
-    const project = findProject(draft, payload.project_id);
-    if (payload.session_id === null) {
-      project.new_chat_model = selection;
-    } else {
-      const session = findSession(draft, payload.session_id);
-      session.selected_model = selection;
-      session.updated_at = now;
-    }
-    project.updated_at = now;
-    await this.commitDraft(draft);
+    await this.commitMutation((draft) => {
+      const project = findProject(draft, payload.project_id);
+      if (payload.session_id === null) {
+        project.new_chat_model = selection;
+      } else {
+        const session = findSession(draft, payload.session_id);
+        session.selected_model = selection;
+        session.updated_at = now;
+      }
+      project.updated_at = now;
+      return draft;
+    });
     await this.activateSelection();
     await this.emitStateSnapshot(requestId);
   }
@@ -778,20 +829,17 @@ export class ResearchBoxCore {
       return;
     }
 
+    const requestedSelection = {
+      project_id: state.active_project_id,
+      session_id: state.active_session_id,
+    };
     try {
       const commit = await this.projectStore.saveInputDraft({
         project_id: projectId,
         session_id: sessionId,
         input_draft: inputDraft,
       });
-      this.state = commit.state;
-      if (
-        sessionId !== null &&
-        this.runtime?.project_id === projectId &&
-        this.runtime.session_id === sessionId
-      ) {
-        this.runtime.bindDocument(this.requireDocument(sessionId));
-      }
+      this.installCommittedState(commit.state, requestedSelection);
     } catch (error) {
       this.emitError(
         "persistence_failed",
@@ -825,13 +873,14 @@ export class ResearchBoxCore {
     if (!normalizedTitle) return;
     if (!this.ensureManagementIdle(requestId)) return;
     await this.stopActiveRun();
-    const draft = cloneProjectStoreState(this.requireState());
-    const session = findSession(draft, sessionId);
-    session.title = normalizedTitle;
-    session.title_is_custom = true;
-    session.updated_at = new Date().toISOString();
-    findProject(draft, projectId).updated_at = session.updated_at;
-    await this.commitDraft(draft);
+    await this.commitMutation((draft) => {
+      const session = findSession(draft, sessionId);
+      session.title = normalizedTitle;
+      session.title_is_custom = true;
+      session.updated_at = new Date().toISOString();
+      findProject(draft, projectId).updated_at = session.updated_at;
+      return draft;
+    });
     await this.emitStateSnapshot(requestId);
   }
 
@@ -844,26 +893,26 @@ export class ResearchBoxCore {
     if (!this.ensureManagementIdle(requestId)) return;
     await this.stopActiveRun();
     const state = this.requireState();
-    const draft = cloneProjectStoreState(state);
-    const activeChanged = draft.active_session_id === sessionId;
-    draft.sessions = draft.sessions.filter(
-      (session) => session.session_id !== sessionId,
-    );
-    draft.documents = draft.documents.filter(
-      (document) => document.session_id !== sessionId,
-    );
-    const projectSessions = draft.sessions.filter(
-      (session) => session.project_id === projectId,
-    );
-    const replacement =
-      projectSessions.length === 0 ? null : newestSession(projectSessions);
-    const project = findProject(draft, projectId);
-    if (project.last_session_id === sessionId) {
-      project.last_session_id = replacement?.session_id ?? null;
-    }
-    project.updated_at = new Date().toISOString();
-    if (activeChanged) draft.active_session_id = replacement?.session_id ?? null;
-    await this.commitDraft(draft);
+    const activeChanged = state.active_session_id === sessionId;
+    await this.commitMutation((draft) => {
+      draft.sessions = draft.sessions.filter(
+        (session) => session.session_id !== sessionId,
+      );
+      draft.documents = draft.documents.filter(
+        (document) => document.session_id !== sessionId,
+      );
+      const projectSessions = draft.sessions.filter(
+        (session) => session.project_id === projectId,
+      );
+      const replacement =
+        projectSessions.length === 0 ? null : newestSession(projectSessions);
+      const project = findProject(draft, projectId);
+      if (project.last_session_id === sessionId) {
+        project.last_session_id = replacement?.session_id ?? null;
+      }
+      project.updated_at = new Date().toISOString();
+      return draft;
+    });
     if (activeChanged) await this.activateSelection();
     await this.emitStateSnapshot(requestId);
   }
@@ -884,13 +933,7 @@ export class ResearchBoxCore {
     }
     if (!this.ensureManagementIdle(requestId)) return;
     await this.stopActiveRun();
-    const draft = cloneProjectStoreState(state);
-    draft.active_project_id = projectId;
-    draft.active_session_id = sessionId;
-    const project = findProject(draft, projectId);
-    project.last_session_id = sessionId;
-    project.updated_at = new Date().toISOString();
-    await this.commitDraft(draft);
+    this.setLocalSelection(projectId, sessionId);
     await this.activateSelection();
     await this.emitStateSnapshot(requestId);
   }
@@ -1039,65 +1082,161 @@ export class ResearchBoxCore {
       throw new Error("The running session is no longer active.");
     }
 
-    const expectedRevision = state.state_revision;
-    const persisted = cloneProjectStoreState(state);
-    const session = findSession(persisted, sessionId);
-    const document = findDocument(persisted, sessionId);
+    const runtimeDocument = structuredClone(
+      findDocument(state, sessionId),
+    );
+    const requestedSelection = {
+      project_id: state.active_project_id,
+      session_id: state.active_session_id,
+    };
+    const submittedDraft = this.submittedDraft;
     const now = new Date().toISOString();
-    if (
-      phase === "staged" &&
-      !session.title_is_custom &&
-      document.timeline.filter((entry) => entry.type === "user_message")
-        .length === 1
-    ) {
-      const firstUserMessage = document.timeline.find(
-        (entry) => entry.type === "user_message",
-      );
-      if (firstUserMessage) {
-        session.title = deriveSessionTitle(firstUserMessage.content);
+    const commit = await this.projectStore.mutate((draft) => {
+      const session = findSession(draft, sessionId);
+      const document = findDocument(draft, sessionId);
+      document.timeline = structuredClone(runtimeDocument.timeline);
+      if (
+        phase === "staged" &&
+        submittedDraft?.project_id === projectId &&
+        submittedDraft.session_id === sessionId &&
+        document.input_draft === submittedDraft.input_draft
+      ) {
+        document.input_draft = runtimeDocument.input_draft;
       }
-    }
-    session.updated_at = now;
-    findProject(persisted, projectId).updated_at = now;
-    persisted.state_revision = expectedRevision + 1;
-    assertProjectStoreInvariants(persisted);
-    await this.projectStore.save(persisted, expectedRevision);
-
-    const currentSession = this.requireSession(sessionId);
-    currentSession.title = session.title;
-    currentSession.updated_at = now;
-    this.requireProject(projectId).updated_at = now;
-    state.state_revision = persisted.state_revision;
+      if (
+        phase === "staged" &&
+        !session.title_is_custom &&
+        document.timeline.filter((entry) => entry.type === "user_message")
+          .length === 1
+      ) {
+        const firstUserMessage = document.timeline.find(
+          (entry) => entry.type === "user_message",
+        );
+        if (firstUserMessage) {
+          session.title = deriveSessionTitle(firstUserMessage.content);
+        }
+      }
+      session.updated_at = now;
+      findProject(draft, projectId).updated_at = now;
+      normalizePersistedSelection(draft);
+      return draft;
+    });
+    this.installCommittedState(commit.state, requestedSelection);
   }
 
   private async persistCurrentState(): Promise<void> {
     const state = this.requireState();
-    const expectedRevision = state.state_revision;
-    const persisted = cloneProjectStoreState(state);
-    persisted.state_revision = expectedRevision + 1;
-    assertProjectStoreInvariants(persisted);
-    await this.projectStore.save(persisted, expectedRevision);
-    state.state_revision = persisted.state_revision;
-    this.ensurePersistedModelsRegistered();
+    const snapshot = cloneProjectStoreState(state);
+    await this.commitMutation((draft) => {
+      draft.projects = snapshot.projects;
+      draft.sessions = snapshot.sessions;
+      draft.documents = snapshot.documents;
+      return draft;
+    });
   }
 
-  private async commitDraft(draft: ProjectStoreState): Promise<void> {
+  private async commitMutation(
+    mutation: (
+      draft: ProjectStoreState,
+    ) => ProjectStoreState | null,
+    selection?: {
+      project_id: string;
+      session_id: string | null;
+    },
+  ): Promise<boolean> {
     const current = this.requireState();
-    const expectedRevision = current.state_revision;
-    if (draft.active_session_id !== null) {
-      repairInvalidTranscript(findDocument(draft, draft.active_session_id));
+    const requestedSelection = selection ?? {
+      project_id: current.active_project_id,
+      session_id: current.active_session_id,
+    };
+    const commit = await this.projectStore.mutate((draft) => {
+      const result = mutation(draft);
+      if (result === null) return null;
+      normalizePersistedSelection(result);
+      return result;
+    });
+    this.installCommittedState(commit.state, requestedSelection);
+    return commit.changed;
+  }
+
+  private installCommittedState(
+    committed: ProjectStoreState,
+    requestedSelection: {
+      project_id: string;
+      session_id: string | null;
+    },
+  ): void {
+    const runtime = this.runtime;
+    const runningDocument =
+      runtime?.is_running && this.state
+        ? findDocument(this.state, runtime.session_id)
+        : null;
+    if (
+      runtime &&
+      runningDocument &&
+      isOwnedSession(committed, runtime.project_id, runtime.session_id)
+    ) {
+      const committedDocument = findDocument(
+        committed,
+        runtime.session_id,
+      );
+      runningDocument.input_draft = committedDocument.input_draft;
+      const documentIndex = committed.documents.findIndex(
+        (document) => document.session_id === runtime.session_id,
+      );
+      committed.documents[documentIndex] = runningDocument;
     }
-    draft.state_revision = expectedRevision + 1;
-    assertProjectStoreInvariants(draft);
-    await this.projectStore.save(draft, expectedRevision);
-    const sameRuntime =
-      draft.active_session_id !== null &&
-      this.runtime?.project_id === draft.active_project_id &&
-      this.runtime.session_id === draft.active_session_id;
-    this.state = draft;
+
+    const projectIds = new Set(
+      committed.projects.map((project) => project.project_id),
+    );
+    for (const projectId of this.selectedSessionByProject.keys()) {
+      if (!projectIds.has(projectId)) {
+        this.selectedSessionByProject.delete(projectId);
+      }
+    }
+    for (const project of committed.projects) {
+      const remembered = this.selectedSessionByProject.get(
+        project.project_id,
+      );
+      if (
+        remembered === undefined ||
+        (remembered !== null &&
+          !isOwnedSession(committed, project.project_id, remembered))
+      ) {
+        this.selectedSessionByProject.set(
+          project.project_id,
+          project.last_session_id,
+        );
+      }
+    }
+
+    this.state = committed;
+    const project = committed.projects.find(
+      (candidate) => candidate.project_id === requestedSelection.project_id,
+    ) ?? newestProject(committed.projects);
+    const requestedSessionId = requestedSelection.session_id;
+    const sessionId =
+      requestedSessionId === null ||
+      isOwnedSession(committed, project.project_id, requestedSessionId)
+        ? requestedSessionId
+        : this.selectedSessionByProject.get(project.project_id) ??
+          project.last_session_id;
+    this.setLocalSelection(
+      project.project_id,
+      sessionId !== null &&
+        isOwnedSession(committed, project.project_id, sessionId)
+        ? sessionId
+        : null,
+    );
     this.ensurePersistedModelsRegistered();
-    if (sameRuntime && draft.active_session_id !== null) {
-      this.runtime?.bindDocument(this.requireDocument(draft.active_session_id));
+
+    if (
+      runtime &&
+      !runtime.is_running &&
+      isOwnedSession(committed, runtime.project_id, runtime.session_id)
+    ) {
+      runtime.bindDocument(this.requireDocument(runtime.session_id));
     }
   }
 
@@ -1673,6 +1812,77 @@ export class ResearchBoxCore {
       () => undefined,
     );
     return result;
+  }
+
+  private initializeLocalSelection(state: ProjectStoreState): void {
+    this.selectedSessionByProject.clear();
+    for (const project of state.projects) {
+      this.selectedSessionByProject.set(
+        project.project_id,
+        project.last_session_id,
+      );
+    }
+    this.setLocalSelection(
+      state.active_project_id,
+      state.active_session_id,
+    );
+  }
+
+  private async restoreBootstrapSelection(
+    selection: Extract<
+      ViewerCommand,
+      { type: "bootstrap" }
+    >["payload"],
+  ): Promise<void> {
+    const projectId = selection.active_project_id;
+    if (projectId === undefined) return;
+    const state = this.requireState();
+    const project = state.projects.find(
+      (candidate) => candidate.project_id === projectId,
+    );
+    if (!project) return;
+
+    const requestedSessionId =
+      "active_session_id" in selection
+        ? selection.active_session_id ?? null
+        : this.selectedSessionByProject.get(projectId) ??
+          project.last_session_id;
+    const sessionId =
+      requestedSessionId !== null &&
+      state.sessions.some(
+        (session) =>
+          session.session_id === requestedSessionId &&
+          session.project_id === projectId,
+      )
+        ? requestedSessionId
+        : null;
+    if (
+      state.active_project_id === projectId &&
+      state.active_session_id === sessionId
+    ) {
+      return;
+    }
+    this.setLocalSelection(projectId, sessionId);
+    await this.activateSelection();
+  }
+
+  private setLocalSelection(
+    projectId: string,
+    sessionId: string | null,
+  ): void {
+    const state = this.requireState();
+    const project = findProject(state, projectId);
+    if (sessionId !== null) {
+      const session = findSession(state, sessionId);
+      if (session.project_id !== project.project_id) {
+        throw new Error(
+          `Session ${sessionId} does not belong to project ${projectId}.`,
+        );
+      }
+    }
+    state.active_project_id = projectId;
+    state.active_session_id = sessionId;
+    this.selectedSessionByProject.set(projectId, sessionId);
   }
 
   private requireState(): ProjectStoreState {
@@ -2394,6 +2604,44 @@ function findSession(state: ProjectStoreState, sessionId: string): SessionRecord
   );
   if (!session) throw new Error(`Session not found: ${sessionId}`);
   return session;
+}
+
+function isOwnedSession(
+  state: ProjectStoreState,
+  projectId: string,
+  sessionId: string,
+): boolean {
+  return state.sessions.some(
+    (session) =>
+      session.session_id === sessionId &&
+      session.project_id === projectId,
+  );
+}
+
+function normalizePersistedSelection(state: ProjectStoreState): void {
+  const activeProject = state.projects.find(
+    (project) => project.project_id === state.active_project_id,
+  ) ?? newestProject(state.projects);
+  state.active_project_id = activeProject.project_id;
+  if (
+    state.active_session_id !== null &&
+    isOwnedSession(
+      state,
+      activeProject.project_id,
+      state.active_session_id,
+    )
+  ) {
+    return;
+  }
+  state.active_session_id =
+    activeProject.last_session_id !== null &&
+    isOwnedSession(
+      state,
+      activeProject.project_id,
+      activeProject.last_session_id,
+    )
+      ? activeProject.last_session_id
+      : null;
 }
 
 function newestProject(projects: ProjectRecord[]): ProjectRecord {

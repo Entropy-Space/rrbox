@@ -124,13 +124,16 @@ request for automatic promotion.
 The elected browser core owns one IndexedDB database with `meta`, `projects`,
 `sessions`, `session_documents`, `project_filesystems`, `files`,
 `file_path_tombstones`, `file_changes`, `file_change_quarantines`, and
-`opfs_files` stores. Catalog writes use a monotonic `state_revision` guard.
-Draft-only writes update one project or session document without rewriting the
-catalog; this relies on the origin-wide
-exclusive Web Lock that gives exactly one core write ownership. Session
-documents use format 4 to persist the existing-session input draft and one
-versioned, ordered timeline. Format-3 timelines are upgraded once by deriving a
-legacy file-change tool identity only from their enclosing mutation result.
+`opfs_files` stores. Project-store mutations read the canonical state inside
+one short read-write transaction, apply a synchronous intent, update only
+changed rows, and advance one monotonic `state_revision`. Draft writes use the
+same revision sequence, so a later catalog or transcript commit cannot silently
+replace a newer draft. Active project and session selection is worker-local;
+the viewer restores that tab's cursor through `sessionStorage` in the bootstrap
+command, and navigation does not write shared project state. Session documents
+use format 4 to persist the existing-session input draft and one versioned,
+ordered timeline. Format-3 timelines are upgraded once by deriving a legacy
+file-change tool identity only from their enclosing mutation result.
 Assistant entries own ordered text, reasoning, and tool-call blocks; tool
 results are separate entries linked by internal block identifiers. That timeline
 is the viewer state and maps back into the currently supported text-only user

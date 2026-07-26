@@ -11,6 +11,7 @@ export interface CoreCommandHandler {
     message: string,
     requestId?: string,
   ): void;
+  dispose?(): void | Promise<void>;
 }
 
 export interface WorkerHost {

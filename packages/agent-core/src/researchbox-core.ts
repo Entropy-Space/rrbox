@@ -5,6 +5,7 @@ import {
   SESSION_DOCUMENT_FORMAT_VERSION,
   cloneProjectStoreState,
   type ProjectRecord,
+  type ProjectStoreChange,
   type ProjectStore,
   type ProjectStoreState,
   type SessionDocument,
@@ -118,6 +119,13 @@ export class ResearchBoxCore {
   private hasEmittedWorkspaceChangeQuarantineStatus = false;
   private emittedWorkspaceChangeQuarantineSignature: string | null = null;
   private providerRefreshObserverStarted = false;
+  private readonly unsubscribeProjectStore: () => void;
+  private pendingProjectStoreRevision = 0;
+  private projectStoreRefreshScheduled = false;
+  private selectionActivationPending = false;
+  private hasBootstrapped = false;
+  private disposed = false;
+  private disposal: Promise<void> | null = null;
   private submittedDraft:
     | {
         project_id: string;
@@ -148,9 +156,15 @@ export class ResearchBoxCore {
     this.workspaceTransferOptions = snapshotWorkspaceTransferOptions(
       options.workspaceTransferOptions,
     );
+    this.unsubscribeProjectStore = this.projectStore.subscribe((change) =>
+      this.handleProjectStoreChange(change),
+    );
   }
 
   async handle(command: ViewerCommand): Promise<void> {
+    if (this.disposed) {
+      throw new Error("The ResearchBox core is closed.");
+    }
     if (command.type === "workspace_export_cancel") {
       this.cancelWorkspaceExport(command);
       return;
@@ -169,9 +183,10 @@ export class ResearchBoxCore {
           this.emitWorkspaceExportCanceled(command);
           return;
         }
-        await this.enqueueMutation(() =>
-          this.exportWorkspace(command, captureController),
-        );
+        await this.enqueueMutation(async () => {
+          await this.refreshPersistedState();
+          await this.exportWorkspace(command, captureController);
+        });
       } finally {
         if (
           this.workspaceExportControllers.get(command.request_id) ===
@@ -183,13 +198,23 @@ export class ResearchBoxCore {
       return;
     }
     await this.ensureInitialized();
+    if (this.disposed) {
+      throw new Error("The ResearchBox core is closed.");
+    }
     switch (command.type) {
       case "bootstrap":
-        await this.mutationTail;
-        await this.restoreBootstrapSelection(command.payload);
-        this.emit("ready", { state: await this.createCoreState() }, command.request_id);
-        this.emitWorkspaceChangeQuarantineStatus();
-        this.startProviderRefreshes();
+        await this.enqueueMutation(async () => {
+          await this.refreshPersistedState();
+          if (this.disposed) return;
+          await this.restoreBootstrapSelection(command.payload);
+          if (this.disposed) return;
+          const state = await this.createCoreState();
+          if (this.disposed) return;
+          this.hasBootstrapped = true;
+          this.emit("ready", { state }, command.request_id);
+          this.emitWorkspaceChangeQuarantineStatus();
+          this.startProviderRefreshes();
+        });
         return;
       case "provider_refresh":
         await this.mutationTail;
@@ -205,16 +230,38 @@ export class ResearchBoxCore {
         await this.prompt(command);
         return;
       case "fs_list":
-        await this.mutationTail;
-        await this.listFiles(command);
+        await this.enqueueMutation(async () => {
+          await this.refreshPersistedState();
+          await this.listFiles(command);
+        });
         return;
       case "fs_read":
-        await this.mutationTail;
-        await this.readFile(command);
+        await this.enqueueMutation(async () => {
+          await this.refreshPersistedState();
+          await this.readFile(command);
+        });
         return;
       default:
-        await this.enqueueMutation(() => this.handleMutation(command));
+        await this.enqueueMutation(async () => {
+          if (command.type !== "input_draft_update") {
+            await this.refreshPersistedState();
+          }
+          await this.handleMutation(command);
+        });
     }
+  }
+
+  dispose(): Promise<void> {
+    if (this.disposal) return this.disposal;
+    this.disposed = true;
+    this.unsubscribeProjectStore();
+    for (const controller of this.workspaceExportControllers.values()) {
+      controller.abort();
+    }
+    this.workspaceExportControllers.clear();
+    this.runtime?.abort();
+    this.disposal = this.drainForDisposal();
+    return this.disposal;
   }
 
   reportHostError(
@@ -233,6 +280,138 @@ export class ResearchBoxCore {
       });
     }
     await this.initialization;
+  }
+
+  private handleProjectStoreChange(change: ProjectStoreChange): void {
+    if (this.disposed) return;
+    this.pendingProjectStoreRevision = Math.max(
+      this.pendingProjectStoreRevision,
+      change.state_revision,
+    );
+    this.scheduleProjectStoreRefresh();
+  }
+
+  private scheduleProjectStoreRefresh(): void {
+    if (
+      this.disposed ||
+      this.projectStoreRefreshScheduled ||
+      !this.state ||
+      this.pendingProjectStoreRevision <= this.state.state_revision
+    ) {
+      return;
+    }
+
+    this.projectStoreRefreshScheduled = true;
+    const requestedRevision = this.pendingProjectStoreRevision;
+    void this.enqueueMutation(async () => {
+      if (
+        this.disposed ||
+        this.pendingProjectStoreRevision <=
+          this.requireState().state_revision
+      ) {
+        return;
+      }
+      try {
+        const changed = await this.refreshPersistedState();
+        if (
+          this.pendingProjectStoreRevision === requestedRevision &&
+          this.requireState().state_revision < requestedRevision
+        ) {
+          // Ignore malformed or prematurely published revision hints instead
+          // of repeatedly loading a revision that does not exist.
+          this.pendingProjectStoreRevision =
+            this.requireState().state_revision;
+        }
+        if (
+          changed &&
+          this.hasBootstrapped &&
+          !this.selectionActivationPending
+        ) {
+          await this.emitStateSnapshot();
+        }
+      } catch (error) {
+        if (this.pendingProjectStoreRevision === requestedRevision) {
+          this.pendingProjectStoreRevision =
+            this.requireState().state_revision;
+        }
+        this.emitError(
+          "persistence_refresh_failed",
+          toErrorMessage(
+            error,
+            "Changes from another browser tab could not be loaded.",
+          ),
+        );
+      }
+    }).then(() => {
+      this.projectStoreRefreshScheduled = false;
+      this.scheduleProjectStoreRefresh();
+    });
+  }
+
+  private async drainForDisposal(): Promise<void> {
+    await this.initialization?.catch(() => undefined);
+    while (true) {
+      const admittedMutations = this.mutationTail;
+      await admittedMutations;
+      if (this.mutationTail !== admittedMutations) continue;
+
+      const runtime = this.runtime;
+      if (runtime) await runtime.stopAndWait();
+
+      const finalMutations = this.mutationTail;
+      await finalMutations;
+      if (
+        this.mutationTail !== finalMutations ||
+        this.runtime !== runtime
+      ) {
+        continue;
+      }
+      if (runtime && !runtime.is_running) {
+        runtime.dispose();
+        if (this.runtime === runtime) this.runtime = null;
+      }
+      return;
+    }
+  }
+
+  private async refreshPersistedState(): Promise<boolean> {
+    const current = this.requireState();
+    const loaded = await this.projectStore.load();
+    if (!loaded) {
+      throw new Error("The initialized project store is missing.");
+    }
+    if (loaded.state_revision <= current.state_revision) return false;
+
+    const requestedSelection = {
+      project_id: current.active_project_id,
+      session_id: current.active_session_id,
+    };
+    const previousModel = this.getActiveModelSelection();
+    this.installCommittedState(loaded, requestedSelection);
+
+    const refreshed = this.requireState();
+    const nextModel = this.getActiveModelSelection();
+    const activationRequired =
+      refreshed.active_project_id !== requestedSelection.project_id ||
+      refreshed.active_session_id !== requestedSelection.session_id ||
+      nextModel.provider_id !== previousModel.provider_id ||
+      nextModel.model_id !== previousModel.model_id;
+    if (activationRequired) {
+      if (this.runtime?.is_running) {
+        this.selectionActivationPending = true;
+      } else {
+        await this.activateSelection();
+        this.selectionActivationPending = false;
+      }
+    }
+    return true;
+  }
+
+  private async finishPendingSelectionActivation(): Promise<void> {
+    if (!this.selectionActivationPending || this.runtime?.is_running) return;
+    await this.activateSelection();
+    this.selectionActivationPending = false;
+    if (this.hasBootstrapped) await this.emitStateSnapshot();
   }
 
   private async initialize(): Promise<void> {
@@ -373,6 +552,7 @@ export class ResearchBoxCore {
   ): Promise<void> {
     let runPromise: Promise<void> | null = null;
     await this.enqueueMutation(async () => {
+      await this.refreshPersistedState();
       const promptText = command.payload.text.trim();
       if (!promptText) {
         this.emitError(
@@ -486,6 +666,9 @@ export class ResearchBoxCore {
       await runPromise;
     } finally {
       this.submittedDraft = null;
+      await this.enqueueMutation(() =>
+        this.finishPendingSelectionActivation(),
+      );
     }
   }
 
@@ -1190,6 +1373,9 @@ export class ResearchBoxCore {
     const projectIds = new Set(
       committed.projects.map((project) => project.project_id),
     );
+    for (const projectId of this.workspaces.keys()) {
+      if (!projectIds.has(projectId)) this.workspaces.delete(projectId);
+    }
     for (const projectId of this.selectedSessionByProject.keys()) {
       if (!projectIds.has(projectId)) {
         this.selectedSessionByProject.delete(projectId);
@@ -1466,6 +1652,14 @@ export class ResearchBoxCore {
         },
         changeId,
       );
+      if (result.revert_outcome === "applied") {
+        // Workspace bytes and project state commit independently. Advancing the
+        // project-store revision makes other cores reload the workspace snapshot.
+        await this.commitMutation((draft) => {
+          findProject(draft, projectId);
+          return draft;
+        });
+      }
       this.emitWorkspaceChangeReverted(command, result);
     } catch (error) {
       this.emitWorkspaceChangeError(
@@ -1950,16 +2144,12 @@ export class ResearchBoxCore {
   }
 
   private async refreshWorkspaceChangeQuarantine(): Promise<void> {
-    const reconciliation = await reconcileWorkspaceChanges(
+    const journals = await loadWorkspaceChangeJournals(
       this.requireState(),
       this.workspaceBackend,
     );
-    if (reconciliation.state_changed) {
-      await this.persistCurrentState();
-      await this.emitStateSnapshot();
-    }
     this.workspaceChangeQuarantine =
-      workspaceChangeQuarantineFromReconciliation(reconciliation);
+      workspaceChangeQuarantineFromReconciliation(journals);
     this.emitWorkspaceChangeQuarantineStatus();
   }
 
@@ -2084,25 +2274,11 @@ async function reconcileWorkspaceChanges(
   state: ProjectStoreState,
   workspaceBackend: WorkspaceBackend,
 ): Promise<WorkspaceChangeReconciliation> {
-  const changesByProject = new Map<string, WorkspaceChangeRecord[]>();
-  let quarantinedReceiptCount = 0;
-  let pendingReceiptCount = 0;
-  let affectedProjectCount = 0;
-  for (const project of state.projects) {
-    const workspace = await workspaceBackend.open(project.project_id);
-    const journal = await workspace.listChanges();
-    changesByProject.set(project.project_id, journal.changes);
-    const quarantine = journal.quarantine_status;
-    if (
-      quarantine !== undefined &&
-      quarantine.quarantined_receipt_count > 0
-    ) {
-      quarantinedReceiptCount +=
-        quarantine.quarantined_receipt_count;
-      pendingReceiptCount += quarantine.pending_receipt_count;
-      affectedProjectCount += 1;
-    }
-  }
+  const journals = await loadWorkspaceChangeJournals(
+    state,
+    workspaceBackend,
+  );
+  const changesByProject = journals.changes_by_project;
 
   let reconciled = false;
   for (const document of state.documents) {
@@ -2136,6 +2312,41 @@ async function reconcileWorkspaceChanges(
   }
   return {
     state_changed: reconciled,
+    quarantined_receipt_count: journals.quarantined_receipt_count,
+    pending_receipt_count: journals.pending_receipt_count,
+    affected_project_count: journals.affected_project_count,
+  };
+}
+
+type WorkspaceChangeJournalSnapshot = WorkspaceChangeQuarantineSummary & {
+  changes_by_project: Map<string, WorkspaceChangeRecord[]>;
+};
+
+async function loadWorkspaceChangeJournals(
+  state: ProjectStoreState,
+  workspaceBackend: WorkspaceBackend,
+): Promise<WorkspaceChangeJournalSnapshot> {
+  const changesByProject = new Map<string, WorkspaceChangeRecord[]>();
+  let quarantinedReceiptCount = 0;
+  let pendingReceiptCount = 0;
+  let affectedProjectCount = 0;
+  for (const project of state.projects) {
+    const workspace = await workspaceBackend.open(project.project_id);
+    const journal = await workspace.listChanges();
+    changesByProject.set(project.project_id, journal.changes);
+    const quarantine = journal.quarantine_status;
+    if (
+      quarantine !== undefined &&
+      quarantine.quarantined_receipt_count > 0
+    ) {
+      quarantinedReceiptCount +=
+        quarantine.quarantined_receipt_count;
+      pendingReceiptCount += quarantine.pending_receipt_count;
+      affectedProjectCount += 1;
+    }
+  }
+  return {
+    changes_by_project: changesByProject,
     quarantined_receipt_count: quarantinedReceiptCount,
     pending_receipt_count: pendingReceiptCount,
     affected_project_count: affectedProjectCount,
@@ -2143,7 +2354,7 @@ async function reconcileWorkspaceChanges(
 }
 
 function workspaceChangeQuarantineFromReconciliation(
-  reconciliation: WorkspaceChangeReconciliation,
+  reconciliation: WorkspaceChangeQuarantineSummary,
 ): WorkspaceChangeQuarantineSummary | null {
   if (reconciliation.quarantined_receipt_count === 0) return null;
   return {

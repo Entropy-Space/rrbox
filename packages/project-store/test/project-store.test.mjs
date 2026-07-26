@@ -57,6 +57,41 @@ test("memory project mutations rebase canonical state and own revisions", async 
   );
 });
 
+test("memory project store publishes only committed changes", async () => {
+  const store = new MemoryProjectStore();
+  const changes = [];
+  store.subscribe(() => {
+    throw new Error("A listener must not break persistence.");
+  });
+  const unsubscribe = store.subscribe((change) => changes.push(change));
+
+  await store.save(createState(1), null);
+  await store.mutate(() => null);
+  await assert.rejects(
+    store.save(createState(1), null),
+    ProjectStoreConflictError,
+  );
+  await store.saveInputDraft({
+    project_id: "project-1",
+    session_id: null,
+    input_draft: "Changed draft",
+  });
+
+  assert.deepEqual(
+    changes.map((change) => change.state_revision),
+    [1, 2],
+  );
+  assert.equal(changes[0].source_id, changes[1].source_id);
+  assert.notEqual(changes[0].source_id, "");
+
+  unsubscribe();
+  await store.mutate((draft) => {
+    draft.projects[0].name = "No longer observed";
+    return draft;
+  });
+  assert.equal(changes.length, 2);
+});
+
 test("v4 documents contain only the normalized timeline", () => {
   const state = parseProjectStoreState(createState(1));
   const document = state.documents[0];

@@ -2229,6 +2229,66 @@ test("IndexedDB draft and catalog mutations preserve both writers", async () => 
   secondDatabase.close();
 });
 
+test("IndexedDB project stores publish local and injected-channel changes", async () => {
+  const factory = new IDBFactory();
+  const databaseName = `researchbox-project-changes-${crypto.randomUUID()}`;
+  const firstDatabase = new ResearchBoxDatabase(factory, databaseName);
+  const secondDatabase = new ResearchBoxDatabase(factory, databaseName);
+  const channelHub = createProjectStoreChangeChannelHub();
+  const firstStore = new IndexedDbProjectStore(firstDatabase, {
+    change_channel: channelHub.open(),
+    source_id: "first-store",
+  });
+  const secondStore = new IndexedDbProjectStore(secondDatabase, {
+    change_channel: channelHub.open(),
+    source_id: "second-store",
+  });
+  const firstChanges = [];
+  const secondChanges = [];
+  firstStore.subscribe((change) => firstChanges.push(change));
+  const unsubscribeSecond = secondStore.subscribe((change) =>
+    secondChanges.push(change),
+  );
+
+  await firstStore.save(createState(), null);
+  await secondStore.mutate(() => null);
+  await assert.rejects(
+    secondStore.save(createState(), null),
+    /changed by another writer/,
+  );
+  await secondStore.saveInputDraft({
+    project_id: "project-1",
+    session_id: null,
+    input_draft: "Broadcast draft",
+  });
+
+  assert.deepEqual(firstChanges, [
+    { source_id: "first-store", state_revision: 1 },
+    { source_id: "second-store", state_revision: 2 },
+  ]);
+  assert.deepEqual(secondChanges, [
+    { source_id: "first-store", state_revision: 1 },
+    { source_id: "second-store", state_revision: 2 },
+  ]);
+
+  unsubscribeSecond();
+  await firstStore.mutate((draft) => {
+    draft.projects[0].name = "Only first store observes locally";
+    return draft;
+  });
+  assert.deepEqual(
+    firstChanges.map((change) => change.state_revision),
+    [1, 2, 3],
+  );
+  assert.equal(secondChanges.length, 2);
+
+  firstStore.close();
+  secondStore.close();
+  assert.equal(channelHub.size, 0);
+  firstDatabase.close();
+  secondDatabase.close();
+});
+
 function createState() {
   const timestamp = "2026-07-22T00:00:00.000Z";
   return {
@@ -2267,6 +2327,39 @@ function createState() {
         timeline: [],
       },
     ],
+  };
+}
+
+function createProjectStoreChangeChannelHub() {
+  const endpoints = new Set();
+  return {
+    get size() {
+      return endpoints.size;
+    },
+    open() {
+      const listeners = new Set();
+      const endpoint = {
+        postMessage(change) {
+          for (const peer of endpoints) {
+            if (peer === endpoint) continue;
+            peer.deliver(structuredClone(change));
+          }
+        },
+        subscribe(listener) {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        close() {
+          listeners.clear();
+          endpoints.delete(endpoint);
+        },
+        deliver(change) {
+          for (const listener of listeners) listener(change);
+        },
+      };
+      endpoints.add(endpoint);
+      return endpoint;
+    },
   };
 }
 

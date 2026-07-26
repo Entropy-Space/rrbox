@@ -7,6 +7,9 @@ import {
   type InputDraftUpdate,
   type ProjectRecord,
   type ProjectStore,
+  type ProjectStoreChange,
+  type ProjectStoreChangeChannel,
+  type ProjectStoreChangeListener,
   type ProjectStoreCommit,
   type ProjectStoreMutation,
   type ProjectStoreState,
@@ -28,11 +31,32 @@ type CatalogRecord = {
   active_session_id: string | null;
 };
 
+export type IndexedDbProjectStoreOptions = {
+  change_channel?: ProjectStoreChangeChannel | null;
+  source_id?: string;
+};
+
 export class IndexedDbProjectStore implements ProjectStore {
   private readonly database: ResearchBoxDatabase;
+  private readonly sourceId: string;
+  private readonly changeChannel: ProjectStoreChangeChannel | null;
+  private readonly listeners = new Set<ProjectStoreChangeListener>();
+  private readonly unsubscribeChannel: (() => void) | null;
 
-  constructor(database: ResearchBoxDatabase) {
+  constructor(
+    database: ResearchBoxDatabase,
+    options: IndexedDbProjectStoreOptions = {},
+  ) {
     this.database = database;
+    this.sourceId = options.source_id ?? crypto.randomUUID();
+    this.changeChannel =
+      options.change_channel === undefined
+        ? createDefaultChangeChannel()
+        : options.change_channel;
+    this.unsubscribeChannel =
+      this.changeChannel?.subscribe((change) =>
+        this.receiveChange(change),
+      ) ?? null;
   }
 
   async load(): Promise<ProjectStoreState | null> {
@@ -80,6 +104,17 @@ export class IndexedDbProjectStore implements ProjectStore {
     };
     await this.save(migratedState, parsed.state.state_revision);
     return migratedState;
+  }
+
+  subscribe(listener: ProjectStoreChangeListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  close(): void {
+    this.unsubscribeChannel?.();
+    this.changeChannel?.close();
+    this.listeners.clear();
   }
 
   async save(
@@ -154,6 +189,7 @@ export class IndexedDbProjectStore implements ProjectStore {
     }
 
     await completion;
+    this.publishChange(validState.state_revision);
   }
 
   async mutate(
@@ -245,6 +281,7 @@ export class IndexedDbProjectStore implements ProjectStore {
         active_session_id: committed.active_session_id,
       } satisfies CatalogRecord);
       await completion;
+      this.publishChange(committed.state_revision);
       return {
         state: cloneProjectStoreState(committed),
         changed: true,
@@ -307,6 +344,88 @@ export class IndexedDbProjectStore implements ProjectStore {
       return draft;
     });
   }
+
+  private publishChange(stateRevision: number): void {
+    const change: ProjectStoreChange = Object.freeze({
+      source_id: this.sourceId,
+      state_revision: stateRevision,
+    });
+    this.notifyListeners(change);
+    try {
+      this.changeChannel?.postMessage(change);
+    } catch {
+      // A committed write must not fail because cross-context delivery failed.
+    }
+  }
+
+  private receiveChange(value: unknown): void {
+    const change = parseProjectStoreChange(value);
+    if (!change || change.source_id === this.sourceId) return;
+    this.notifyListeners(change);
+  }
+
+  private notifyListeners(change: ProjectStoreChange): void {
+    for (const listener of this.listeners) {
+      try {
+        listener(change);
+      } catch {
+        // Store consumers are isolated from persistence and each other.
+      }
+    }
+  }
+}
+
+const PROJECT_STORE_CHANGE_CHANNEL =
+  "researchbox:project-store-changes:v1";
+
+function createDefaultChangeChannel(): ProjectStoreChangeChannel | null {
+  if (
+    typeof globalThis.BroadcastChannel !== "function" ||
+    !("location" in globalThis)
+  ) {
+    return null;
+  }
+
+  const channel = new globalThis.BroadcastChannel(
+    PROJECT_STORE_CHANGE_CHANNEL,
+  );
+  return {
+    postMessage(change) {
+      channel.postMessage(change);
+    },
+    subscribe(listener) {
+      const handleMessage = (event: MessageEvent<unknown>) => {
+        listener(event.data);
+      };
+      channel.addEventListener("message", handleMessage);
+      return () => channel.removeEventListener("message", handleMessage);
+    },
+    close() {
+      channel.close();
+    },
+  };
+}
+
+function parseProjectStoreChange(
+  value: unknown,
+): ProjectStoreChange | null {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("source_id" in value) ||
+    typeof value.source_id !== "string" ||
+    value.source_id.length === 0 ||
+    !("state_revision" in value) ||
+    typeof value.state_revision !== "number" ||
+    !Number.isSafeInteger(value.state_revision) ||
+    value.state_revision < 0
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    source_id: value.source_id,
+    state_revision: value.state_revision,
+  });
 }
 
 function synchronizeRecords<T>(

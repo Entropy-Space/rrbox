@@ -123,12 +123,22 @@ before flipping ownership without changing the workspace revision. Versioned
 storage migrations backfill the only revision baseline recoverable from older
 receipt journals.
 
-Provider discovery starts independently from workspace ownership. A browser
-runtime coordinator exposes provider catalog snapshots immediately, routes
-catalog refreshes without waiting for IndexedDB, and creates the stateful core
-only after acquiring one origin-wide Web Lock. A contending tab reports that it
-is waiting and is promoted automatically when the active writer closes. Only
-the elected core can persist a model selection or start inference.
+Provider discovery starts independently from workspace ownership. Every browser
+tab creates its own stateful core immediately, keeps navigation local, and
+receives revision invalidations from other tabs. IndexedDB mutations rebase
+against canonical state inside short transactions instead of rewriting a stale
+snapshot. Web Locks are held only around the commands that need coordination:
+catalog lifecycle changes serialize briefly, prompts serialize per session,
+project deletion waits for that project's active runs, and unrelated projects
+and sessions remain independent. Local navigation takes only a shared lifecycle
+gate for its target project. Provider discovery, refresh, and abort do not wait
+for storage coordination.
+
+Ordinary OPFS work similarly holds a per-project exclusive lock beneath a shared
+origin gate. Crash cleanup and orphan reconciliation retain exclusive access to
+that gate because they scan storage globally. The original origin lock name
+remains in use as the gate so an already-open tab from an older bundle cannot
+race the refined locking scheme.
 
 The memory, inline IndexedDB, and hybrid OPFS workspace backends run the same
 conformance suite. Native-folder and iOS backends can implement the same

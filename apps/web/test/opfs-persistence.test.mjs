@@ -1426,6 +1426,131 @@ test("OPFS startup removes stale inline rows left after the ownership flip", asy
   database.close();
 });
 
+test("OPFS scopes project work separately while keeping global scans exclusive", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-opfs-lock-scopes-${crypto.randomUUID()}`,
+  );
+  const objects = new MemoryWorkspaceObjectStore();
+  const scopes = [];
+  const runScoped = async (operation, scope) => {
+    scopes.push(structuredClone(scope));
+    return operation();
+  };
+  const backend = new OpfsWorkspaceBackend(
+    database,
+    objects,
+    { "/notes.txt": "before" },
+    runScoped,
+  );
+
+  const workspace = await backend.create("project-1");
+  await workspace.write("/notes.txt", "after");
+  await workspace.list("/");
+  await backend.reconcileOrphanedWorkspaces(["project-1"]);
+
+  assert.deepEqual(scopes, [
+    { kind: "project", project_id: "project-1" },
+    { kind: "project", project_id: "project-1" },
+    { kind: "global" },
+    { kind: "project", project_id: "project-1" },
+    { kind: "global" },
+  ]);
+  const [storage] = objects.storages.values();
+  assert.equal(storage.size, 1);
+  assert.equal((await workspace.read("/notes.txt")).content, "after");
+  database.close();
+});
+
+test("OPFS scoped locks coordinate concurrent backend instances", async () => {
+  const factory = new IDBFactory();
+  const database = new ResearchBoxDatabase(
+    factory,
+    `researchbox-opfs-lock-concurrency-${crypto.randomUUID()}`,
+  );
+  const objects = new MemoryWorkspaceObjectStore();
+  const locks = new TestOpfsScopeRunner();
+  const firstBackend = new OpfsWorkspaceBackend(
+    database,
+    objects,
+    {},
+    locks.run,
+  );
+  const secondBackend = new OpfsWorkspaceBackend(
+    database,
+    objects,
+    {},
+    locks.run,
+  );
+  const firstProjectGate = deferredValue();
+  const secondProjectGate = deferredValue();
+  const sameProjectGate = deferredValue();
+  const globalGate = deferredValue();
+  const started = [];
+
+  const firstProject = firstBackend.enqueueProject(
+    "project-1",
+    async () => {
+      started.push("first_project");
+      await firstProjectGate.promise;
+    },
+  );
+  const secondProject = secondBackend.enqueueProject(
+    "project-2",
+    async () => {
+      started.push("second_project");
+      await secondProjectGate.promise;
+    },
+  );
+  await waitForTestCondition(
+    () =>
+      started.includes("first_project") &&
+      started.includes("second_project"),
+  );
+
+  secondProjectGate.resolve();
+  await secondProject;
+  const sameProject = secondBackend.enqueueProject(
+    "project-1",
+    async () => {
+      started.push("same_project");
+      await sameProjectGate.promise;
+    },
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(started.includes("same_project"), false);
+
+  firstProjectGate.resolve();
+  await firstProject;
+  await waitForTestCondition(() => started.includes("same_project"));
+
+  const globalCleanup = firstBackend.enqueueGlobal(async () => {
+    started.push("global_cleanup");
+    await globalGate.promise;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(started.includes("global_cleanup"), false);
+
+  sameProjectGate.resolve();
+  await sameProject;
+  await waitForTestCondition(() => started.includes("global_cleanup"));
+
+  const projectDuringCleanup = secondBackend.enqueueProject(
+    "project-2",
+    async () => {
+      started.push("project_during_cleanup");
+    },
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(started.includes("project_during_cleanup"), false);
+
+  globalGate.resolve();
+  await Promise.all([globalCleanup, projectDuringCleanup]);
+  assert.equal(started.includes("project_during_cleanup"), true);
+  database.close();
+});
+
 test("OPFS cleanup removes an object only after its final manifest reference", async () => {
   const factory = new IDBFactory();
   const database = new ResearchBoxDatabase(
@@ -1772,6 +1897,82 @@ function transactionComplete(transaction) {
     transaction.onabort = () => reject(transaction.error);
     transaction.onerror = () => reject(transaction.error);
   });
+}
+
+class TestOpfsScopeRunner {
+  activeGlobal = false;
+  activeProjects = new Set();
+  queue = [];
+
+  run = (operation, scope = { kind: "global" }) =>
+    new Promise((resolve, reject) => {
+      this.queue.push({ operation, scope, resolve, reject });
+      this.drain();
+    });
+
+  drain() {
+    if (this.activeGlobal) return;
+    const firstGlobalIndex = this.queue.findIndex(
+      (request) => request.scope.kind === "global",
+    );
+    if (firstGlobalIndex === 0) {
+      if (this.activeProjects.size === 0) {
+        this.start(this.queue.shift());
+      }
+      return;
+    }
+
+    let limit =
+      firstGlobalIndex === -1 ? this.queue.length : firstGlobalIndex;
+    for (let index = 0; index < limit;) {
+      const request = this.queue[index];
+      const projectId = request.scope.project_id;
+      if (this.activeProjects.has(projectId)) {
+        index += 1;
+        continue;
+      }
+      this.queue.splice(index, 1);
+      limit -= 1;
+      this.start(request);
+    }
+  }
+
+  start(request) {
+    if (request.scope.kind === "global") {
+      this.activeGlobal = true;
+    } else {
+      this.activeProjects.add(request.scope.project_id);
+    }
+    void Promise.resolve()
+      .then(request.operation)
+      .then(request.resolve, request.reject)
+      .finally(() => {
+        if (request.scope.kind === "global") {
+          this.activeGlobal = false;
+        } else {
+          this.activeProjects.delete(request.scope.project_id);
+        }
+        this.drain();
+      });
+  }
+}
+
+function deferredValue() {
+  let resolve;
+  let reject;
+  const promise = new Promise((next, fail) => {
+    resolve = next;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+async function waitForTestCondition(condition) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (condition()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail("Timed out waiting for the OPFS lock test.");
 }
 
 async function sha256Hex(bytes) {

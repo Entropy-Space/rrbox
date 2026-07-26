@@ -43,6 +43,12 @@ startBrowserRuntime({
       name: "researchbox-llm",
     });
     const modelGateway = new WorkerModelTransport(llmWorker);
+    const database = new ResearchBoxDatabase();
+    const projectStore = new IndexedDbProjectStore(database);
+    const workspaceBackend = new BrowserWorkspaceBackend(
+      database,
+      researchBoxSeedFiles,
+    );
     const providerCatalog = new ProviderCatalogService({
       model: researchBoxMockModel,
       providers,
@@ -59,21 +65,21 @@ startBrowserRuntime({
     return {
       providerCatalog,
       modelTransport: modelGateway,
+      projectStore,
+      workspaceBackend,
       close() {
         unsubscribeTransportFailure();
+        projectStore.close();
+        database.close();
         providerCatalog.close();
         modelGateway.close();
       },
     };
   },
   createCore(services, eventSink) {
-    const database = new ResearchBoxDatabase();
     return new ResearchBoxCore({
-      projectStore: new IndexedDbProjectStore(database),
-      workspaceBackend: new BrowserWorkspaceBackend(
-        database,
-        researchBoxSeedFiles,
-      ),
+      projectStore: services.projectStore,
+      workspaceBackend: services.workspaceBackend,
       modelTransport: services.modelTransport,
       providerCatalog: services.providerCatalog,
       model: researchBoxMockModel,

@@ -2,6 +2,8 @@ import {
   ProjectStoreConflictError,
   type InputDraftUpdate,
   type ProjectStore,
+  type ProjectStoreChange,
+  type ProjectStoreChangeListener,
   type ProjectStoreCommit,
   type ProjectStoreMutation,
 } from "./project-store.ts";
@@ -12,6 +14,8 @@ import {
 } from "./types.ts";
 
 export class MemoryProjectStore implements ProjectStore {
+  private readonly sourceId = crypto.randomUUID();
+  private readonly listeners = new Set<ProjectStoreChangeListener>();
   private state: ProjectStoreState | null;
 
   constructor(initialState: ProjectStoreState | null = null) {
@@ -22,6 +26,11 @@ export class MemoryProjectStore implements ProjectStore {
 
   async load(): Promise<ProjectStoreState | null> {
     return this.state ? cloneProjectStoreState(this.state) : null;
+  }
+
+  subscribe(listener: ProjectStoreChangeListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 
   async save(
@@ -36,6 +45,7 @@ export class MemoryProjectStore implements ProjectStore {
       throw new Error("Project store revisions must increase by exactly one.");
     }
     this.state = parseProjectStoreState(cloneProjectStoreState(state));
+    this.publishChange(this.state.state_revision);
   }
 
   async mutate(
@@ -63,6 +73,7 @@ export class MemoryProjectStore implements ProjectStore {
     draft.state_revision = current.state_revision + 1;
     const committed = parseProjectStoreState(draft);
     this.state = committed;
+    this.publishChange(committed.state_revision);
     return {
       state: cloneProjectStoreState(committed),
       changed: true,
@@ -103,6 +114,20 @@ export class MemoryProjectStore implements ProjectStore {
       document.input_draft = update.input_draft;
       return draft;
     });
+  }
+
+  private publishChange(stateRevision: number): void {
+    const change: ProjectStoreChange = Object.freeze({
+      source_id: this.sourceId,
+      state_revision: stateRevision,
+    });
+    for (const listener of this.listeners) {
+      try {
+        listener(change);
+      } catch {
+        // Store consumers are isolated from persistence and each other.
+      }
+    }
   }
 }
 

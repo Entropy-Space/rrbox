@@ -110,8 +110,18 @@ type OpfsWorkspaceChangeSnapshot = OpfsWorkspaceSnapshot & {
   path_tombstone: FilePathTombstoneRecord | null;
 };
 
+export type OpfsWorkspaceLockScope =
+  | {
+      kind: "global";
+    }
+  | {
+      kind: "project";
+      project_id: string;
+    };
+
 export type OpfsWorkspaceExclusiveRunner = <T>(
   operation: () => Promise<T>,
+  scope?: OpfsWorkspaceLockScope,
 ) => Promise<T>;
 
 type OpfsCleanupRecord = {
@@ -124,6 +134,10 @@ type OpfsCleanupRecord = {
 
 const MAX_RETRIES = 8;
 const OPFS_CLEANUP_KEY_PREFIX = "opfs_cleanup:";
+// Keep the original lock name as the global gate so older tabs remain mutually
+// exclusive with this finer-grained protocol during a rolling update.
+const OPFS_GLOBAL_LOCK = "researchbox:opfs-workspace:v1";
+const OPFS_PROJECT_LOCK_PREFIX = `${OPFS_GLOBAL_LOCK}:project:`;
 const SHA256_CONTENT_ID_PATTERN = /^[0-9a-f]{64}$/;
 
 class RetryOpfsOperation extends Error {
@@ -167,7 +181,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
     options?: WorkspaceCreateOptions,
   ): Promise<Workspace> {
     const createOptions = snapshotWorkspaceCreateOptions(options);
-    return this.enqueue(async () => {
+    return this.enqueueProject(projectId, async () => {
       const existing = await this.loadAndRepairMarker(projectId);
       if (existing?.lifecycle_status === "active") {
         throw new WorkspaceBackendError(
@@ -305,21 +319,21 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
   }
 
   open(projectId: string): Promise<Workspace> {
-    return this.enqueue(async () => {
+    return this.enqueueProject(projectId, async () => {
       const marker = await this.ensureOpfsProject(projectId);
       return this.createHandle(projectId, marker.incarnation_id);
     });
   }
 
   delete(projectId: string): Promise<void> {
-    return this.enqueue(() => this.deleteWorkspace(projectId));
+    return this.enqueueProject(projectId, () => this.deleteWorkspace(projectId));
   }
 
   reconcileOrphanedWorkspaces(
     retainedProjectIds: readonly string[],
   ): Promise<void> {
     const retained = new Set(retainedProjectIds);
-    return this.enqueue(async () => {
+    return this.enqueueGlobal(async () => {
       const orphaned = await this.listOrphanedWorkspaces(retained);
       for (const orphan of orphaned) {
         await this.deleteWorkspace(
@@ -481,15 +495,15 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
   ): Workspace & WorkspaceFilesSnapshotReader {
     return {
       list: (path) =>
-        this.enqueue(() =>
+        this.enqueueProject(projectId, () =>
           this.listWorkspace(projectId, incarnationId, path),
         ),
       read: (path) =>
-        this.enqueue(() =>
+        this.enqueueProject(projectId, () =>
           this.readWorkspace(projectId, incarnationId, path),
         ),
       getPathState: (path) =>
-        this.enqueue(() =>
+        this.enqueueProject(projectId, () =>
           this.readWorkspacePathState(
             projectId,
             incarnationId,
@@ -497,7 +511,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
           ),
         ),
       readFilesSnapshot: (options) =>
-        this.enqueue(() =>
+        this.enqueueProject(projectId, () =>
           this.readWorkspaceFilesSnapshot(
             projectId,
             incarnationId,
@@ -505,7 +519,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
           ),
         ),
       write: (path, content, options) =>
-        this.enqueue(() =>
+        this.enqueueProject(projectId, () =>
           this.writeWorkspace(
             projectId,
             incarnationId,
@@ -515,7 +529,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
           ),
         ),
       remove: (path, options) =>
-        this.enqueue(() =>
+        this.enqueueProject(projectId, () =>
           this.removeWorkspace(
             projectId,
             incarnationId,
@@ -524,11 +538,11 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
           ),
         ),
       listChanges: () =>
-        this.enqueue(() =>
+        this.enqueueProject(projectId, () =>
           this.listWorkspaceChanges(projectId, incarnationId),
         ),
       getChange: (changeId) =>
-        this.enqueue(() =>
+        this.enqueueProject(projectId, () =>
           this.getWorkspaceChange(
             projectId,
             incarnationId,
@@ -536,7 +550,7 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
           ),
         ),
       revertChange: (changeId) =>
-        this.enqueue(() =>
+        this.enqueueProject(projectId, () =>
           this.revertWorkspaceChange(
             projectId,
             incarnationId,
@@ -2289,6 +2303,24 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
     }
   }
 
+  private async hasPendingCleanup(): Promise<boolean> {
+    const database = await this.database.open();
+    const transaction = database.transaction(
+      databaseStores.meta,
+      "readonly",
+    );
+    const completion = transactionDone(transaction);
+    try {
+      const metaRecords = await requestResult(
+        transaction.objectStore(databaseStores.meta).getAll(),
+      ) as unknown[];
+      await completion;
+      return metaRecords.some(isOpfsCleanupRecord);
+    } catch (error) {
+      return abortTransaction(transaction, completion, error);
+    }
+  }
+
   private async resumeCleanup(): Promise<void> {
     const database = await this.database.open();
     const cleanupTransaction = database.transaction(
@@ -2415,16 +2447,42 @@ export class OpfsWorkspaceBackend implements WorkspaceBackend {
     }
   }
 
-  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+  private enqueueProject<T>(
+    projectId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    return this.enqueue(
+      {
+        kind: "project",
+        project_id: projectId,
+      },
+      operation,
+    );
+  }
+
+  private enqueueGlobal<T>(operation: () => Promise<T>): Promise<T> {
+    return this.enqueue({ kind: "global" }, operation);
+  }
+
+  private enqueue<T>(
+    scope: OpfsWorkspaceLockScope,
+    operation: () => Promise<T>,
+  ): Promise<T> {
     const guardedOperation = async () => {
-      await this.resumeCleanup().catch(() => undefined);
-      return operation();
+      const cleanupPending = await this.hasPendingCleanup().catch(
+        () => false,
+      );
+      if (cleanupPending) {
+        await this.runExclusive(
+          () => this.resumeCleanup(),
+          { kind: "global" },
+        ).catch(() => undefined);
+      }
+      return this.runExclusive(operation, scope);
     };
-    const coordinatedOperation = () =>
-      this.runExclusive(guardedOperation);
     const result = this.operationTail.then(
-      coordinatedOperation,
-      coordinatedOperation,
+      guardedOperation,
+      guardedOperation,
     );
     this.operationTail = result.then(
       () => undefined,
@@ -2792,13 +2850,29 @@ function isOpfsCleanupRecord(
 
 async function runWithNavigatorOpfsLock<T>(
   operation: () => Promise<T>,
+  scope: OpfsWorkspaceLockScope = { kind: "global" },
 ): Promise<T> {
   const lockManager =
     typeof navigator === "undefined" ? undefined : navigator.locks;
   if (!lockManager) return operation();
+  if (scope.kind === "global") {
+    return await lockManager.request<Promise<T>>(
+      OPFS_GLOBAL_LOCK,
+      { mode: "exclusive" },
+      operation,
+    );
+  }
+  // Project operations share the global gate, preventing cleanup or orphan
+  // reconciliation from deleting objects while any project is using them.
   return await lockManager.request<Promise<T>>(
-    "researchbox:opfs-workspace:v1",
-    () => operation(),
+    OPFS_GLOBAL_LOCK,
+    { mode: "shared" },
+    async () =>
+      await lockManager.request<Promise<T>>(
+        `${OPFS_PROJECT_LOCK_PREFIX}${scope.project_id}`,
+        { mode: "exclusive" },
+        operation,
+      ),
   );
 }
 

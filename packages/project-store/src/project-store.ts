@@ -15,6 +15,7 @@ export interface ProjectStore {
   ): Promise<void>;
   mutate(mutation: ProjectStoreMutation): Promise<ProjectStoreCommit>;
   saveInputDraft(update: InputDraftUpdate): Promise<ProjectStoreCommit>;
+  subscribe(listener: ProjectStoreChangeListener): () => void;
 }
 
 export type ProjectStoreMutation = (
@@ -24,6 +25,21 @@ export type ProjectStoreMutation = (
 export type ProjectStoreCommit = {
   state: ProjectStoreState;
   changed: boolean;
+};
+
+export type ProjectStoreChange = {
+  readonly source_id: string;
+  readonly state_revision: number;
+};
+
+export type ProjectStoreChangeListener = (
+  change: ProjectStoreChange,
+) => void;
+
+export type ProjectStoreChangeChannel = {
+  postMessage(change: ProjectStoreChange): void;
+  subscribe(listener: (change: unknown) => void): () => void;
+  close(): void;
 };
 
 export type InputDraftUpdate = {

@@ -883,6 +883,106 @@ test("abort bypasses catalog serialization and checkpoints a terminal assistant"
   assert.equal(document.timeline.at(-1).stop_reason, "aborted");
 });
 
+test("dispose aborts and drains an active run before it resolves", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  let markStarted;
+  const started = new Promise((resolve) => {
+    markStarted = resolve;
+  });
+  const core = createCore(store, provider, events, {
+    async *stream(_request, signal) {
+      markStarted();
+      await new Promise((resolve, reject) => {
+        if (signal.aborted) {
+          reject(new DOMException("Aborted", "AbortError"));
+          return;
+        }
+        signal.addEventListener(
+          "abort",
+          () => reject(new DOMException("Aborted", "AbortError")),
+          { once: true },
+        );
+      });
+      yield { type: "done" };
+    },
+  });
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  const prompt = core.handle(
+    createCommand("prompt", {
+      project_id: initial.active_project_id,
+      session_id: null,
+      text: "Drain this run",
+    }),
+  );
+  await started;
+
+  await Promise.all([core.dispose(), prompt]);
+
+  const document = (await store.load()).documents[0];
+  assert.equal(document.timeline.at(-1).type, "assistant_message");
+  assert.equal(document.timeline.at(-1).status, "aborted");
+  assert.equal(document.timeline.at(-1).stop_reason, "aborted");
+  assert.equal(core.runtime, null);
+  await assert.rejects(
+    core.handle(createCommand("bootstrap", {})),
+    /core is closed/,
+  );
+});
+
+test("dispose waits for admitted bootstrap work and releases its runtime", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const seedEvents = [];
+  const seed = createCore(store, provider, seedEvents);
+  await seed.handle(createCommand("bootstrap", {}));
+  await seed.dispose();
+
+  let loadCalls = 0;
+  let markRefreshStarted;
+  let releaseRefresh;
+  const refreshStarted = new Promise((resolve) => {
+    markRefreshStarted = resolve;
+  });
+  const refreshGate = new Promise((resolve) => {
+    releaseRefresh = resolve;
+  });
+  const delayedStore = {
+    async load() {
+      loadCalls += 1;
+      if (loadCalls === 2) {
+        markRefreshStarted();
+        await refreshGate;
+      }
+      return store.load();
+    },
+    save: (state, expectedRevision) =>
+      store.save(state, expectedRevision),
+    mutate: (mutation) => store.mutate(mutation),
+    saveInputDraft: (update) => store.saveInputDraft(update),
+    subscribe: (listener) => store.subscribe(listener),
+  };
+  const events = [];
+  const core = createCore(delayedStore, provider, events);
+  const bootstrap = core.handle(createCommand("bootstrap", {}));
+  await refreshStarted;
+
+  let disposalFinished = false;
+  const disposal = core.dispose().then(() => {
+    disposalFinished = true;
+  });
+  await flushTasks();
+  assert.equal(disposalFinished, false);
+
+  releaseRefresh();
+  await Promise.all([bootstrap, disposal]);
+  assert.equal(disposalFinished, true);
+  assert.equal(core.runtime, null);
+  assert.equal(events.some((event) => event.type === "ready"), false);
+});
+
 test("abort repairs unexecuted sequential tool calls before the next prompt", async () => {
   const store = new MemoryProjectStore();
   const workspace = new MemoryFileSystem({ "/README.md": "# Test" });
@@ -2955,6 +3055,275 @@ test("project selection remains local across cores sharing one store", async () 
   assert.deepEqual(await store.load(), persistedBeforeSelection);
 });
 
+test("shared-store invalidation refreshes another core without moving its selection", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const seedEvents = [];
+  const seedCore = createCore(store, provider, seedEvents);
+  await seedCore.handle(createCommand("bootstrap", {}));
+  const firstProjectId = latestState(seedEvents).active_project_id;
+  await seedCore.handle(createCommand("project_create", { name: "Second" }));
+  const secondProjectId = latestState(seedEvents).active_project_id;
+
+  const firstEvents = [];
+  const secondEvents = [];
+  const firstCore = createCore(store, provider, firstEvents);
+  const secondCore = createCore(store, provider, secondEvents);
+  await firstCore.handle(
+    createCommand("bootstrap", {
+      active_project_id: firstProjectId,
+      active_session_id: null,
+    }),
+  );
+  await secondCore.handle(
+    createCommand("bootstrap", {
+      active_project_id: secondProjectId,
+      active_session_id: null,
+    }),
+  );
+  await secondCore.handle(
+    createCommand("input_draft_update", {
+      project_id: secondProjectId,
+      session_id: null,
+      input_draft: "Keep this tab-local composer context",
+    }),
+  );
+  const revisionBeforeRename = latestState(secondEvents).state_revision;
+
+  await firstCore.handle(
+    createCommand("project_update", {
+      project_id: firstProjectId,
+      name: "Renamed elsewhere",
+    }),
+  );
+  await waitForCondition(
+    () => latestState(secondEvents).state_revision > revisionBeforeRename,
+  );
+
+  const refreshed = latestState(secondEvents);
+  assert.equal(refreshed.active_project_id, secondProjectId);
+  assert.equal(refreshed.active_session_id, null);
+  assert.equal(refreshed.input_draft, "Keep this tab-local composer context");
+  assert.equal(
+    refreshed.projects.find(
+      (project) => project.project_id === firstProjectId,
+    ).name,
+    "Renamed elsewhere",
+  );
+});
+
+test("local commits skip redundant reloads while remote commits refresh once", async () => {
+  const store = new MemoryProjectStore();
+  const load = store.load.bind(store);
+  let loadCalls = 0;
+  store.load = async () => {
+    loadCalls += 1;
+    return load();
+  };
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await flushTasks();
+  const bootstrapLoadCalls = loadCalls;
+
+  await core.handle(
+    createCommand("input_draft_update", {
+      project_id: initial.active_project_id,
+      session_id: null,
+      input_draft: "local draft",
+    }),
+  );
+  await flushTasks();
+  assert.equal(loadCalls, bootstrapLoadCalls);
+
+  const revisionBeforeRemoteCommit = latestState(events).state_revision;
+  await store.mutate((draft) => {
+    draft.projects[0].name = "Remote name";
+    return draft;
+  });
+  await waitForCondition(
+    () => latestState(events).state_revision > revisionBeforeRemoteCommit,
+  );
+  assert.equal(loadCalls, bootstrapLoadCalls + 1);
+  assert.equal(latestState(events).projects[0].name, "Remote name");
+});
+
+test("remote deletion releases cached workspaces for inactive projects", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const ownerEvents = [];
+  const owner = createCore(store, provider, ownerEvents);
+  await owner.handle(createCommand("bootstrap", {}));
+  const retainedProjectId = latestState(ownerEvents).active_project_id;
+  await owner.handle(createCommand("project_create", { name: "Temporary" }));
+  const deletedProjectId = latestState(ownerEvents).active_project_id;
+
+  const observerEvents = [];
+  const observer = createCore(store, provider, observerEvents);
+  await observer.handle(
+    createCommand("bootstrap", {
+      active_project_id: retainedProjectId,
+      active_session_id: null,
+    }),
+  );
+  await observer.handle(
+    createCommand("project_select", { project_id: deletedProjectId }),
+  );
+  await observer.handle(
+    createCommand("project_select", { project_id: retainedProjectId }),
+  );
+  assert.equal(observer.workspaces.has(deletedProjectId), true);
+  const revisionBeforeDeletion = latestState(observerEvents).state_revision;
+
+  await owner.handle(
+    createCommand("project_delete", { project_id: deletedProjectId }),
+  );
+  await waitForCondition(
+    () =>
+      latestState(observerEvents).state_revision > revisionBeforeDeletion,
+  );
+
+  assert.equal(observer.workspaces.has(deletedProjectId), false);
+  assert.equal(
+    latestState(observerEvents).projects.some(
+      (project) => project.project_id === deletedProjectId,
+    ),
+    false,
+  );
+});
+
+test("workspace revert refreshes another core without another command", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const seedEvents = [];
+  const seedCore = createCore(store, provider, seedEvents);
+  await seedCore.handle(createCommand("bootstrap", {}));
+  const projectId = latestState(seedEvents).active_project_id;
+  const workspace = await provider.open(projectId);
+  const write = await workspace.write(
+    "/cross-tab-revert.txt",
+    "temporary\n",
+    {
+      change: createWorkspaceChangeMetadata("cross-tab-revert"),
+    },
+  );
+  const receipt = write.result.change;
+  assert.ok(receipt);
+
+  const firstEvents = [];
+  const secondEvents = [];
+  const firstCore = createCore(store, provider, firstEvents);
+  const secondCore = createCore(store, provider, secondEvents);
+  const selection = {
+    active_project_id: projectId,
+    active_session_id: null,
+  };
+  await firstCore.handle(createCommand("bootstrap", selection));
+  await secondCore.handle(createCommand("bootstrap", selection));
+
+  const before = latestState(secondEvents);
+  assert.equal(before.workspace_revision, write.workspace_revision);
+  assert.ok(
+    before.files.some((file) => file.path === "/cross-tab-revert.txt"),
+  );
+
+  await firstCore.handle(
+    createCommand("workspace_change_revert", {
+      project_id: projectId,
+      change_id: receipt.change_id,
+    }),
+  );
+  await waitForCondition(
+    () =>
+      latestState(secondEvents).state_revision > before.state_revision &&
+      latestState(secondEvents).workspace_revision >
+        before.workspace_revision,
+  );
+
+  const refreshed = latestState(secondEvents);
+  assert.equal(refreshed.active_project_id, projectId);
+  assert.equal(refreshed.workspace_revision, write.workspace_revision + 1);
+  assert.equal(
+    refreshed.files.some(
+      (file) => file.path === "/cross-tab-revert.txt",
+    ),
+    false,
+  );
+  const remoteSnapshot = secondEvents.at(-1);
+  assert.equal(remoteSnapshot.type, "state_snapshot");
+  assert.equal(remoteSnapshot.request_id, undefined);
+});
+
+test("a stale core reloads the canonical transcript before its next prompt", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const seedEvents = [];
+  const seedCore = createCore(store, provider, seedEvents);
+  await seedCore.handle(createCommand("bootstrap", {}));
+  const initial = latestState(seedEvents);
+  await seedCore.handle(
+    createCommand("prompt", {
+      project_id: initial.active_project_id,
+      session_id: null,
+      text: "Seed turn",
+    }),
+  );
+  const sessionId = latestState(seedEvents).active_session_id;
+
+  const firstEvents = [];
+  const secondEvents = [];
+  const firstCore = createCore(store, provider, firstEvents);
+  let secondRequest;
+  const secondCore = createCore(
+    withoutChangeNotifications(store),
+    provider,
+    secondEvents,
+    {
+      async *stream(request) {
+        secondRequest = structuredClone(request);
+        yield* textEvents("Second tab reply");
+        yield { type: "done" };
+      },
+    },
+  );
+  const selection = {
+    active_project_id: initial.active_project_id,
+    active_session_id: sessionId,
+  };
+  await firstCore.handle(createCommand("bootstrap", selection));
+  await secondCore.handle(createCommand("bootstrap", selection));
+
+  await firstCore.handle(
+    createCommand("prompt", {
+      project_id: initial.active_project_id,
+      session_id: sessionId,
+      text: "First tab turn",
+    }),
+  );
+  await secondCore.handle(
+    createCommand("prompt", {
+      project_id: initial.active_project_id,
+      session_id: sessionId,
+      text: "Second tab turn",
+    }),
+  );
+
+  assert.deepEqual(
+    secondRequest.messages
+      .filter((message) => message.role === "user")
+      .map((message) => message.content),
+    ["Seed turn", "First tab turn", "Second tab turn"],
+  );
+  assert.deepEqual(
+    (await store.load()).documents[0].timeline
+      .filter((entry) => entry.type === "user_message")
+      .map((entry) => entry.content),
+    ["Seed turn", "First tab turn", "Second tab turn"],
+  );
+});
+
 test("imports a validated workspace as a revision-zero project", async () => {
   const store = new MemoryProjectStore();
   const provider = createWorkspaceProvider();
@@ -3579,6 +3948,29 @@ function createCore(
     eventSink: (event) => events.push(event),
     ...coreOptions,
   });
+}
+
+function withoutChangeNotifications(store) {
+  return {
+    load: () => store.load(),
+    save: (state, expectedRevision) =>
+      store.save(state, expectedRevision),
+    mutate: (mutation) => store.mutate(mutation),
+    saveInputDraft: (update) => store.saveInputDraft(update),
+    subscribe: () => () => undefined,
+  };
+}
+
+async function waitForCondition(condition) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (condition()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail("Timed out waiting for asynchronous core state.");
+}
+
+function flushTasks() {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 function promptFromRequest(request) {

@@ -1,11 +1,14 @@
 import {
   PROJECT_STORE_SCHEMA_VERSION,
   ProjectStoreConflictError,
+  cloneProjectStoreState,
   parseProjectStoreState,
   parseProjectStoreStateWithMigration,
   type InputDraftUpdate,
   type ProjectRecord,
   type ProjectStore,
+  type ProjectStoreCommit,
+  type ProjectStoreMutation,
   type ProjectStoreState,
   type SessionDocument,
   type SessionRecord,
@@ -114,15 +117,29 @@ export class IndexedDbProjectStore implements ProjectStore {
       const documentStore = transaction.objectStore(
         databaseStores.session_documents,
       );
-      await Promise.all([
-        requestResult(projectStore.clear()),
-        requestResult(sessionStore.clear()),
-        requestResult(documentStore.clear()),
+      const [projects, sessions, documents] = await Promise.all([
+        requestResult(projectStore.getAll()) as Promise<ProjectRecord[]>,
+        requestResult(sessionStore.getAll()) as Promise<SessionRecord[]>,
+        requestResult(documentStore.getAll()) as Promise<SessionDocument[]>,
       ]);
-
-      for (const project of validState.projects) projectStore.put(project);
-      for (const session of validState.sessions) sessionStore.put(session);
-      for (const document of validState.documents) documentStore.put(document);
+      synchronizeRecords(
+        projectStore,
+        projects,
+        validState.projects,
+        (project) => project.project_id,
+      );
+      synchronizeRecords(
+        sessionStore,
+        sessions,
+        validState.sessions,
+        (session) => session.session_id,
+      );
+      synchronizeRecords(
+        documentStore,
+        documents,
+        validState.documents,
+        (document) => document.session_id,
+      );
       metaStore.put({
         key: "catalog",
         schema_version: PROJECT_STORE_SCHEMA_VERSION,
@@ -139,52 +156,13 @@ export class IndexedDbProjectStore implements ProjectStore {
     await completion;
   }
 
-  async saveInputDraft(update: InputDraftUpdate): Promise<void> {
-    if (update.session_id === null) {
-      await this.saveNewChatDraft(update);
-      return;
-    }
-    await this.saveSessionDraft({
-      ...update,
-      session_id: update.session_id,
-    });
-  }
-
-  private async saveNewChatDraft(update: InputDraftUpdate): Promise<void> {
-    const database = await this.database.open();
-    const transaction = database.transaction(
-      databaseStores.projects,
-      "readwrite",
-    );
-    const completion = transactionDone(transaction);
-
-    try {
-      const projectStore = transaction.objectStore(databaseStores.projects);
-      const project = (await requestResult(
-        projectStore.get(update.project_id),
-      )) as ProjectRecord | undefined;
-      if (!project) {
-        throw new Error(`Project ${update.project_id} does not exist.`);
-      }
-      projectStore.put({
-        ...project,
-        new_chat_draft: update.input_draft,
-      } satisfies ProjectRecord);
-    } catch (error) {
-      transaction.abort();
-      await completion.catch(() => undefined);
-      throw error;
-    }
-
-    await completion;
-  }
-
-  private async saveSessionDraft(
-    update: InputDraftUpdate & { session_id: string },
-  ): Promise<void> {
+  async mutate(
+    mutation: ProjectStoreMutation,
+  ): Promise<ProjectStoreCommit> {
     const database = await this.database.open();
     const transaction = database.transaction(
       [
+        databaseStores.meta,
         databaseStores.projects,
         databaseStores.sessions,
         databaseStores.session_documents,
@@ -194,22 +172,109 @@ export class IndexedDbProjectStore implements ProjectStore {
     const completion = transactionDone(transaction);
 
     try {
+      const metaStore = transaction.objectStore(databaseStores.meta);
       const projectStore = transaction.objectStore(databaseStores.projects);
       const sessionStore = transaction.objectStore(databaseStores.sessions);
       const documentStore = transaction.objectStore(
         databaseStores.session_documents,
       );
-      const [project, session, document] = await Promise.all([
-        requestResult(projectStore.get(update.project_id)) as Promise<
-          ProjectRecord | undefined
+      const [catalog, projects, sessions, documents] = await Promise.all([
+        requestResult(metaStore.get("catalog")) as Promise<
+          CatalogRecord | undefined
         >,
-        requestResult(sessionStore.get(update.session_id)) as Promise<
-          SessionRecord | undefined
-        >,
-        requestResult(documentStore.get(update.session_id)) as Promise<
-          SessionDocument | undefined
-        >,
+        requestResult(projectStore.getAll()) as Promise<ProjectRecord[]>,
+        requestResult(sessionStore.getAll()) as Promise<SessionRecord[]>,
+        requestResult(documentStore.getAll()) as Promise<SessionDocument[]>,
       ]);
+      if (!catalog) {
+        throw new Error("Project store is not initialized.");
+      }
+
+      const current = parseProjectStoreState({
+        schema_version: catalog.schema_version,
+        state_revision: catalog.state_revision,
+        active_project_id: catalog.active_project_id,
+        active_session_id: catalog.active_session_id,
+        projects,
+        sessions,
+        documents,
+      });
+      const draft = cloneProjectStoreState(current);
+      const result = mutation(draft);
+      if (isPromiseLike(result)) {
+        throw new Error("Project store mutations must be synchronous.");
+      }
+      if (result === null) {
+        await completion;
+        return {
+          state: cloneProjectStoreState(current),
+          changed: false,
+        };
+      }
+      if (result !== draft) {
+        throw new Error(
+          "Project store mutations must return their provided draft.",
+        );
+      }
+
+      draft.state_revision = current.state_revision + 1;
+      const committed = parseProjectStoreState(draft);
+      synchronizeRecords(
+        projectStore,
+        projects,
+        committed.projects,
+        (project) => project.project_id,
+      );
+      synchronizeRecords(
+        sessionStore,
+        sessions,
+        committed.sessions,
+        (session) => session.session_id,
+      );
+      synchronizeRecords(
+        documentStore,
+        documents,
+        committed.documents,
+        (document) => document.session_id,
+      );
+      metaStore.put({
+        key: "catalog",
+        schema_version: PROJECT_STORE_SCHEMA_VERSION,
+        state_revision: committed.state_revision,
+        active_project_id: committed.active_project_id,
+        active_session_id: committed.active_session_id,
+      } satisfies CatalogRecord);
+      await completion;
+      return {
+        state: cloneProjectStoreState(committed),
+        changed: true,
+      };
+    } catch (error) {
+      transaction.abort();
+      await completion.catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async saveInputDraft(
+    update: InputDraftUpdate,
+  ): Promise<ProjectStoreCommit> {
+    return this.mutate((draft) => {
+      if (update.session_id === null) {
+        const project = draft.projects.find(
+          (candidate) => candidate.project_id === update.project_id,
+        );
+        if (!project) {
+          throw new Error(`Project ${update.project_id} does not exist.`);
+        }
+        if (project.new_chat_draft === update.input_draft) return null;
+        project.new_chat_draft = update.input_draft;
+        return draft;
+      }
+
+      const session = draft.sessions.find(
+        (candidate) => candidate.session_id === update.session_id,
+      );
       if (!session) {
         throw new Error(`Session ${update.session_id} does not exist.`);
       }
@@ -218,27 +283,63 @@ export class IndexedDbProjectStore implements ProjectStore {
           `Session ${update.session_id} does not belong to project ${update.project_id}.`,
         );
       }
+      const project = draft.projects.find(
+        (candidate) => candidate.project_id === update.project_id,
+      );
       if (!project) {
         throw new Error(`Project ${update.project_id} does not exist.`);
       }
+      const document = draft.documents.find(
+        (candidate) => candidate.session_id === update.session_id,
+      );
       if (!document) {
-        throw new Error(`Session document ${update.session_id} does not exist.`);
+        throw new Error(
+          `Session document ${update.session_id} does not exist.`,
+        );
       }
       if (document.project_id !== update.project_id) {
         throw new Error(
           `Session document ${update.session_id} does not belong to project ${update.project_id}.`,
         );
       }
-      documentStore.put({
-        ...document,
-        input_draft: update.input_draft,
-      } satisfies SessionDocument);
-    } catch (error) {
-      transaction.abort();
-      await completion.catch(() => undefined);
-      throw error;
-    }
-
-    await completion;
+      if (document.input_draft === update.input_draft) return null;
+      document.input_draft = update.input_draft;
+      return draft;
+    });
   }
+}
+
+function synchronizeRecords<T>(
+  store: IDBObjectStore,
+  current: readonly T[],
+  next: readonly T[],
+  keyOf: (record: T) => string,
+): void {
+  const currentById = new Map(
+    current.map((record) => [keyOf(record), record]),
+  );
+  const nextById = new Map(next.map((record) => [keyOf(record), record]));
+
+  for (const key of currentById.keys()) {
+    if (!nextById.has(key)) store.delete(key);
+  }
+  for (const [key, record] of nextById) {
+    const existing = currentById.get(key);
+    if (existing === undefined || !sameRecord(existing, record)) {
+      store.put(record);
+    }
+  }
+}
+
+function sameRecord(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "then" in value &&
+    typeof value.then === "function"
+  );
 }

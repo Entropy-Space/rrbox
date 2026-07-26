@@ -13,8 +13,18 @@ export interface ProjectStore {
     state: ProjectStoreState,
     expected_revision: number | null,
   ): Promise<void>;
-  saveInputDraft(update: InputDraftUpdate): Promise<void>;
+  mutate(mutation: ProjectStoreMutation): Promise<ProjectStoreCommit>;
+  saveInputDraft(update: InputDraftUpdate): Promise<ProjectStoreCommit>;
 }
+
+export type ProjectStoreMutation = (
+  draft: ProjectStoreState,
+) => ProjectStoreState | null;
+
+export type ProjectStoreCommit = {
+  state: ProjectStoreState;
+  changed: boolean;
+};
 
 export type InputDraftUpdate = {
   project_id: string;

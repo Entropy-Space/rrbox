@@ -30,6 +30,33 @@ test("memory project store clones v4 timelines and enforces revisions", async ()
   await assert.rejects(store.save(createState(2), 1), ProjectStoreConflictError);
 });
 
+test("memory project mutations rebase canonical state and own revisions", async () => {
+  const store = new MemoryProjectStore(createState(1));
+
+  const renamed = await store.mutate((draft) => {
+    draft.projects[0].name = "Renamed workspace";
+    return draft;
+  });
+  assert.equal(renamed.changed, true);
+  assert.equal(renamed.state.state_revision, 2);
+  assert.equal(renamed.state.projects[0].name, "Renamed workspace");
+
+  renamed.state.projects[0].name = "Changed only in caller";
+  const unchanged = await store.mutate(() => null);
+  assert.equal(unchanged.changed, false);
+  assert.equal(unchanged.state.state_revision, 2);
+  assert.equal(unchanged.state.projects[0].name, "Renamed workspace");
+
+  await assert.rejects(
+    store.mutate(async (draft) => draft),
+    /must be synchronous/,
+  );
+  await assert.rejects(
+    store.mutate((draft) => structuredClone(draft)),
+    /provided draft/,
+  );
+});
+
 test("v4 documents contain only the normalized timeline", () => {
   const state = parseProjectStoreState(createState(1));
   const document = state.documents[0];
@@ -530,7 +557,7 @@ test("v4 parser drops retired redundant document fields", () => {
   assert.equal("agent_messages" in parsed.documents[0], false);
 });
 
-test("project draft writes preserve exact text and revision", async () => {
+test("project draft writes preserve exact text and advance revision", async () => {
   const store = new MemoryProjectStore();
   const state = createState(1);
   state.documents[0].input_draft = "existing session draft";
@@ -543,7 +570,7 @@ test("project draft writes preserve exact text and revision", async () => {
   });
 
   const loaded = await store.load();
-  assert.equal(loaded.state_revision, 1);
+  assert.equal(loaded.state_revision, 2);
   assert.equal(
     loaded.projects[0].new_chat_draft,
     "  unfinished project prompt\n",

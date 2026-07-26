@@ -155,6 +155,7 @@ test("IndexedDB project state and files survive reopening the database", async (
   await (await firstProvider.open("project-1")).write("/notes.txt", "persisted");
 
   const expectedState = structuredClone(state);
+  expectedState.state_revision = 3;
   expectedState.projects[0].new_chat_draft = "A new chat draft";
   expectedState.documents[0].input_draft = "A session draft";
 
@@ -2161,6 +2162,71 @@ test("IndexedDB store rejects a stale writer revision", async () => {
   await store.save(createState(), null);
   const stale = createState();
   await assert.rejects(store.save(stale, 0), /changed by another writer/);
+});
+
+test("concurrent IndexedDB project mutations rebase without lost rows", async () => {
+  const factory = new IDBFactory();
+  const databaseName = `researchbox-project-mutate-${crypto.randomUUID()}`;
+  const firstDatabase = new ResearchBoxDatabase(factory, databaseName);
+  const secondDatabase = new ResearchBoxDatabase(factory, databaseName);
+  const firstStore = new IndexedDbProjectStore(firstDatabase);
+  const secondStore = new IndexedDbProjectStore(secondDatabase);
+  await firstStore.save(createState(), null);
+
+  const [projectCommit, sessionCommit] = await Promise.all([
+    firstStore.mutate((draft) => {
+      draft.projects[0].name = "Renamed workspace";
+      return draft;
+    }),
+    secondStore.mutate((draft) => {
+      draft.sessions[0].title = "Renamed chat";
+      draft.sessions[0].title_is_custom = true;
+      return draft;
+    }),
+  ]);
+
+  assert.deepEqual(
+    [projectCommit.state.state_revision, sessionCommit.state.state_revision]
+      .sort((left, right) => left - right),
+    [2, 3],
+  );
+  const persisted = await firstStore.load();
+  assert.equal(persisted.state_revision, 3);
+  assert.equal(persisted.projects[0].name, "Renamed workspace");
+  assert.equal(persisted.sessions[0].title, "Renamed chat");
+
+  firstDatabase.close();
+  secondDatabase.close();
+});
+
+test("IndexedDB draft and catalog mutations preserve both writers", async () => {
+  const factory = new IDBFactory();
+  const databaseName = `researchbox-draft-mutate-${crypto.randomUUID()}`;
+  const firstDatabase = new ResearchBoxDatabase(factory, databaseName);
+  const secondDatabase = new ResearchBoxDatabase(factory, databaseName);
+  const firstStore = new IndexedDbProjectStore(firstDatabase);
+  const secondStore = new IndexedDbProjectStore(secondDatabase);
+  await firstStore.save(createState(), null);
+
+  await Promise.all([
+    firstStore.saveInputDraft({
+      project_id: "project-1",
+      session_id: "session-1",
+      input_draft: "Concurrent draft",
+    }),
+    secondStore.mutate((draft) => {
+      draft.projects[0].name = "Concurrent rename";
+      return draft;
+    }),
+  ]);
+
+  const persisted = await firstStore.load();
+  assert.equal(persisted.state_revision, 3);
+  assert.equal(persisted.projects[0].name, "Concurrent rename");
+  assert.equal(persisted.documents[0].input_draft, "Concurrent draft");
+
+  firstDatabase.close();
+  secondDatabase.close();
 });
 
 function createState() {

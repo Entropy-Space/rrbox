@@ -779,11 +779,19 @@ export class ResearchBoxCore {
     }
 
     try {
-      await this.projectStore.saveInputDraft({
+      const commit = await this.projectStore.saveInputDraft({
         project_id: projectId,
         session_id: sessionId,
         input_draft: inputDraft,
       });
+      this.state = commit.state;
+      if (
+        sessionId !== null &&
+        this.runtime?.project_id === projectId &&
+        this.runtime.session_id === sessionId
+      ) {
+        this.runtime.bindDocument(this.requireDocument(sessionId));
+      }
     } catch (error) {
       this.emitError(
         "persistence_failed",
@@ -795,11 +803,6 @@ export class ResearchBoxCore {
       return;
     }
 
-    if (sessionId === null) {
-      project.new_chat_draft = inputDraft;
-    } else {
-      this.requireDocument(sessionId).input_draft = inputDraft;
-    }
     this.emit(
       "input_draft_saved",
       {

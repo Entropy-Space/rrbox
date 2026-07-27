@@ -379,6 +379,7 @@ export function ResearchBoxViewer({
         sessions={coreState.sessions}
         activeProjectId={coreState.active_project_id}
         activeSessionId={coreState.active_session_id}
+        inputDraft={coreState.input_draft}
         isPending={isSidebarPending}
         isWorkspaceTransferDisabled={
           isWorkspaceTransferDisabled || isWorkspaceTransferPending

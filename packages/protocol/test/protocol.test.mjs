@@ -545,6 +545,38 @@ test("virtual new chat requires an empty timeline and cannot run", () => {
   );
 });
 
+test("project new-chat draft visibility is optional and strictly boolean", () => {
+  const legacy = parseCoreEvent(
+    coreEvent("state_snapshot", { state: createVirtualState() }),
+  );
+  assert.equal(
+    Object.hasOwn(
+      legacy.payload.state.projects[0],
+      "has_new_chat_draft",
+    ),
+    false,
+  );
+
+  for (const hasNewChatDraft of [false, true]) {
+    const state = createVirtualState();
+    state.projects[0].has_new_chat_draft = hasNewChatDraft;
+    const parsed = parseCoreEvent(
+      coreEvent("state_snapshot", { state }),
+    );
+    assert.equal(
+      parsed.payload.state.projects[0].has_new_chat_draft,
+      hasNewChatDraft,
+    );
+  }
+
+  const invalid = createVirtualState();
+  invalid.projects[0].has_new_chat_draft = "true";
+  assert.throws(
+    () => parseCoreEvent(coreEvent("state_snapshot", { state: invalid })),
+    /has_new_chat_draft must be a boolean/,
+  );
+});
+
 test("requires request correlation for filesystem, draft, and workspace change results", () => {
   for (const event of [
     coreEvent("files_snapshot", {

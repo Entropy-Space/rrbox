@@ -6,3 +6,20 @@ export function isModalNavigationOpen(
 ): boolean {
   return sidebarOpen && isMobileViewport;
 }
+
+export function navigationFocusTrapTarget({
+  isFocusInside,
+  isFocusFirst,
+  isFocusLast,
+  shiftKey,
+}: {
+  isFocusInside: boolean;
+  isFocusFirst: boolean;
+  isFocusLast: boolean;
+  shiftKey: boolean;
+}): "first" | "last" | null {
+  if (!isFocusInside) return shiftKey ? "last" : "first";
+  if (shiftKey && isFocusFirst) return "last";
+  if (!shiftKey && isFocusLast) return "first";
+  return null;
+}

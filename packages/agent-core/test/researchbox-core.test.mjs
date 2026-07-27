@@ -318,6 +318,90 @@ test("new chat is idempotent and project and session drafts stay isolated", asyn
   assert.equal(latestState(events).sessions.length, 0);
 });
 
+test("project summaries expose exact active and inactive new-chat draft presence", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+  const firstProjectId = latestState(events).active_project_id;
+  assert.equal(
+    latestState(events).projects.find(
+      (project) => project.project_id === firstProjectId,
+    )?.has_new_chat_draft,
+    false,
+  );
+
+  await core.handle(
+    createCommand("input_draft_update", {
+      project_id: firstProjectId,
+      session_id: null,
+      input_draft: " \n\t",
+    }),
+  );
+  assert.equal(
+    (await store.load()).projects.find(
+      (project) => project.project_id === firstProjectId,
+    )?.new_chat_draft,
+    " \n\t",
+  );
+  await core.handle(
+    createCommand("new_chat", { project_id: firstProjectId }),
+  );
+  assert.equal(
+    latestState(events).projects.find(
+      (project) => project.project_id === firstProjectId,
+    )?.has_new_chat_draft,
+    true,
+  );
+
+  await core.handle(createCommand("project_create", { name: "Second" }));
+  const secondProjectId = latestState(events).active_project_id;
+  const afterCreate = latestState(events);
+  assert.equal(
+    afterCreate.projects.find(
+      (project) => project.project_id === firstProjectId,
+    )?.has_new_chat_draft,
+    true,
+  );
+  assert.equal(
+    afterCreate.projects.find(
+      (project) => project.project_id === secondProjectId,
+    )?.has_new_chat_draft,
+    false,
+  );
+
+  await core.handle(
+    createCommand("input_draft_update", {
+      project_id: secondProjectId,
+      session_id: null,
+      input_draft: "Second project draft",
+    }),
+  );
+  assert.equal(
+    (await store.load()).projects.find(
+      (project) => project.project_id === secondProjectId,
+    )?.new_chat_draft,
+    "Second project draft",
+  );
+  await core.handle(
+    createCommand("new_chat", { project_id: secondProjectId }),
+  );
+  const withBothDrafts = latestState(events);
+  assert.equal(
+    withBothDrafts.projects.find(
+      (project) => project.project_id === firstProjectId,
+    )?.has_new_chat_draft,
+    true,
+  );
+  assert.equal(
+    withBothDrafts.projects.find(
+      (project) => project.project_id === secondProjectId,
+    )?.has_new_chat_draft,
+    true,
+  );
+});
+
 test("model selection is chat-scoped and survives first send and reload", async () => {
   const store = new MemoryProjectStore();
   const provider = createWorkspaceProvider();

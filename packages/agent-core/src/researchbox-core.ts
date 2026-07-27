@@ -1479,12 +1479,21 @@ export class ResearchBoxCore {
       workspace_revision: workspaceRevision,
       projects: [...state.projects]
         .sort(compareUpdatedDescending)
-        .map(({ project_id, name, created_at, updated_at }) => ({
-          project_id,
-          name,
-          created_at,
-          updated_at,
-        })),
+        .map(
+          ({
+            project_id,
+            name,
+            created_at,
+            updated_at,
+            new_chat_draft,
+          }) => ({
+            project_id,
+            name,
+            created_at,
+            updated_at,
+            has_new_chat_draft: new_chat_draft.length > 0,
+          }),
+        ),
       sessions: [...state.sessions]
         .sort(compareUpdatedDescending)
         .map(({ session_id, project_id, title, created_at, updated_at }) => ({

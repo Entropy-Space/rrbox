@@ -139,6 +139,7 @@ export type ProjectSummary = {
   name: string;
   created_at: string;
   updated_at: string;
+  has_new_chat_draft?: boolean;
 };
 
 export type SessionSummary = {
@@ -1128,11 +1129,18 @@ function assertCoreStateInvariants(snapshot: CoreStateSnapshot): void {
 
 function parseProjectSummary(value: unknown): ProjectSummary {
   if (!isRecord(value)) throw new Error("Project summary must be an object.");
+  const hasNewChatDraft = optionalBoolean(
+    value,
+    "has_new_chat_draft",
+  );
   return {
     project_id: requireString(value, "project_id"),
     name: requireString(value, "name"),
     created_at: requireString(value, "created_at"),
     updated_at: requireString(value, "updated_at"),
+    ...(hasNewChatDraft === undefined
+      ? {}
+      : { has_new_chat_draft: hasNewChatDraft }),
   };
 }
 

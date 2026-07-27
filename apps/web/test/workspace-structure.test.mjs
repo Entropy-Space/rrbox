@@ -9,27 +9,39 @@ const root = fileURLToPath(new URL("../../..", import.meta.url));
 test("keeps the proposed workspace surfaces present", async () => {
   const expectedPaths = [
     "apps/web",
-    "apps/mock-server",
+    "apps/native",
+    "packages/client",
+    "packages/mock-provider",
     "packages/protocol",
     "packages/agent-core",
     "packages/viewer",
     "packages/model-transport",
     "packages/project-store",
     "packages/runtime-browser",
+    "packages/storage-browser",
     "packages/vfs",
     "packages/workspace-archive",
-    "platforms/ios",
-    "platforms/desktop",
   ];
 
   await Promise.all(
     expectedPaths.map((relativePath) => access(path.join(root, relativePath))),
+  );
+  await Promise.all(
+    [
+      "apps/mock-server",
+      "apps/web/browser/persistence",
+      "platforms/ios",
+      "platforms/desktop",
+    ].map((relativePath) =>
+      assert.rejects(access(path.join(root, relativePath))),
+    ),
   );
   await assert.rejects(access(path.join(root, ".openai", "hosting.json")));
 });
 
 test("keeps framework dependencies out of portable packages", async () => {
   const portablePackages = [
+    "client",
     "protocol",
     "model-transport",
     "runtime-browser",
@@ -38,6 +50,7 @@ test("keeps framework dependencies out of portable packages", async () => {
     "workspace-archive",
   ];
   const forbiddenDependencies = new Set([
+    "@tauri-apps/api",
     "next",
     "react",
     "vinext",
@@ -61,9 +74,29 @@ test("keeps framework dependencies out of portable packages", async () => {
   }
 });
 
+test("keeps native tooling inside the Tauri composition root", async () => {
+  const [manifestSource, tauriConfigSource, cargoManifest] = await Promise.all([
+    readFile(path.join(root, "apps/native/package.json"), "utf8"),
+    readFile(
+      path.join(root, "apps/native/src-tauri/tauri.conf.json"),
+      "utf8",
+    ),
+    readFile(path.join(root, "apps/native/src-tauri/Cargo.toml"), "utf8"),
+  ]);
+  const manifest = JSON.parse(manifestSource);
+  const tauriConfig = JSON.parse(tauriConfigSource);
+
+  assert.equal(manifest.packageManager, undefined);
+  assert.equal(manifest.devDependencies["@tauri-apps/cli"], "^2");
+  assert.equal(manifest.dependencies["@tauri-apps/api"], "^2");
+  assert.equal(tauriConfig.build.frontendDist, "../dist");
+  assert.equal(tauriConfig.build.devUrl, "http://localhost:1420");
+  assert.match(cargoManifest, /^tauri = \{ version = "2"/m);
+});
+
 test("uses ResearchBox casing in authored text files", async () => {
   const legacyBrand = ["Research", "box"].join("");
-  const authoredRoots = ["README.md", "ARCHITECTURE.md", "apps", "packages", "platforms"];
+  const authoredRoots = ["README.md", "ARCHITECTURE.md", "apps", "packages"];
   const files = [];
 
   for (const authoredRoot of authoredRoots) {

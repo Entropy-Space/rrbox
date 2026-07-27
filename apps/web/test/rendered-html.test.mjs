@@ -44,11 +44,36 @@ test("server-renders the ResearchBox application shell", async () => {
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
 });
 
+test("loads viewer styling through the viewer package export", async () => {
+  const [layout, globals, viewerStyles, viewerManifestSource] =
+    await Promise.all([
+      readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+      readFile(
+        new URL("../../../packages/viewer/src/styles.css", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../../../packages/viewer/package.json", import.meta.url),
+        "utf8",
+      ),
+    ]);
+  const viewerManifest = JSON.parse(viewerManifestSource);
+
+  assert.match(layout, /import "@researchbox\/viewer\/styles\.css"/);
+  assert.equal(viewerManifest.exports["./styles.css"], "./src/styles.css");
+  assert.match(globals, /@import "tailwindcss"/);
+  assert.doesNotMatch(globals, /\.app-shell\s*\{/);
+  assert.match(viewerStyles, /\.app-shell\s*\{/);
+  assert.doesNotMatch(viewerStyles, /@import "tailwindcss"/);
+});
+
 test("keeps package boundaries explicit", async () => {
   const [
     app,
     viewer,
     session,
+    workerTransport,
     coreWorker,
     llmWorker,
     archiveWorker,
@@ -69,6 +94,13 @@ test("keeps package boundaries explicit", async () => {
       readFile(
         new URL(
           "../../../packages/viewer/src/use-agent-session.ts",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+      readFile(
+        new URL(
+          "../../../packages/runtime-browser/src/worker-core-transport.ts",
           import.meta.url,
         ),
         "utf8",
@@ -104,10 +136,16 @@ test("keeps package boundaries explicit", async () => {
     ]);
 
   assert.match(app, /new Worker\(new URL\(/);
+  assert.match(app, /WorkerCoreTransport/);
+  assert.match(app, /createTransport=\{createTransport\}/);
   assert.match(app, /workspaceTransferAdapter/);
   assert.doesNotMatch(viewer, /new Worker\(/);
+  assert.doesNotMatch(viewer, /\bWorker\b/);
+  assert.doesNotMatch(session, /\bWorker\b|postMessage/);
+  assert.match(session, /CoreTransportFactory/);
+  assert.match(session, /transport\.send\(createCommand\("bootstrap"/);
   assert.match(session, /createCommand\("bootstrap"/);
-  assert.match(session, /parseCoreEvent/);
+  assert.match(workerTransport, /parseCoreEvent/);
   assert.match(viewer, /<details className="reasoning-block">/);
   assert.doesNotMatch(
     viewer,
@@ -204,7 +242,10 @@ test("gives readers control of conversation scrolling during streaming", async (
       ),
       "utf8",
     ),
-    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(
+      new URL("../../../packages/viewer/src/styles.css", import.meta.url),
+      "utf8",
+    ),
   ]);
   const scrollSources = `${viewer}\n${controller}`;
 

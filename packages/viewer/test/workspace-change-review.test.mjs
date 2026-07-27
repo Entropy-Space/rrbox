@@ -167,10 +167,7 @@ test("the review component exposes a bounded accessible diff surface", async () 
       new URL("../src/WorkspaceChangeReview.tsx", import.meta.url),
       "utf8",
     ),
-    readFile(
-      new URL("../../../apps/web/app/globals.css", import.meta.url),
-      "utf8",
-    ),
+    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
     readFile(new URL("../src/index.ts", import.meta.url), "utf8"),
   ]);
 

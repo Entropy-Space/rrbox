@@ -1,0 +1,16 @@
+[package]
+name = "researchbox-native"
+version = "0.1.0"
+description = "ResearchBox native application shell"
+authors = ["ResearchBox contributors"]
+edition = "2024"
+
+[lib]
+name = "researchbox_native"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }

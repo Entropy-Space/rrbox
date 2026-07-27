@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { PROTOCOL_VERSION } from "@researchbox/protocol";
 import {
-  createWorkerTerminator,
+  createTransportCloser,
   requestWorkspaceExport,
 } from "../src/use-agent-session.ts";
 import { WorkspaceTransferRequests } from "../src/workspace-transfer.ts";
@@ -63,7 +63,7 @@ test("canceling an export rejects promptly and correlates the core cancel", asyn
   const controller = new AbortController();
   const completion = requestWorkspaceExport(
     requests,
-    { postMessage: (message) => messages.push(message) },
+    { send: (message) => messages.push(message) },
     "project-1",
     controller.signal,
   );
@@ -117,7 +117,7 @@ test("a late snapshot for a locally canceled export is consumed", async () => {
   const controller = new AbortController();
   const completion = requestWorkspaceExport(
     requests,
-    { postMessage: (message) => messages.push(message) },
+    { send: (message) => messages.push(message) },
     "project-1",
     controller.signal,
   );
@@ -151,7 +151,7 @@ test("an already-aborted export is rejected without posting commands", async () 
   await assert.rejects(
     requestWorkspaceExport(
       requests,
-      { postMessage: (message) => messages.push(message) },
+      { send: (message) => messages.push(message) },
       "project-1",
       controller.signal,
     ),
@@ -202,23 +202,19 @@ test("transport shutdown rejects every pending transfer", async () => {
   assert.equal(requests.size, 0);
 });
 
-test("a failed core worker is detached and terminated exactly once", () => {
-  let terminateCount = 0;
-  const worker = {
-    onerror() {},
-    onmessage() {},
-    terminate() {
-      terminateCount += 1;
+test("a failed core transport is closed exactly once", () => {
+  let closeCount = 0;
+  const transport = {
+    close() {
+      closeCount += 1;
     },
   };
-  const terminateWorker = createWorkerTerminator(worker);
+  const closeTransport = createTransportCloser(transport);
 
-  terminateWorker();
-  terminateWorker();
+  closeTransport();
+  closeTransport();
 
-  assert.equal(worker.onerror, null);
-  assert.equal(worker.onmessage, null);
-  assert.equal(terminateCount, 1);
+  assert.equal(closeCount, 1);
 });
 
 test("duplicate request IDs reject without replacing the original request", async () => {

@@ -1,9 +1,9 @@
 # ResearchBox
 
 ResearchBox is a browser-native workspace for Pi agents. Its viewer, protocol,
-agent runtime, model transport, and virtual filesystem are independent workspace
-packages so the same core contracts can support browsers, native shells, and
-remote hosts.
+agent runtime, model transport, and virtual filesystem are independent
+workspace packages. The browser remains a first-class runtime, while one
+Tauri 2 composition root prepares the same product for macOS, iOS, and Android.
 
 ## Current vertical slice
 
@@ -37,33 +37,35 @@ remote hosts.
 
 ```text
 apps/
-  web/                 Vinext application and browser composition root
-  mock-server/         Framework-neutral mock model request handler
+  web/                 Vinext browser composition root and worker entries
+  native/              Tauri 2 composition root for macOS, iOS, and Android
 
 packages/
+  client/              Platform-neutral viewer/core transport contract
   protocol/            Serialized viewer/core contract and validators
   agent-core/          Pi agent orchestration and tools
   viewer/              React conversation and workspace UI
   model-transport/     Model request/stream contract and HTTP adapter
   runtime-browser/     Core and LLM Web Worker hosts and transports
+  storage-browser/     IndexedDB and OPFS project/workspace adapters
+  mock-provider/       Framework-neutral mock model request handler
   vfs/                 Workspace capabilities, errors, and adapters
   vfs-testkit/         Shared backend conformance suite
   workspace-archive/   Deterministic workspace ZIP capture and codec
   project-store/       Project/session records and persistence contract
-
-platforms/
-  ios/                 Future iOS storage/runtime composition
-  desktop/             Future desktop folder/runtime composition
 ```
 
-The web app is the composition root. Reusable packages do not import Next.js,
-Vinext, or application files. See [ARCHITECTURE.md](./ARCHITECTURE.md) for the
-dependency rules.
+Applications are composition roots. Reusable packages do not import Next.js,
+Vinext, Tauri, or application files. The native root currently proves the
+static shell and build boundary; connecting the shared viewer through typed
+Tauri IPC is the next native milestone. See
+[ARCHITECTURE.md](./ARCHITECTURE.md) for the dependency rules.
 
 ## Requirements
 
 - Node.js 22.19 or newer
 - pnpm 10.30.3
+- Rust 1.85 or newer for native validation and development
 
 ## Development
 
@@ -81,6 +83,30 @@ cannot assume the gateway enables CORS. The mock provider remains available
 when the local gateway is stopped. Set `RESEARCHBOX_LOCAL_OPENAI_BASE_URL` to
 override the local base URL during development.
 
+### Native shell
+
+Build the shared static frontend without opening a native window:
+
+```bash
+pnpm build:native
+pnpm check:native
+```
+
+Run the macOS desktop shell:
+
+```bash
+pnpm dev:native
+```
+
+Tauri's generated Android and iOS projects are intentionally not checked in
+yet. Initialize them from `apps/native` only on a machine with the relevant
+mobile toolchain:
+
+```bash
+pnpm --filter @researchbox/native tauri android init
+pnpm --filter @researchbox/native tauri ios init
+```
+
 ## Validation
 
 ```bash
@@ -89,6 +115,9 @@ pnpm lint
 pnpm test
 ```
 
+`pnpm test` builds both application frontends, checks the Rust host, and runs
+the shared browser/package test suites.
+
 ## Deployment policy
 
 Keep this repository local unless the user explicitly selects and authorizes a
@@ -96,7 +125,7 @@ deployment target. Never publish ResearchBox to `chatgpt.site`.
 
 ## Storage
 
-The browser composition stores project metadata, drafts, normalized session
+The browser storage package stores project metadata, drafts, normalized session
 timelines, transactional file manifests, undo-ready change receipts, and
 workspace revisions in one versioned IndexedDB database. When the browser can
 successfully create and close an OPFS writable stream, immutable

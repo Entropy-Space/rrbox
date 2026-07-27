@@ -1,5 +1,6 @@
 "use client";
 
+import type { CoreTransportFactory } from "@researchbox/client";
 import {
   ArrowDown,
   ArrowUp,
@@ -77,7 +78,7 @@ import {
 } from "./workspace-transfer.ts";
 
 export type ResearchBoxViewerProps = {
-  createWorker: () => Worker;
+  createTransport: CoreTransportFactory;
   workspaceTransferAdapter?: WorkspaceTransferAdapter;
 };
 
@@ -105,7 +106,7 @@ const suggestions = [
 ];
 
 export function ResearchBoxViewer({
-  createWorker,
+  createTransport,
   workspaceTransferAdapter,
 }: ResearchBoxViewerProps) {
   const {
@@ -134,7 +135,7 @@ export function ResearchBoxViewer({
     abortRun,
     openFile,
     navigateToParent,
-  } = useAgentSession(createWorker);
+  } = useAgentSession(createTransport);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const [isMobileViewport, setMobileViewport] = useState(false);

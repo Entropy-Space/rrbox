@@ -4,28 +4,49 @@
 
 ```text
 apps/web
-  ├─ packages/viewer ────────────────┐
-  │          │                       │ JSON commands/events
-  │          └─ packages/protocol ◄──┤
+  ├─ packages/viewer
+  │    ├─ packages/client ───────────┐
+  │    └─ packages/protocol          │ typed commands/events
   │                                  │
-  └─ browser/core.worker.ts          │
-       ├─ packages/runtime-browser ──┘
-       ├─ packages/agent-core
-       │    ├─ packages/protocol
-       │    ├─ packages/model-transport
-       │    ├─ packages/project-store
-       │    └─ packages/vfs
-       ├─ IndexedDB project/session store
-       ├─ IndexedDB workspace backend
-       └─ worker model transport
-            │ versioned JSON, multiplexed by stream_id
-            ▼
-          browser/llm.worker.ts
-            ├─ packages/runtime-browser LLM host
-            ├─ mock NDJSON transport → /api/mock
-            └─ OpenAI-compatible SSE transport
-                  └─ same-origin bridge → localhost:4141/v1
+  ├─ WorkerCoreTransport ────────────┘
+  │    └─ browser/core.worker.ts
+  │         ├─ packages/runtime-browser
+  │         ├─ packages/storage-browser
+  │         ├─ packages/agent-core
+  │         │    ├─ packages/protocol
+  │         │    ├─ packages/model-transport
+  │         │    ├─ packages/project-store
+  │         │    └─ packages/vfs
+  │         └─ worker model transport
+  │              │ versioned JSON, multiplexed by stream_id
+  │              ▼
+  │            browser/llm.worker.ts
+  │              ├─ packages/runtime-browser LLM host
+  │              ├─ mock NDJSON transport → /api/mock
+  │              └─ OpenAI-compatible SSE transport
+  │                    └─ same-origin bridge → localhost:4141/v1
+  └─ thin web routes
+       └─ packages/mock-provider
 ```
+
+The native composition is deliberately a separate application root:
+
+```text
+apps/native (Tauri 2)
+  ├─ static React/WebView shell
+  ├─ future CoreTransport implementation
+  │    └─ worker → window → typed Tauri IPC
+  └─ Rust host
+       ├─ application-managed storage adapter
+       ├─ provider networking adapter
+       └─ lifecycle/checkpoint adapter
+```
+
+The first native checkpoint establishes the macOS/iOS/Android build boundary
+without reading or migrating browser data. Native commands and storage arrive
+only after the worker-to-window bridge is exercised on each target. This keeps
+the browser product running while the platform seam is implemented
+incrementally.
 
 Browser-only workspace transfer stays beside that JSON boundary:
 
@@ -34,7 +55,10 @@ packages/viewer → browser workspace adapter → browser/archive.worker.ts
                                               └─ packages/workspace-archive
 ```
 
-The viewer and core worker exchange only protocol-v11 JSON values. A
+The viewer depends on `CoreTransport`, not on `Worker`. The web application
+constructs `WorkerCoreTransport`, which validates all incoming protocol values,
+isolates subscribers, and owns worker teardown. The viewer and core worker
+exchange only protocol-v11 JSON values. A
 `project_id` plus nullable `session_id` scopes the active composer: `null`
 identifies that project's single virtual new chat, while incremental run events
 always identify a durable session. Filesystem and draft acknowledgements use a
@@ -48,33 +72,40 @@ Correlated change-read events expose the durable before/after receipt plus the
 current file state. A revert event distinguishes a newly applied revert from an
 idempotent replay. Together these prevent late work from replacing a newer
 project, chat, draft, or file-navigation result. The core and LLM workers use a
-separate protocol-v6
-JSON contract so provider discovery, full conversation requests, provider I/O,
-cancellation, and future credentials stay outside the agent runtime. The viewer
-never imports Pi,
-filesystem implementations, model transports, or either worker runtime.
+separate protocol-v6 JSON contract so provider discovery, full conversation
+requests, provider I/O, cancellation, and future credentials stay outside the
+agent runtime. The viewer never imports Pi, filesystem implementations, model
+transports, or either worker runtime.
 
 The LLM worker is an isolation and lifecycle boundary, not a security boundary
 against same-origin code. Server-held credentials must remain on the server.
 
 ## Dependency rules
 
-1. `apps/web` owns framework integration, worker entry points, and concrete
-   adapters.
-2. `apps/mock-server` owns mock-model behavior and is mounted by a thin web
-   route.
-3. `packages/viewer` depends only on React, UI primitives, and the protocol.
-4. `packages/agent-core` contains a project/session manager above an optional
+1. `apps/web` owns Vinext integration, browser worker entry points, and browser
+   composition.
+2. `apps/native` owns Tauri integration and native composition. It does not
+   become a dependency of a shared package.
+3. `packages/client` owns the platform-neutral viewer/core transport contract.
+   Concrete transports belong to runtime or application packages.
+4. `packages/mock-provider` owns mock-model behavior and is mounted by a thin
+   web route.
+5. `packages/viewer` depends only on React, UI primitives, the client contract,
+   and the protocol. It does not construct workers.
+6. `packages/agent-core` contains a project/session manager above an optional
    active Pi session runtime and depends only on abstract model, project-store,
    and VFS contracts.
-5. `packages/runtime-browser` hosts compatible core and LLM handlers; it does
-   not construct ResearchBox, select providers, or import Pi.
-6. `packages/model-transport`, `packages/protocol`, `packages/project-store`,
+7. `packages/runtime-browser` hosts compatible core and LLM handlers plus the
+   Web Worker transport; it does not construct ResearchBox, select providers,
+   or import Pi.
+8. `packages/storage-browser` owns concrete IndexedDB and OPFS adapters. The
+   web core worker imports it; the portable core does not.
+9. `packages/model-transport`, `packages/protocol`, `packages/project-store`,
    `packages/vfs`, and `packages/workspace-archive` have no application or
    framework dependencies. The archive codec depends on VFS reader and seed
    types, not on a concrete backend.
-7. Platform implementations compose these packages; packages never import a
-   platform.
+10. Applications compose packages; shared packages never import an application
+    or platform host.
 
 ## Serialization
 

@@ -7,6 +7,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@researchbox/client": "workspace:*",
     "@researchbox/model-transport": "workspace:*",
     "@researchbox/protocol": "workspace:*"
   }

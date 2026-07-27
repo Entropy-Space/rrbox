@@ -8,9 +8,13 @@
   },
   "scripts": {
     "dev": "pnpm --filter @researchbox/web dev",
-    "build": "pnpm --filter @researchbox/web build",
+    "dev:native": "pnpm --filter @researchbox/native tauri dev",
+    "build": "pnpm run build:web && pnpm run build:native",
+    "build:web": "pnpm --filter @researchbox/web build",
+    "build:native": "pnpm --filter @researchbox/native build",
+    "check:native": "cargo check --manifest-path apps/native/src-tauri/Cargo.toml",
     "start": "pnpm --filter @researchbox/web start",
-    "test": "pnpm run typecheck && pnpm run build && node --experimental-strip-types --test apps/*/test/*.test.mjs packages/*/test/*.test.mjs",
+    "test": "pnpm run typecheck && pnpm run build && pnpm run check:native && node --experimental-strip-types --test apps/*/test/*.test.mjs packages/*/test/*.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint apps packages --ignore-pattern dist --ignore-pattern .next"
   },
@@ -20,7 +24,6 @@
     "@types/react-dom": "19.2.3",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",
-    "fake-indexeddb": "6.2.4",
     "next": "16.2.6",
     "typescript": "5.9.3"
   },

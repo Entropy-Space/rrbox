@@ -1,0 +1,20 @@
+{
+  "name": "@researchbox/storage-browser",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@researchbox/project-store": "workspace:*",
+    "@researchbox/vfs": "workspace:*"
+  },
+  "devDependencies": {
+    "@researchbox/agent-core": "workspace:*",
+    "@researchbox/protocol": "workspace:*",
+    "@researchbox/vfs-testkit": "workspace:*",
+    "@researchbox/workspace-archive": "workspace:*",
+    "fake-indexeddb": "6.2.4"
+  }
+}

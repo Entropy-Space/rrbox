@@ -8,12 +8,12 @@ import {
   WorkerModelTransport,
   type WorkerHost,
 } from "@researchbox/runtime-browser";
-import { startBrowserRuntime } from "./browser-runtime.ts";
 import {
   BrowserWorkspaceBackend,
   IndexedDbProjectStore,
   ResearchBoxDatabase,
-} from "./persistence";
+} from "@researchbox/storage-browser";
+import { startBrowserRuntime } from "./browser-runtime.ts";
 import { researchBoxSeedFiles } from "./seed-files";
 import { researchBoxMockModel, researchBoxSystemPrompt } from "./mock-model";
 import { BROWSER_WORKSPACE_ARCHIVE_OPTIONS } from "./workspace-transfer-limits.ts";

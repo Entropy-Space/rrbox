@@ -1,6 +1,10 @@
+import type {
+  CoreTransport,
+  CoreTransportFactory,
+  CoreTransportFailure,
+} from "@researchbox/client";
 import {
   createCommand,
-  parseCoreEvent,
   type AssistantBlock,
   type BootstrapSelection,
   type CoreEvent,
@@ -183,7 +187,7 @@ type ManagementCommand = Exclude<
   }
 >;
 
-export function useAgentSession(createWorker: () => Worker) {
+export function useAgentSession(createTransport: CoreTransportFactory) {
   const [coreState, dispatch] = useReducer(
     coreReducer,
     initialAgentSessionState,
@@ -193,7 +197,7 @@ export function useAgentSession(createWorker: () => Worker) {
   const [refreshingProviderIds, setRefreshingProviderIds] = useState<Set<string>>(
     () => new Set(),
   );
-  const workerRef = useRef<Worker | null>(null);
+  const transportRef = useRef<CoreTransport | null>(null);
   const pendingManagementRequestRef = useRef<string | null>(null);
   const pendingProviderRefreshRequestRef = useRef(new Map<string, string>());
   const workspaceTransferRequestsRef =
@@ -221,7 +225,7 @@ export function useAgentSession(createWorker: () => Worker) {
     activeModel?.availability === "ready";
 
   const sendCommand = useCallback((command: ViewerCommand) => {
-    workerRef.current?.postMessage(command);
+    transportRef.current?.send(command);
   }, []);
 
   useEffect(() => {
@@ -356,11 +360,11 @@ export function useAgentSession(createWorker: () => Worker) {
   ]);
 
   useEffect(() => {
-    const worker = createWorker();
-    const terminateWorker = createWorkerTerminator(worker);
-    const failWorker = (message: string) => {
-      terminateWorker();
-      if (workerRef.current === worker) workerRef.current = null;
+    const transport = createTransport();
+    const closeTransport = createTransportCloser(transport);
+    const failTransport = (message: string) => {
+      closeTransport();
+      if (transportRef.current === transport) transportRef.current = null;
       setTransportError(message);
       dispatch({ type: "transport_failed", message });
       pendingManagementRequestRef.current = null;
@@ -370,69 +374,78 @@ export function useAgentSession(createWorker: () => Worker) {
       setRefreshingProviderIds(new Set());
       setManagementPending(false);
     };
-    workerRef.current = worker;
-    worker.onmessage = (message: MessageEvent<unknown>) => {
-      try {
-        const event = parseCoreEvent(message.data);
-        const handledWorkspaceTransfer =
-          workspaceTransferRequestsRef.current?.accept(event) ?? false;
-        const handledWorkspaceChange =
-          workspaceChangeRequestsRef.current?.accept(event) ?? false;
-        if (
-          (!handledWorkspaceTransfer && !handledWorkspaceChange) ||
-          event.type === "state_snapshot" ||
-          event.type === "workspace_change_reverted"
-        ) {
-          dispatch(event);
-        }
-        if (event.type === "state_snapshot") {
-          saveSessionSelection(event.payload.state);
-        }
-        if (
-          event.request_id === pendingManagementRequestRef.current &&
-          (event.type === "state_snapshot" || event.type === "error")
-        ) {
-          pendingManagementRequestRef.current = null;
-          setManagementPending(false);
-        }
-        const refreshingProviderId = event.request_id
-          ? pendingProviderRefreshRequestRef.current.get(event.request_id)
-          : undefined;
-        if (refreshingProviderId && event.request_id) {
-          const refreshRequestId = event.request_id;
-          const provider =
-            event.type === "state_snapshot"
-              ? event.payload.state.providers.find(
-                  (candidate) =>
-                    candidate.provider_id === refreshingProviderId,
-                )
-              : event.type === "provider_catalog_snapshot"
-                ? event.payload.providers.find(
+    transportRef.current = transport;
+    const unsubscribe = transport.subscribe(
+      (event) => {
+        try {
+          const handledWorkspaceTransfer =
+            workspaceTransferRequestsRef.current?.accept(event) ?? false;
+          const handledWorkspaceChange =
+            workspaceChangeRequestsRef.current?.accept(event) ?? false;
+          if (
+            (!handledWorkspaceTransfer && !handledWorkspaceChange) ||
+            event.type === "state_snapshot" ||
+            event.type === "workspace_change_reverted"
+          ) {
+            dispatch(event);
+          }
+          if (event.type === "state_snapshot") {
+            saveSessionSelection(event.payload.state);
+          }
+          if (
+            event.request_id === pendingManagementRequestRef.current &&
+            (event.type === "state_snapshot" || event.type === "error")
+          ) {
+            pendingManagementRequestRef.current = null;
+            setManagementPending(false);
+          }
+          const refreshingProviderId = event.request_id
+            ? pendingProviderRefreshRequestRef.current.get(event.request_id)
+            : undefined;
+          if (refreshingProviderId && event.request_id) {
+            const refreshRequestId = event.request_id;
+            const provider =
+              event.type === "state_snapshot"
+                ? event.payload.state.providers.find(
                     (candidate) =>
                       candidate.provider_id === refreshingProviderId,
                   )
-              : undefined;
-          if (event.type === "error" || provider?.availability !== "loading") {
-            pendingProviderRefreshRequestRef.current.delete(refreshRequestId);
-            setRefreshingProviderIds((current) => {
-              const next = new Set(current);
-              next.delete(refreshingProviderId);
-              return next;
-            });
+                : event.type === "provider_catalog_snapshot"
+                  ? event.payload.providers.find(
+                      (candidate) =>
+                        candidate.provider_id === refreshingProviderId,
+                    )
+                  : undefined;
+            if (
+              event.type === "error" ||
+              provider?.availability !== "loading"
+            ) {
+              pendingProviderRefreshRequestRef.current.delete(
+                refreshRequestId,
+              );
+              setRefreshingProviderIds((current) => {
+                const next = new Set(current);
+                next.delete(refreshingProviderId);
+                return next;
+              });
+            }
           }
+        } catch {
+          failTransport("The browser core sent an invalid event.");
         }
-      } catch {
-        failWorker("The browser core sent an invalid event.");
-      }
-    };
-    worker.onerror = () => {
-      failWorker("The browser core stopped. Refresh to try again.");
-    };
-    worker.postMessage(
-      createCommand("bootstrap", loadSessionSelection()),
+      },
+      (failure) => {
+        failTransport(coreTransportFailureMessage(failure));
+      },
     );
+    try {
+      transport.send(createCommand("bootstrap", loadSessionSelection()));
+    } catch {
+      failTransport("The browser core stopped. Refresh to try again.");
+    }
 
     return () => {
+      unsubscribe();
       workspaceTransferRequestsRef.current?.rejectAll(
         new Error(
           "The browser core closed before the workspace transfer completed.",
@@ -443,10 +456,10 @@ export function useAgentSession(createWorker: () => Worker) {
           "The browser core closed before the workspace change request completed.",
         ),
       );
-      terminateWorker();
-      if (workerRef.current === worker) workerRef.current = null;
+      closeTransport();
+      if (transportRef.current === transport) transportRef.current = null;
     };
-  }, [createWorker]);
+  }, [createTransport]);
 
   const submitPrompt = useCallback(
     (prompt: string): boolean => {
@@ -564,9 +577,9 @@ export function useAgentSession(createWorker: () => Worker) {
       const command = createCommand("project_import", { name, files });
       const completion = requests.beginImport(command.request_id);
       try {
-        const worker = workerRef.current;
-        if (!worker) throw new Error("The browser core is not ready.");
-        worker.postMessage(command);
+        const transport = transportRef.current;
+        if (!transport) throw new Error("The browser core is not ready.");
+        transport.send(command);
       } catch (error) {
         requests.reject(command.request_id, toError(error));
       }
@@ -588,7 +601,7 @@ export function useAgentSession(createWorker: () => Worker) {
       }
       return requestWorkspaceExport(
         requests,
-        workerRef.current,
+        transportRef.current,
         projectId,
         signal,
       );
@@ -603,7 +616,7 @@ export function useAgentSession(createWorker: () => Worker) {
     ): Promise<WorkspaceChangeSnapshot> =>
       requestWorkspaceChange(
         workspaceChangeRequestsRef.current,
-        workerRef.current,
+        transportRef.current,
         "workspace_change_read",
         projectId,
         changeId,
@@ -618,7 +631,7 @@ export function useAgentSession(createWorker: () => Worker) {
     ): Promise<WorkspaceChangeRevertResult> =>
       requestWorkspaceChange(
         workspaceChangeRequestsRef.current,
-        workerRef.current,
+        transportRef.current,
         "workspace_change_revert",
         projectId,
         changeId,
@@ -853,21 +866,21 @@ function saveSessionSelection(state: CoreStateSnapshot): void {
 
 function requestWorkspaceChange(
   requests: WorkspaceChangeRequests | null,
-  worker: Pick<Worker, "postMessage"> | null,
+  transport: Pick<CoreTransport, "send"> | null,
   type: "workspace_change_read",
   projectId: string,
   changeId: string,
 ): Promise<WorkspaceChangeSnapshot>;
 function requestWorkspaceChange(
   requests: WorkspaceChangeRequests | null,
-  worker: Pick<Worker, "postMessage"> | null,
+  transport: Pick<CoreTransport, "send"> | null,
   type: "workspace_change_revert",
   projectId: string,
   changeId: string,
 ): Promise<WorkspaceChangeRevertResult>;
 function requestWorkspaceChange(
   requests: WorkspaceChangeRequests | null,
-  worker: Pick<Worker, "postMessage"> | null,
+  transport: Pick<CoreTransport, "send"> | null,
   type: "workspace_change_read" | "workspace_change_revert",
   projectId: string,
   changeId: string,
@@ -877,7 +890,7 @@ function requestWorkspaceChange(
       new Error("Workspace change inspection is unavailable."),
     );
   }
-  if (!worker) {
+  if (!transport) {
     return Promise.reject(new Error("The browser core is not ready."));
   }
 
@@ -888,7 +901,7 @@ function requestWorkspaceChange(
     });
     return postWorkspaceChangeRequest(
       requests,
-      worker,
+      transport,
       command,
       requests.beginRead(
         command.request_id,
@@ -904,7 +917,7 @@ function requestWorkspaceChange(
   });
   return postWorkspaceChangeRequest(
     requests,
-    worker,
+    transport,
     command,
     requests.beginRevert(
       command.request_id,
@@ -916,7 +929,7 @@ function requestWorkspaceChange(
 
 function postWorkspaceChangeRequest<T>(
   requests: WorkspaceChangeRequests,
-  worker: Pick<Worker, "postMessage">,
+  transport: Pick<CoreTransport, "send">,
   command: Extract<
     ViewerCommand,
     { type: "workspace_change_read" | "workspace_change_revert" }
@@ -924,7 +937,7 @@ function postWorkspaceChangeRequest<T>(
   completion: Promise<T>,
 ): Promise<T> {
   try {
-    worker.postMessage(command);
+    transport.send(command);
   } catch (error) {
     requests.reject(command.request_id, toError(error));
   }
@@ -933,12 +946,12 @@ function postWorkspaceChangeRequest<T>(
 
 export function cancelWorkspaceExportRequest(
   requests: WorkspaceTransferRequests,
-  worker: Pick<Worker, "postMessage">,
+  transport: Pick<CoreTransport, "send">,
   targetRequestId: string,
 ): boolean {
   if (!requests.cancelExport(targetRequestId)) return false;
   try {
-    worker.postMessage(
+    transport.send(
       createCommand("workspace_export_cancel", {
         target_request_id: targetRequestId,
       }),
@@ -951,7 +964,7 @@ export function cancelWorkspaceExportRequest(
 
 export function requestWorkspaceExport(
   requests: WorkspaceTransferRequests,
-  worker: Pick<Worker, "postMessage"> | null,
+  transport: Pick<CoreTransport, "send"> | null,
   projectId: string,
   signal: AbortSignal,
 ): Promise<WorkspaceExportSnapshot> {
@@ -965,7 +978,7 @@ export function requestWorkspaceExport(
       new Error("Another workspace transfer is already in progress."),
     );
   }
-  if (!worker) {
+  if (!transport) {
     return Promise.reject(new Error("The browser core is not ready."));
   }
 
@@ -974,7 +987,7 @@ export function requestWorkspaceExport(
   });
   const completion = requests.beginExport(command.request_id);
   try {
-    worker.postMessage(command);
+    transport.send(command);
   } catch (error) {
     requests.reject(command.request_id, toError(error));
     return completion;
@@ -983,7 +996,7 @@ export function requestWorkspaceExport(
   const cancelExport = () => {
     cancelWorkspaceExportRequest(
       requests,
-      worker,
+      transport,
       command.request_id,
     );
   };
@@ -1771,15 +1784,21 @@ function toError(value: unknown): Error {
     : new Error("The workspace transfer could not be started.");
 }
 
-export function createWorkerTerminator(
-  worker: Pick<Worker, "onmessage" | "onerror" | "terminate">,
+function coreTransportFailureMessage(
+  failure: CoreTransportFailure,
+): string {
+  return failure === "invalid_event"
+    ? "The browser core sent an invalid event."
+    : "The browser core stopped. Refresh to try again.";
+}
+
+export function createTransportCloser(
+  transport: Pick<CoreTransport, "close">,
 ): () => void {
-  let isTerminated = false;
+  let isClosed = false;
   return () => {
-    if (isTerminated) return;
-    isTerminated = true;
-    worker.onmessage = null;
-    worker.onerror = null;
-    worker.terminate();
+    if (isClosed) return;
+    isClosed = true;
+    transport.close();
   };
 }

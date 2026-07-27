@@ -10,11 +10,10 @@
   },
   "dependencies": {
     "@researchbox/agent-core": "workspace:*",
-    "@researchbox/mock-server": "workspace:*",
+    "@researchbox/mock-provider": "workspace:*",
     "@researchbox/model-transport": "workspace:*",
-    "@researchbox/project-store": "workspace:*",
     "@researchbox/runtime-browser": "workspace:*",
-    "@researchbox/vfs": "workspace:*",
+    "@researchbox/storage-browser": "workspace:*",
     "@researchbox/viewer": "workspace:*",
     "@researchbox/workspace-archive": "workspace:*",
     "next": "16.2.6",
@@ -23,7 +22,6 @@
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.37.1",
-    "@researchbox/vfs-testkit": "workspace:*",
     "@tailwindcss/postcss": "4.2.1",
     "@vitejs/plugin-react": "6.0.2",
     "@vitejs/plugin-rsc": "0.5.26",

@@ -143,6 +143,133 @@ test("summary review pauses a tool until the viewer approves it", async () => {
   assert.equal(result.content, "Approved summary");
 });
 
+test("a local review deadline clears the interaction without aborting the run", async () => {
+  const events = [];
+  const reviewDeadline = new AbortController();
+  const core = createCore(
+    new MemoryProjectStore(),
+    createWorkspaceProvider(),
+    events,
+    {
+      async *stream(request) {
+        const hasReviewResult = request.messages.some(
+          (message) =>
+            message.role === "tool" &&
+            message.tool_name === "review_timeout_test",
+        );
+        if (!hasReviewResult) {
+          yield* toolCallEvents({
+            tool_call_id: "review-timeout-call",
+            tool_name: "review_timeout_test",
+            arguments: {},
+          });
+          yield { type: "done", stop_reason: "tool_use" };
+          return;
+        }
+        yield* textEvents("Used the timeout fallback.");
+        yield { type: "done", stop_reason: "stop" };
+      },
+    },
+    {
+      plugins: [{
+        id: "review-timeout-test",
+        createTools(context) {
+          return [{
+            name: "review_timeout_test",
+            label: "Review timeout",
+            description: "Exercise a local review deadline.",
+            parameters: Type.Object({}),
+            async execute(_callId, _params, signal) {
+              try {
+                await context.request_summary_review({
+                  stage: "select-evidence",
+                  title: "Select evidence",
+                  draft_text: "",
+                  summary_model: null,
+                  draft_metadata: null,
+                  query_draft: "",
+                  query_notice: null,
+                  sections: [{
+                    section_id: "0",
+                    title: "Query",
+                    body: "Evidence",
+                    sources: [],
+                  }],
+                  selected_section_ids: ["0"],
+                }, AbortSignal.any([signal, reviewDeadline.signal]));
+                throw new Error("The review unexpectedly resolved.");
+              } catch (error) {
+                if (
+                  !(error instanceof DOMException) ||
+                  error.name !== "AbortError" ||
+                  signal.aborted
+                ) {
+                  throw error;
+                }
+              }
+              return {
+                content: [{
+                  type: "text",
+                  text: "Deterministic timeout fallback",
+                }],
+                details: { summary: "Review timed out" },
+              };
+            },
+          }];
+        },
+      }],
+    },
+  );
+
+  await core.handle(createCommand("bootstrap", {}));
+  const state = latestState(events);
+  const prompt = core.handle(createCommand("prompt", {
+    project_id: state.active_project_id,
+    session_id: null,
+    text: "Review with a deadline.",
+  }));
+  await waitForCondition(
+    () => events.some((event) => event.type === "summary_review_requested"),
+  );
+  const review = events.findLast(
+    (event) => event.type === "summary_review_requested",
+  );
+
+  reviewDeadline.abort();
+  await prompt;
+
+  const finalState = latestState(events);
+  const result = finalState.timeline.find(
+    (entry) =>
+      entry.type === "tool_result" &&
+      entry.tool_name === "review_timeout_test",
+  );
+  assert.equal(result.content, "Deterministic timeout fallback");
+  assert.equal(
+    events.findLast((event) => event.type === "run_state")
+      .payload.is_running,
+    false,
+  );
+
+  await core.handle(createCommand("summary_review_resolve", {
+    project_id: review.payload.project_id,
+    session_id: review.payload.session_id,
+    interaction_id: review.payload.interaction_id,
+    resolution: {
+      decision: "summarize",
+      approved_text: "",
+      selected_section_ids: ["0"],
+      feedback_text: "",
+      summary_model: null,
+      query_text: "",
+    },
+  }));
+  assert.equal(
+    events.findLast((event) => event.type === "error").payload.code,
+    "summary_review_not_found",
+  );
+});
+
 test("plugin completion resolves an explicitly selected ready model", async () => {
   const events = [];
   const requests = [];

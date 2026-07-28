@@ -7,7 +7,7 @@ import {
   type WebSearchPluginRuntimeConfiguration,
 } from "@researchbox/web-search-plugin/settings";
 
-export const WEB_CORE_WORKER_PROTOCOL_VERSION = 4 as const;
+export const WEB_CORE_WORKER_PROTOCOL_VERSION = 5 as const;
 
 export type WebCoreWorkerInitializeMessage = {
   protocol_version: typeof WEB_CORE_WORKER_PROTOCOL_VERSION;

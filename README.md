@@ -125,7 +125,10 @@ entered directly or improved with the selected summary model before retrieval.
 These query drafts and added searches exist only for the active tool call.
 The draft reports the model actually used, generation time,
 estimated tokens, and deterministic fallback reason. The review exists only
-while the tool call is active. Automatic summary uses the chat's active model.
+while the tool call is active. If a review remains unresolved past its
+configurable deadline, its pending interaction is cancelled and the selected
+evidence is returned as a deterministic cited digest. Automatic summary uses
+the chat's active model.
 A reviewed summary may use any ready model; if an explicit choice fails, it
 retries with the active model before producing a deterministic, source-linked
 digest. Retrieval is routed through a provider interface; Exa MCP is currently

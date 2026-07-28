@@ -14,6 +14,8 @@ export const DEFAULT_WEB_SEARCH_PROVIDER = "auto" as const;
 export const DEFAULT_WEB_SEARCH_WORKFLOW = "summary-review" as const;
 export const DEFAULT_WEB_SEARCH_SUMMARY_TIMEOUT_MS = 30_000;
 export const MAX_WEB_SEARCH_SUMMARY_TIMEOUT_MS = 60_000;
+export const DEFAULT_WEB_SEARCH_REVIEW_TIMEOUT_MS = 20_000;
+export const MAX_WEB_SEARCH_REVIEW_TIMEOUT_MS = 10 * 60_000;
 export const DEFAULT_WEB_SEARCH_ROUTING_ORDER =
   "exa-anysearch" as const;
 
@@ -113,6 +115,18 @@ export function createWebSearchPluginCatalogEntry(options: {
       },
       {
         kind: "number",
+        configuration_key: "review_timeout_seconds",
+        display_name: "Review deadline",
+        description:
+          "Auto-submit a deterministic summary if review remains unresolved.",
+        default_value: DEFAULT_WEB_SEARCH_REVIEW_TIMEOUT_MS / 1_000,
+        minimum: 5,
+        maximum: MAX_WEB_SEARCH_REVIEW_TIMEOUT_MS / 1_000,
+        step: 5,
+        suffix: "seconds",
+      },
+      {
+        kind: "number",
         configuration_key: "maximum_results",
         display_name: "Maximum results",
         description: "Upper bound the agent may request per search.",
@@ -154,6 +168,7 @@ export type WebSearchPluginRuntimeConfiguration = {
   workflow: WebSearchWorkflow;
   timeout_ms: number;
   summary_timeout_ms: number;
+  review_timeout_ms: number;
   maximum_results: number;
   max_output_bytes: number;
 };
@@ -186,6 +201,12 @@ export function resolveWebSearchPluginRuntimeConfiguration(
       5,
       MAX_WEB_SEARCH_SUMMARY_TIMEOUT_MS / 1_000,
     ) * 1_000,
+    review_timeout_ms: boundedInteger(
+      configuration.review_timeout_seconds,
+      DEFAULT_WEB_SEARCH_REVIEW_TIMEOUT_MS / 1_000,
+      5,
+      MAX_WEB_SEARCH_REVIEW_TIMEOUT_MS / 1_000,
+    ) * 1_000,
     maximum_results: boundedInteger(
       configuration.maximum_results,
       DEFAULT_WEB_SEARCH_MAX_RESULTS,
@@ -211,6 +232,7 @@ export function parseWebSearchPluginRuntimeConfiguration(
     "workflow",
     "timeout_ms",
     "summary_timeout_ms",
+    "review_timeout_ms",
     "maximum_results",
     "max_output_bytes",
   ]) || typeof value.enabled !== "boolean") {
@@ -232,6 +254,12 @@ export function parseWebSearchPluginRuntimeConfiguration(
       -1,
       5_000,
       MAX_WEB_SEARCH_SUMMARY_TIMEOUT_MS,
+    ),
+    review_timeout_ms: boundedInteger(
+      value.review_timeout_ms,
+      -1,
+      5_000,
+      MAX_WEB_SEARCH_REVIEW_TIMEOUT_MS,
     ),
     maximum_results: boundedInteger(
       value.maximum_results,

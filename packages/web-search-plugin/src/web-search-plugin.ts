@@ -2,6 +2,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import type {
   AgentPlugin,
+  AgentPluginContext,
   AgentPluginModelCompletion,
   ModelSelection,
 } from "@researchbox/agent-core";
@@ -59,6 +60,7 @@ export type WebSearchPluginOptions = {
   default_provider: WebSearchProviderId;
   default_workflow: WebSearchWorkflow;
   summary_timeout_ms: number;
+  review_timeout_ms: number;
 };
 
 type WebSearchToolDetails = {
@@ -91,6 +93,14 @@ type PluginModelCompleter = (
   signal?: AbortSignal,
   model?: ModelSelection,
 ) => Promise<AgentPluginModelCompletion>;
+
+type SummaryReviewRequester = NonNullable<
+  AgentPluginContext["request_summary_review"]
+>;
+type SummaryReviewInput = Parameters<SummaryReviewRequester>[0];
+type SummaryReviewResolution = Awaited<
+  ReturnType<SummaryReviewRequester>
+>;
 
 export function createWebSearchAgentPlugin(
   executor: WebSearchExecutor,
@@ -217,7 +227,8 @@ export function createWebSearchAgentPlugin(
             selectionLoop:
             while (true) {
               const sections = createReviewSections(queryResults);
-              const selection = await context.request_summary_review(
+              const selection = await requestSummaryReviewWithDeadline(
+                context.request_summary_review,
                 {
                   stage: "select-evidence",
                   title: "Select web search evidence",
@@ -229,8 +240,26 @@ export function createWebSearchAgentPlugin(
                   sections,
                   selected_section_ids: selectedSectionIds,
                 },
+                options.review_timeout_ms,
                 signal,
               );
+              if (selection === null) {
+                const timeoutSelectionIds = selectedSectionIds.length > 0
+                  ? selectedSectionIds
+                  : queryResults.map((_result, index) => String(index));
+                selectedSectionIds = timeoutSelectionIds;
+                selectedResults = selectQueryResults(
+                  queryResults,
+                  timeoutSelectionIds,
+                );
+                synthesis = createReviewTimeoutSynthesis(
+                  selectedResults,
+                  options.maximum_output_bytes,
+                );
+                approvedText = synthesis.text;
+                reviewed = true;
+                break;
+              }
               if (selection.decision === "cancel") {
                 return createReviewErrorResult(
                   queries.length,
@@ -319,7 +348,8 @@ export function createWebSearchAgentPlugin(
                 summaryModel,
               );
               while (true) {
-                const resolution = await context.request_summary_review(
+                const resolution = await requestSummaryReviewWithDeadline(
+                  context.request_summary_review,
                   {
                     stage: "review-summary",
                     title: "Review web search summary",
@@ -338,8 +368,18 @@ export function createWebSearchAgentPlugin(
                     sections,
                     selected_section_ids: selectedSectionIds,
                   },
+                  options.review_timeout_ms,
                   signal,
                 );
+                if (resolution === null) {
+                  synthesis = createReviewTimeoutSynthesis(
+                    selectedResults,
+                    options.maximum_output_bytes,
+                  );
+                  approvedText = synthesis.text;
+                  reviewed = true;
+                  break selectionLoop;
+                }
                 if (resolution.decision === "cancel") {
                   return createReviewErrorResult(
                     queries.length,
@@ -584,6 +624,56 @@ async function executeQueries(
   return results;
 }
 
+async function requestSummaryReviewWithDeadline(
+  requestReview: SummaryReviewRequester,
+  request: SummaryReviewInput,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<SummaryReviewResolution | null> {
+  if (signal?.aborted) throw createAbortError();
+  const timeoutController = new AbortController();
+  const timeoutMarker = Symbol("summary-review-timeout");
+  let resolveTimeout!: () => void;
+  const timeoutPromise = new Promise<typeof timeoutMarker>((resolve) => {
+    resolveTimeout = () => resolve(timeoutMarker);
+  });
+  const timeout = setTimeout(() => {
+    timeoutController.abort();
+    resolveTimeout();
+  }, timeoutMs);
+  const reviewSignal = signal
+    ? AbortSignal.any([signal, timeoutController.signal])
+    : timeoutController.signal;
+  let rejectCallerAbort: (() => void) | undefined;
+  const callerAbortPromise = signal
+    ? new Promise<never>((_resolve, reject) => {
+        rejectCallerAbort = () => reject(createAbortError());
+        signal.addEventListener("abort", rejectCallerAbort, {
+          once: true,
+        });
+      })
+    : null;
+  const reviewPromise = requestReview(request, reviewSignal);
+  void reviewPromise.catch(() => undefined);
+  try {
+    const outcome = await Promise.race([
+      reviewPromise,
+      timeoutPromise,
+      ...(callerAbortPromise ? [callerAbortPromise] : []),
+    ]);
+    return outcome === timeoutMarker ? null : outcome;
+  } catch (error) {
+    if (signal?.aborted) throw createAbortError();
+    if (timeoutController.signal.aborted) return null;
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    if (signal && rejectCallerAbort) {
+      signal.removeEventListener("abort", rejectCallerAbort);
+    }
+  }
+}
+
 async function synthesizeResults(
   results: QueryResult[],
   completeModel: PluginModelCompleter | undefined,
@@ -651,6 +741,20 @@ async function synthesizeResults(
         : "summary-model-unavailable",
     );
   }
+}
+
+function createReviewTimeoutSynthesis(
+  results: QueryResult[],
+  maximumOutputBytes: number,
+): ReturnType<typeof createSynthesisResult> {
+  const startedAt = Date.now();
+  return createSynthesisResult(
+    truncateUtf8(buildDeterministicSummary(results), maximumOutputBytes),
+    null,
+    true,
+    startedAt,
+    "summary-review-timeout",
+  );
 }
 
 class EmptyModelCompletionError extends Error {

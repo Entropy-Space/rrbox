@@ -25,6 +25,7 @@ test("searches multiple angles and summarizes with the active model", async () =
     default_provider: "auto",
     default_workflow: "auto-summary",
     summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
   });
   const completions = [];
   const [tool] = plugin.createTools({
@@ -115,6 +116,7 @@ test("falls back deterministically when summary generation fails", async () => {
     default_provider: "exa",
     default_workflow: "auto-summary",
     summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
   });
   const [tool] = plugin.createTools({
     project_id: "project",
@@ -157,6 +159,7 @@ test("treats an empty summary completion as a deterministic fallback", async () 
     default_provider: "exa",
     default_workflow: "auto-summary",
     summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
   });
   const [tool] = plugin.createTools({
     project_id: "project",
@@ -185,6 +188,139 @@ test("treats an empty summary completion as a deterministic fallback", async () 
   );
 });
 
+test("summary review deadline returns a deterministic synthesis", async () => {
+  const plugin = createWebSearchAgentPlugin({
+    async search(request) {
+      return {
+        query: request.query,
+        provider: "exa",
+        answer: "Evidence retained after idle review.",
+        sources: [{
+          title: "Example",
+          url: "https://example.com/",
+          snippet: "Evidence",
+        }],
+      };
+    },
+    close() {},
+  }, {
+    maximum_results: 5,
+    maximum_output_bytes: 64 * 1024,
+    default_provider: "exa",
+    default_workflow: "summary-review",
+    summary_timeout_ms: 1_000,
+    review_timeout_ms: 10,
+  });
+  let reviewAborted = false;
+  const [tool] = plugin.createTools({
+    project_id: "project",
+    session_id: "session",
+    async complete_model() {
+      throw new Error("Selection timeout must not call the model.");
+    },
+    async request_summary_review(_request, signal) {
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          reviewAborted = true;
+          reject(new DOMException("Review timed out.", "AbortError"));
+        }, { once: true });
+      });
+    },
+  });
+
+  const result = await tool.execute(
+    "call",
+    { query: "example" },
+    new AbortController().signal,
+    () => {},
+  );
+
+  assert.equal(reviewAborted, true);
+  assert.match(
+    result.content[0].text,
+    /Evidence retained after idle review/u,
+  );
+  assert.equal(result.details.synthesis.fallback_used, true);
+  assert.equal(
+    result.details.synthesis.fallback_reason,
+    "summary-review-timeout",
+  );
+  assert.equal(result.details.synthesis.reviewed, true);
+});
+
+test("summary draft deadline discards the unapproved model draft", async () => {
+  const plugin = createWebSearchAgentPlugin({
+    async search(request) {
+      return {
+        query: request.query,
+        provider: "exa",
+        answer: "Evidence retained after draft timeout.",
+        sources: [{
+          title: "Example",
+          url: "https://example.com/",
+          snippet: "Evidence",
+        }],
+      };
+    },
+    close() {},
+  }, {
+    maximum_results: 5,
+    maximum_output_bytes: 64 * 1024,
+    default_provider: "exa",
+    default_workflow: "summary-review",
+    summary_timeout_ms: 1_000,
+    review_timeout_ms: 10,
+  });
+  let reviewCount = 0;
+  const [tool] = plugin.createTools({
+    project_id: "project",
+    session_id: "session",
+    async complete_model() {
+      return {
+        text: "Unapproved model draft",
+        provider_id: "openai",
+        model_id: "test-model",
+      };
+    },
+    async request_summary_review(request, signal) {
+      reviewCount += 1;
+      if (request.stage === "select-evidence") {
+        return {
+          decision: "summarize",
+          approved_text: "",
+          selected_section_ids: ["0"],
+          feedback_text: "",
+          summary_model: null,
+          query_text: "",
+        };
+      }
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          reject(new DOMException("Review timed out.", "AbortError"));
+        }, { once: true });
+      });
+    },
+  });
+
+  const result = await tool.execute(
+    "call",
+    { query: "example" },
+    new AbortController().signal,
+    () => {},
+  );
+
+  assert.equal(reviewCount, 2);
+  assert.doesNotMatch(result.content[0].text, /Unapproved model draft/u);
+  assert.match(
+    result.content[0].text,
+    /Evidence retained after draft timeout/u,
+  );
+  assert.equal(
+    result.details.synthesis.fallback_reason,
+    "summary-review-timeout",
+  );
+});
+
 test("summary-review returns only the user-approved synthesis", async () => {
   const plugin = createWebSearchAgentPlugin({
     async search(request) {
@@ -206,6 +342,7 @@ test("summary-review returns only the user-approved synthesis", async () => {
     default_provider: "auto",
     default_workflow: "summary-review",
     summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
   });
   const reviewRequests = [];
   let summaryPrompt;
@@ -327,6 +464,7 @@ test("summary-review regenerates selected evidence with feedback", async () => {
     default_provider: "auto",
     default_workflow: "summary-review",
     summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
   });
   const prompts = [];
   let reviewCount = 0;
@@ -410,6 +548,7 @@ test("summary-review rewrites and adds another bounded search", async () => {
     default_provider: "auto",
     default_workflow: "summary-review",
     summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
   });
   const reviewRequests = [];
   const modelPrompts = [];
@@ -512,6 +651,7 @@ test("summary-review can return selected raw evidence without synthesis", async 
     default_provider: "auto",
     default_workflow: "summary-review",
     summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
   });
   let completionCalled = false;
   const [tool] = plugin.createTools({
@@ -564,6 +704,7 @@ test("summary-review fails closed when the viewer boundary is unavailable", asyn
     default_provider: "auto",
     default_workflow: "summary-review",
     summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
   });
   const [tool] = plugin.createTools({
     project_id: "project",

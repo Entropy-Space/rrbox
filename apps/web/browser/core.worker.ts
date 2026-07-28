@@ -71,6 +71,8 @@ host.onmessage = (event) => {
               initialization.web_search_plugin.workflow,
             summary_timeout_ms:
               initialization.web_search_plugin.summary_timeout_ms,
+            review_timeout_ms:
+              initialization.web_search_plugin.review_timeout_ms,
           },
         )]
       : []),

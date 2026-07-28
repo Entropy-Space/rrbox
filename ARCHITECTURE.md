@@ -189,7 +189,9 @@ returning to selection, approval, or cancellation. During evidence selection,
 the viewer can improve a bounded query with the selected summary model or add
 another bounded search; neither query drafts nor results persist after the
 tool call. These internal model calls use the same model transport and
-cancellation boundary as the active agent.
+cancellation boundary as the active agent. Each review interaction also has a
+bounded deadline. Expiry aborts and clears the pending core interaction
+before the plugin returns a deterministic summary of the current selection.
 
 The router supports an explicit provider, configurable ordered automatic
 fallback for transient, quota, and network failures, or bounded all-provider

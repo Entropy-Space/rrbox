@@ -30,6 +30,12 @@ test("advertises AnySearch only in the native plugin catalog", () => {
     webSearchRoutingProviderIds("anysearch-exa"),
     ["anysearch", "exa"],
   );
+  const reviewDeadline =
+    webSearchPluginCatalogEntry.configuration_fields.find(
+      (field) => field.configuration_key === "review_timeout_seconds",
+    );
+  assert.equal(reviewDeadline.default_value, 20);
+  assert.equal(reviewDeadline.maximum, 600);
 });
 
 test("resolves disabled, bounded web search defaults", () => {
@@ -40,6 +46,7 @@ test("resolves disabled, bounded web search defaults", () => {
     workflow: "summary-review",
     timeout_ms: 20_000,
     summary_timeout_ms: 30_000,
+    review_timeout_ms: 20_000,
     maximum_results: 5,
     max_output_bytes: 64 * 1024,
   });
@@ -49,6 +56,7 @@ test("resolves disabled, bounded web search defaults", () => {
       configuration: {
         timeout_seconds: 12,
         summary_timeout_seconds: 18,
+        review_timeout_seconds: 45,
         maximum_results: 12,
         max_output_kib: 128,
         provider: "exa",
@@ -63,6 +71,7 @@ test("resolves disabled, bounded web search defaults", () => {
       workflow: "none",
       timeout_ms: 12_000,
       summary_timeout_ms: 18_000,
+      review_timeout_ms: 45_000,
       maximum_results: 12,
       max_output_bytes: 128 * 1024,
     },
@@ -77,6 +86,7 @@ test("strictly parses worker configuration", () => {
     workflow: "auto-summary",
     timeout_ms: 12_000,
     summary_timeout_ms: 30_000,
+    review_timeout_ms: 20_000,
     maximum_results: 12,
     max_output_bytes: 128 * 1024,
   };
@@ -91,5 +101,13 @@ test("strictly parses worker configuration", () => {
         endpoint: "https://example.com",
       }),
     /Invalid web search plugin configuration/u,
+  );
+  assert.throws(
+    () =>
+      parseWebSearchPluginRuntimeConfiguration({
+        ...configuration,
+        review_timeout_ms: 600_001,
+      }),
+    /Expected an integer/u,
   );
 });

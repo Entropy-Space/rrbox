@@ -29,7 +29,7 @@ import type {
   NativeWebSearchExecuteResponse,
 } from "@researchbox/web-search-plugin/native-protocol";
 
-export const NATIVE_CORE_WORKER_PROTOCOL_VERSION = 7 as const;
+export const NATIVE_CORE_WORKER_PROTOCOL_VERSION = 8 as const;
 export const NATIVE_LLM_WORKER_PROTOCOL_VERSION = 1 as const;
 
 export type NativeCoreWorkerInitializeMessage = {

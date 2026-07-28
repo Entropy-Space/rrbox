@@ -16,6 +16,17 @@ const python = {
   default_enabled: false,
   configuration_fields: [
     {
+      kind: "select",
+      configuration_key: "workflow",
+      display_name: "Workflow",
+      description: "How results are returned.",
+      default_value: "auto-summary",
+      options: [
+        { value: "auto-summary", display_name: "Automatic summary" },
+        { value: "none", display_name: "Raw results" },
+      ],
+    },
+    {
       kind: "number",
       configuration_key: "timeout_seconds",
       display_name: "Timeout",
@@ -43,7 +54,10 @@ test("persists strict versioned plugin settings", () => {
     "python",
     {
       enabled: true,
-      configuration: { timeout_seconds: 20 },
+      configuration: {
+        workflow: "none",
+        timeout_seconds: 20,
+      },
     },
   );
 
@@ -51,7 +65,10 @@ test("persists strict versioned plugin settings", () => {
   assert.deepEqual(loadPluginSettings(storage), settings);
   assert.deepEqual(resolvePluginSetting(settings, python), {
     enabled: true,
-    configuration: { timeout_seconds: 20 },
+    configuration: {
+      workflow: "none",
+      timeout_seconds: 20,
+    },
   });
 });
 

@@ -1,6 +1,7 @@
 # Third-party notices
 
-The Exa MCP request and response handling in this package is adapted from
+The search contract, synthesis workflow, deterministic fallback, and Exa MCP
+provider handling in this package are adapted from
 [`pi-web-access`](https://github.com/nicobailon/pi-web-access), commit
 `b537183632d555d1b2e61cb8f6bdf585766f2380`.
 

@@ -3,6 +3,16 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 export type AgentPluginContext = {
   project_id: string;
   session_id: string;
+  complete_model?: (
+    prompt: string,
+    signal?: AbortSignal,
+  ) => Promise<AgentPluginModelCompletion>;
+};
+
+export type AgentPluginModelCompletion = {
+  text: string;
+  provider_id: string;
+  model_id: string;
 };
 
 /**

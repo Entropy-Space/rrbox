@@ -113,6 +113,14 @@ export class SessionRuntime {
           {
             project_id: options.project_id,
             session_id: options.session_id,
+            complete_model: (prompt, signal) =>
+              completePluginModel(
+                options.model_transport,
+                options.model,
+                options.session_id,
+                prompt,
+                signal,
+              ),
           },
           this.createTools(),
         ),
@@ -1238,6 +1246,55 @@ export class SessionRuntime {
       requestId,
     );
   }
+}
+
+async function completePluginModel(
+  transport: ModelTransport,
+  model: Model<string>,
+  sessionId: string,
+  prompt: string,
+  signal?: AbortSignal,
+): Promise<{
+  text: string;
+  provider_id: string;
+  model_id: string;
+}> {
+  const stream = createModelStreamFn(transport)(
+    model,
+    {
+      messages: [{
+        role: "user",
+        content: [{ type: "text", text: prompt }],
+        timestamp: Date.now(),
+      }],
+    },
+    {
+      sessionId,
+      signal,
+    },
+  );
+  const response = await (await stream).result();
+  if (response.stopReason === "aborted") {
+    throw new DOMException("Model completion was cancelled.", "AbortError");
+  }
+  if (response.stopReason === "error") {
+    throw new Error(
+      response.errorMessage || "The model completion failed.",
+    );
+  }
+  const text = response.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n")
+    .trim();
+  if (!text) {
+    throw new Error("The model completion returned no text.");
+  }
+  return {
+    text,
+    provider_id: response.provider,
+    model_id: response.model,
+  };
 }
 
 function latestAssistantStopReason(agent: Agent): string | undefined {

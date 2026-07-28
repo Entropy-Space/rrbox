@@ -25,8 +25,11 @@ import {
 } from "@researchbox/python-plugin/native";
 import { createWebSearchAgentPlugin } from "@researchbox/web-search-plugin";
 import {
-  ExaMcpWebSearchExecutor,
+  RoutingWebSearchExecutor,
 } from "@researchbox/web-search-plugin/executor";
+import {
+  ExaMcpWebSearchProvider,
+} from "@researchbox/web-search-plugin/providers/exa";
 
 const host = self as unknown as WorkerHost;
 const workerNavigator = navigator as WorkerNavigator & {
@@ -57,7 +60,15 @@ host.onmessage = (event) => {
       )
     : null;
   const webSearchExecutor = initialization.web_search_plugin.enabled
-    ? new ExaMcpWebSearchExecutor(initialization.web_search_plugin)
+    ? new RoutingWebSearchExecutor({
+        providers: [
+          new ExaMcpWebSearchProvider(
+            initialization.web_search_plugin,
+          ),
+        ],
+        default_provider:
+          initialization.web_search_plugin.provider,
+      })
     : null;
   const plugins = [
     ...(pythonClient
@@ -66,7 +77,18 @@ host.onmessage = (event) => {
     ...(webSearchExecutor
       ? [createWebSearchAgentPlugin(
           webSearchExecutor,
-          initialization.web_search_plugin.maximum_results,
+          {
+            maximum_results:
+              initialization.web_search_plugin.maximum_results,
+            maximum_output_bytes:
+              initialization.web_search_plugin.max_output_bytes,
+            default_provider:
+              initialization.web_search_plugin.provider,
+            default_workflow:
+              initialization.web_search_plugin.workflow,
+            summary_timeout_ms:
+              initialization.web_search_plugin.summary_timeout_ms,
+          },
         )]
       : []),
   ];

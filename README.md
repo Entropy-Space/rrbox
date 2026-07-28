@@ -27,7 +27,8 @@ macOS, iOS, and Android.
 - Opt-in, stateless `run_python` tool backed by RustPython: browsers lazily
   start an isolated Wasm Worker, while native lifecycle stays in Rust
 - Opt-in, stateless `web_search` tool adapted from `pi-web-access`, with a
-  fixed Exa MCP destination and bounded requests, responses, and timeouts
+  provider-independent retrieval boundary, multi-query research, domain and
+  recency filters, and optional active-model synthesis with citations
 - App-private native persistence through a Rust-owned catalog and one
   transactional SQLite database per project
 - Atomic file-change receipts with line statistics, live workspace refresh, and
@@ -114,10 +115,15 @@ agent's tool list updates immediately.
 Web search is also opt-in from **Plugins**. The cleaned integration exposes
 only `web_search`; it does not include upstream page fetching, local paths,
 browser-cookie access, curator UI, session storage, cloning, or video/PDF
-pipelines. Both app workers call the fixed, CORS-enabled Exa MCP endpoint
-directly. Searches have explicit result, response-size, and timeout bounds and
-retain no state. See `packages/web-search-plugin/THIRD_PARTY_NOTICES.md` for
-the MIT-licensed upstream attribution.
+pipelines. It accepts one focused query or up to four varied queries, optional
+domain and recency filters, and raw or automatic-summary workflows. Automatic
+summary uses the chat's active model and falls back to a deterministic,
+source-linked digest on timeout or model failure. Retrieval is routed through
+a provider interface; Exa MCP is currently the only built-in, zero-config
+provider. Searches have explicit result, response-size, synthesis, and timeout
+bounds and retain no state. See
+`packages/web-search-plugin/THIRD_PARTY_NOTICES.md` for the MIT-licensed
+upstream attribution.
 
 ### Native app
 

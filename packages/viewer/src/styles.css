@@ -878,7 +878,8 @@
   font-size: 12px;
 }
 
-.plugin-number-input input {
+.plugin-number-input input,
+.plugin-field select {
   width: 112px;
   height: 38px;
   padding: 0 10px;
@@ -889,7 +890,12 @@
   font: inherit;
 }
 
-.plugin-number-input input:focus {
+.plugin-field select {
+  width: 168px;
+}
+
+.plugin-number-input input:focus,
+.plugin-field select:focus {
   border-color: var(--accent);
   outline: 2px solid color-mix(in srgb, var(--accent) 20%, transparent);
 }
@@ -929,7 +935,8 @@
 
 .plugin-card-footer button:disabled,
 .plugin-toggle input:disabled,
-.plugin-number-input input:disabled {
+.plugin-number-input input:disabled,
+.plugin-field select:disabled {
   cursor: not-allowed;
   opacity: 0.5;
 }

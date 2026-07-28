@@ -139,40 +139,65 @@ function PluginCard({
       </label>
 
       <div className="plugin-fields">
-        {plugin.configuration_fields.map((field) => (
-          <label key={field.configuration_key} className="plugin-field">
-            <span>
-              <strong>{field.display_name}</strong>
-              <small>{field.description}</small>
-            </span>
-            <span className="plugin-number-input">
-              <input
-                type="number"
-                min={field.minimum}
-                max={field.maximum}
-                step={field.step}
-                value={String(
-                  draft.configuration[field.configuration_key] ??
-                    field.default_value,
-                )}
-                disabled={is_disabled}
-                aria-invalid={validationError !== null}
-                onChange={(event) => {
-                  const value = event.target.valueAsNumber;
-                  setDraft((current) => ({
-                    ...current,
-                    configuration: {
-                      ...current.configuration,
-                      [field.configuration_key]: value,
-                    },
-                  }));
-                  setNotice(null);
-                }}
-              />
-              {field.suffix && <span>{field.suffix}</span>}
-            </span>
-          </label>
-        ))}
+        {plugin.configuration_fields.map((field) => {
+          const updateValue = (value: string | number) => {
+            setDraft((current) => ({
+              ...current,
+              configuration: {
+                ...current.configuration,
+                [field.configuration_key]: value,
+              },
+            }));
+            setNotice(null);
+          };
+          return (
+            <label key={field.configuration_key} className="plugin-field">
+              <span>
+                <strong>{field.display_name}</strong>
+                <small>{field.description}</small>
+              </span>
+              {field.kind === "number"
+                ? (
+                    <span className="plugin-number-input">
+                      <input
+                        type="number"
+                        min={field.minimum}
+                        max={field.maximum}
+                        step={field.step}
+                        value={String(
+                          draft.configuration[
+                            field.configuration_key
+                          ] ?? field.default_value,
+                        )}
+                        disabled={is_disabled}
+                        aria-invalid={validationError !== null}
+                        onChange={(event) =>
+                          updateValue(event.target.valueAsNumber)}
+                      />
+                      {field.suffix && <span>{field.suffix}</span>}
+                    </span>
+                  )
+                : (
+                    <select
+                      value={String(
+                        draft.configuration[field.configuration_key] ??
+                          field.default_value,
+                      )}
+                      disabled={is_disabled}
+                      aria-invalid={validationError !== null}
+                      onChange={(event) =>
+                        updateValue(event.target.value)}
+                    >
+                      {field.options.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.display_name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+            </label>
+          );
+        })}
       </div>
 
       <footer className="plugin-card-footer">
@@ -210,14 +235,21 @@ function validatePluginSetting(
 ): string | null {
   for (const field of plugin.configuration_fields) {
     const value = setting.configuration[field.configuration_key];
-    if (
-      typeof value !== "number" ||
-      !Number.isFinite(value) ||
-      value < field.minimum ||
-      value > field.maximum ||
-      !Number.isInteger((value - field.minimum) / field.step)
+    if (field.kind === "number") {
+      if (
+        typeof value !== "number" ||
+        !Number.isFinite(value) ||
+        value < field.minimum ||
+        value > field.maximum ||
+        !Number.isInteger((value - field.minimum) / field.step)
+      ) {
+        return `${field.display_name} must be between ${field.minimum} and ${field.maximum}.`;
+      }
+    } else if (
+      typeof value !== "string" ||
+      !field.options.some((option) => option.value === value)
     ) {
-      return `${field.display_name} must be between ${field.minimum} and ${field.maximum}.`;
+      return `${field.display_name} has an invalid selection.`;
     }
   }
   return null;

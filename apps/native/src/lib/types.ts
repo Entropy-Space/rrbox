@@ -23,7 +23,7 @@ import {
   type WebSearchPluginRuntimeConfiguration,
 } from "@researchbox/web-search-plugin/settings";
 
-export const NATIVE_CORE_WORKER_PROTOCOL_VERSION = 5 as const;
+export const NATIVE_CORE_WORKER_PROTOCOL_VERSION = 6 as const;
 export const NATIVE_LLM_WORKER_PROTOCOL_VERSION = 1 as const;
 
 export type NativeCoreWorkerInitializeMessage = {

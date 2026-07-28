@@ -26,12 +26,28 @@ export type NumberPluginConfigurationField = {
   suffix?: string;
 };
 
+export type SelectPluginConfigurationField = {
+  kind: "select";
+  configuration_key: string;
+  display_name: string;
+  description: string;
+  default_value: string;
+  options: readonly {
+    value: string;
+    display_name: string;
+  }[];
+};
+
+export type PluginConfigurationField =
+  | NumberPluginConfigurationField
+  | SelectPluginConfigurationField;
+
 export type PluginCatalogEntry = {
   plugin_id: string;
   display_name: string;
   description: string;
   default_enabled: boolean;
-  configuration_fields: readonly NumberPluginConfigurationField[];
+  configuration_fields: readonly PluginConfigurationField[];
 };
 
 export type PluginSettingsStorage = Pick<

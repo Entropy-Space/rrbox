@@ -162,22 +162,34 @@ against same-origin code. Server-held credentials must remain on the server.
 
 ## Web search plugin boundary
 
-`packages/web-search-plugin` is a deliberately narrow fork of the
-MIT-licensed `pi-web-access` Exa MCP path. It defines one `web_search` tool and
-a shared executor used by both browser and native core Workers. The plugin is
-absent unless application composition enables it.
+`packages/web-search-plugin` is a stateless adaptation of the MIT-licensed
+`pi-web-access` search workflow. It defines one `web_search` tool, a
+provider-independent routing executor, and provider adapters used by both
+browser and native core Workers. Exa MCP is the first zero-configuration
+provider rather than the plugin's public boundary. The plugin is absent unless
+application composition enables it.
 
-The executor has one compiled outbound destination, validates query and result
-bounds before networking, combines caller cancellation with a configured
-timeout, bounds the provider response before decoding it, and truncates tool
-output to the configured budget. It retains no search results, credentials, or
-session state.
+The tool supports a single query or a bounded batch of varied queries, domain
+and recency filters, larger inline excerpts, explicit provider selection, and
+raw or automatic-summary workflows. Search results are normalized into
+provider-independent answers and source records before rendering. Automatic
+summary calls the active session model through a constrained completion hook;
+it uses an independent deadline and falls back to a deterministic source-linked
+summary if the model is unavailable. These internal model calls use the same
+model transport and cancellation boundary as the active agent.
+
+Each provider validates query and result bounds before networking, combines
+caller cancellation with a configured timeout, bounds its response before
+decoding it, and limits normalized source content to the configured budget.
+The current Exa adapter has one compiled outbound destination. The router and
+tool retain no search results, credentials, or session state.
 
 The fork intentionally excludes upstream URL fetching, arbitrary/local paths,
-browser cookies, API-key configuration, provider fallback chains, curator
-servers, persistent result storage, repository cloning, and media extraction.
-Adding content fetching later requires a separate SSRF and redirect policy;
-it must not be smuggled through the search tool.
+browser cookies, API-key configuration, curator servers, persistent result
+storage, repository cloning, and media extraction. Additional providers and
+ordered fallback can be added behind the routing interface without changing
+the tool contract. Adding content fetching later requires a separate SSRF and
+redirect policy; it must not be smuggled through the search tool.
 
 ## Python plugin boundary
 

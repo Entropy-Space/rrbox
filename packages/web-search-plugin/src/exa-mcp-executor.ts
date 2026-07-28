@@ -1,8 +1,10 @@
 import {
   MAX_WEB_SEARCH_QUERY_BYTES,
-  type WebSearchExecutor,
   type WebSearchRequest,
+  type WebSearchResponse,
+  type WebSearchSource,
 } from "./web-search-plugin.ts";
+import type { WebSearchProvider } from "./routing-executor.ts";
 
 const EXA_MCP_URL = "https://mcp.exa.ai/mcp";
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
@@ -18,7 +20,8 @@ type ExaMcpResponse = {
   };
 };
 
-export class ExaMcpWebSearchExecutor implements WebSearchExecutor {
+export class ExaMcpWebSearchProvider implements WebSearchProvider {
+  readonly id = "exa" as const;
   private readonly timeoutMs: number;
   private readonly maximumResults: number;
   private readonly maxOutputBytes: number;
@@ -41,7 +44,7 @@ export class ExaMcpWebSearchExecutor implements WebSearchExecutor {
   async search(
     request: WebSearchRequest,
     signal?: AbortSignal,
-  ): Promise<string> {
+  ): Promise<WebSearchResponse> {
     if (this.closed) throw new Error("The web search executor is closed.");
     validateRequest(request, this.maximumResults);
     if (signal?.aborted) throw createAbortError();
@@ -97,7 +100,25 @@ export class ExaMcpWebSearchExecutor implements WebSearchExecutor {
           text || "The web search provider returned no results.",
         );
       }
-      return truncateUtf8(text, this.maxOutputBytes);
+      const sources = parseMcpResults(
+        text,
+        request.num_results,
+        this.maxOutputBytes,
+      );
+      if (sources.length === 0) {
+        throw new Error(
+          "The web search provider returned no parseable sources.",
+        );
+      }
+      return {
+        query: request.query,
+        provider: "exa",
+        answer: buildAnswer(sources),
+        sources: sources.map(({ content, ...source }) => ({
+          ...source,
+          ...(request.include_content ? { content } : {}),
+        })),
+      };
     } catch (error) {
       if (controller.signal.aborted) throw createAbortError();
       throw error;
@@ -118,15 +139,28 @@ export class ExaMcpWebSearchExecutor implements WebSearchExecutor {
   }
 }
 
+/** @deprecated Compose ExaMcpWebSearchProvider with RoutingWebSearchExecutor. */
+export const ExaMcpWebSearchExecutor = ExaMcpWebSearchProvider;
+
 function enrichQuery(request: WebSearchRequest): string {
-  if (!request.recency_filter) return request.query;
-  const suffix = {
-    day: "past 24 hours",
-    week: "past week",
-    month: "past month",
-    year: "past year",
-  }[request.recency_filter];
-  return `${request.query} ${suffix}`;
+  const parts = [request.query];
+  for (const domain of request.domain_filter ?? []) {
+    parts.push(
+      domain.startsWith("-")
+        ? `-site:${domain.slice(1)}`
+        : `site:${domain}`,
+    );
+  }
+  if (request.recency_filter) {
+    const suffix = {
+      day: "past 24 hours",
+      week: "past week",
+      month: "past month",
+      year: "past year",
+    }[request.recency_filter];
+    parts.push(suffix);
+  }
+  return parts.join(" ");
 }
 
 function validateRequest(
@@ -143,6 +177,9 @@ function validateRequest(
     request.num_results > maximumResults
   ) {
     throw new Error(`Web search num_results must be between 1 and ${maximumResults}.`);
+  }
+  if (request.provider !== "auto" && request.provider !== "exa") {
+    throw new Error(`Unsupported web search provider: ${request.provider}`);
   }
 }
 
@@ -198,17 +235,112 @@ function parseJsonResponse(value: string): ExaMcpResponse | null {
   }
 }
 
+function parseMcpResults(
+  value: string,
+  maximumResults: number,
+  maximumContentBytes: number,
+): Array<
+  WebSearchSource & { content: string }
+> {
+  const blocks = value
+    .split(/(?=^Title: )/mu)
+    .filter((block) => block.trim().length > 0);
+  const results: Array<WebSearchSource & { content: string }> = [];
+  let remainingContentBytes = maximumContentBytes;
+  for (const block of blocks) {
+    if (results.length >= maximumResults) break;
+    const title = truncate(
+      block.match(/^Title: (.+)$/mu)?.[1]?.trim() ?? "",
+      500,
+    );
+    const url = truncate(
+      block.match(/^URL: (.+)$/mu)?.[1]?.trim() ?? "",
+      2_048,
+    );
+    if (!url || !isPublicHttpUrl(url)) continue;
+    const textStart = block.indexOf("\nText: ");
+    const highlightsStart = block.search(/\nHighlights:\s*\n/mu);
+    let content = "";
+    if (textStart >= 0) {
+      content = block.slice(textStart + 7);
+    } else if (highlightsStart >= 0) {
+      const marker = block.match(/\nHighlights:\s*\n/mu)?.[0] ?? "";
+      content = block.slice(highlightsStart + marker.length);
+    }
+    const contentBudget = Math.min(
+      16 * 1024,
+      remainingContentBytes,
+    );
+    content = truncateUtf8(
+      content.replace(/\n---\s*$/u, "").trim(),
+      contentBudget,
+    );
+    remainingContentBytes -= new TextEncoder().encode(content).byteLength;
+    results.push({
+      title: title || `Source ${results.length + 1}`,
+      url,
+      snippet: truncate(
+        content.replace(/\s+/gu, " ").trim(),
+        600,
+      ),
+      content,
+    });
+  }
+  return results;
+}
+
+function buildAnswer(
+  sources: Array<WebSearchSource & { content: string }>,
+): string {
+  return sources.map((source) => {
+    const evidence = source.snippet ||
+      "The provider returned this source without an excerpt.";
+    return `${evidence}\nSource: ${source.title} (${source.url})`;
+  }).join("\n\n");
+}
+
+function isPublicHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "https:" || url.protocol === "http:") &&
+      url.username === "" &&
+      url.password === ""
+    );
+  } catch {
+    return false;
+  }
+}
+
+function truncate(value: string, maximum: number): string {
+  return value.length <= maximum
+    ? value
+    : `${value.slice(0, maximum - 1)}…`;
+}
+
 function truncateUtf8(value: string, maximumBytes: number): string {
+  if (maximumBytes <= 0) return "";
   const encoded = new TextEncoder().encode(value);
   if (encoded.byteLength <= maximumBytes) return value;
   const suffix = "\n\n[search output truncated]";
   const suffixBytes = new TextEncoder().encode(suffix).byteLength;
+  if (suffixBytes >= maximumBytes) {
+    return decodeUtf8Prefix(encoded, maximumBytes);
+  }
   const budget = Math.max(0, maximumBytes - suffixBytes);
-  let end = budget;
-  while (end > 0 && (encoded[end] & 0b1100_0000) === 0b1000_0000) {
+  return decodeUtf8Prefix(encoded, budget) + suffix;
+}
+
+function decodeUtf8Prefix(value: Uint8Array, maximumBytes: number): string {
+  let end = Math.min(maximumBytes, value.byteLength);
+  while (
+    end > 0 &&
+    end < value.byteLength &&
+    (value[end] & 0b1100_0000) === 0b1000_0000
+  ) {
     end -= 1;
   }
-  return new TextDecoder().decode(encoded.slice(0, end)) + suffix;
+  return new TextDecoder().decode(value.slice(0, end));
 }
 
 function createAbortError(): Error {

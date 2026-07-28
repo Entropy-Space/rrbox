@@ -64,7 +64,8 @@ test("mounts the shared viewer through the native worker transport", async () =>
   assert.match(coreWorkerSource, /initialization\.provider_port/);
   assert.match(coreWorkerSource, /NativePythonRpcClient/);
   assert.match(coreWorkerSource, /createPythonAgentPlugin/);
-  assert.match(coreWorkerSource, /ExaMcpWebSearchExecutor/);
+  assert.match(coreWorkerSource, /RoutingWebSearchExecutor/);
+  assert.match(coreWorkerSource, /ExaMcpWebSearchProvider/);
   assert.match(coreWorkerSource, /createWebSearchAgentPlugin/);
   assert.match(
     coreWorkerSource,

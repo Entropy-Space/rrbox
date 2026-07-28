@@ -405,6 +405,16 @@ export function useAgentSession(
               is_submitting: false,
               error_message: null,
             });
+          } else if (event.type === "summary_review_updated") {
+            setSummaryReview((current) =>
+              current?.interaction_id === event.payload.interaction_id
+                ? {
+                    ...structuredClone(event.payload),
+                    is_submitting: current.is_submitting,
+                    error_message: current.error_message,
+                  }
+                : current
+            );
           } else if (event.type === "summary_review_resolved") {
             pendingSummaryReviewResolutionRef.current = null;
             setSummaryReview((current) =>
@@ -1342,6 +1352,7 @@ export function coreReducer(
     case "workspace_export_snapshot":
     case "workspace_change_snapshot":
     case "summary_review_requested":
+    case "summary_review_updated":
     case "summary_review_resolved":
       return state;
     case "workspace_change_reverted":

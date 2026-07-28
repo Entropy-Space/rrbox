@@ -31,6 +31,7 @@ import { createModelStreamFn } from "./pi-stream.ts";
 import {
   createAgentPluginTools,
   type AgentPlugin,
+  type SummaryReviewInteraction,
 } from "./agent-plugin.ts";
 import {
   createStreamingAssistantEntry,
@@ -96,6 +97,29 @@ export type StagedPrompt = {
   run_id: string;
 };
 
+function cloneSummaryReviewRequest(
+  request: Omit<SummaryReviewRequest, "interaction_id">,
+  interactionId: string,
+): SummaryReviewRequest {
+  return {
+    interaction_id: interactionId,
+    stage: request.stage,
+    is_loading: request.is_loading,
+    title: request.title,
+    draft_text: request.draft_text,
+    summary_model: request.summary_model
+      ? { ...request.summary_model }
+      : null,
+    draft_metadata: request.draft_metadata
+      ? structuredClone(request.draft_metadata)
+      : null,
+    query_draft: request.query_draft,
+    query_notice: request.query_notice,
+    sections: structuredClone(request.sections),
+    selected_section_ids: [...request.selected_section_ids],
+  };
+}
+
 export class SessionRuntime {
   readonly project_id: string;
   readonly session_id: string;
@@ -136,6 +160,8 @@ export class SessionRuntime {
               ),
             request_summary_review: (request, signal) =>
               this.requestSummaryReview(request, signal),
+            open_summary_review: (request, signal) =>
+              this.openSummaryReview(request, signal),
           },
           this.createTools(),
         ),
@@ -223,6 +249,14 @@ export class SessionRuntime {
     if (!pending || pending.request.interaction_id !== interactionId) {
       throw new Error("The summary review is no longer pending.");
     }
+    if (
+      pending.request.is_loading &&
+      resolution.decision !== "cancel"
+    ) {
+      throw new Error(
+        "The summary review cannot be submitted while it is loading.",
+      );
+    }
     const availableIds = new Set(
       pending.request.sections.map((section) => section.section_id),
     );
@@ -296,38 +330,32 @@ export class SessionRuntime {
     request: Omit<SummaryReviewRequest, "interaction_id">,
     signal?: AbortSignal,
   ): Promise<SummaryReviewResolution> {
+    try {
+      return this.openSummaryReview(request, signal).resolution;
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  private openSummaryReview(
+    request: Omit<SummaryReviewRequest, "interaction_id">,
+    signal?: AbortSignal,
+  ): SummaryReviewInteraction {
     if (this.pendingSummaryReview) {
-      return Promise.reject(
-        new Error("Another summary review is already pending."),
-      );
+      throw new Error("Another summary review is already pending.");
     }
     if (!this.activeRun) {
-      return Promise.reject(
-        new Error("Summary review requires an active agent run."),
-      );
+      throw new Error("Summary review requires an active agent run.");
     }
     if (signal?.aborted) {
-      return Promise.reject(
-        new DOMException("Summary review was cancelled.", "AbortError"),
+      throw new DOMException(
+        "Summary review was cancelled.",
+        "AbortError",
       );
     }
-    const review: SummaryReviewRequest = {
-      interaction_id: crypto.randomUUID(),
-      stage: request.stage,
-      title: request.title,
-      draft_text: request.draft_text,
-      summary_model: request.summary_model
-        ? { ...request.summary_model }
-        : null,
-      draft_metadata: request.draft_metadata
-        ? structuredClone(request.draft_metadata)
-        : null,
-      query_draft: request.query_draft,
-      query_notice: request.query_notice,
-      sections: structuredClone(request.sections),
-      selected_section_ids: [...request.selected_section_ids],
-    };
-    const promise = new Promise<SummaryReviewResolution>(
+    const interactionId = crypto.randomUUID();
+    const review = cloneSummaryReviewRequest(request, interactionId);
+    const resolution = new Promise<SummaryReviewResolution>(
       (resolve, reject) => {
         const pending: PendingSummaryReview = {
           request: review,
@@ -358,7 +386,29 @@ export class SessionRuntime {
       structuredClone(review),
       this.activeRun.request_id,
     );
-    return promise;
+    return {
+      resolution,
+      update: (updatedRequest) => {
+        const pending = this.pendingSummaryReview;
+        if (
+          !pending ||
+          pending.request.interaction_id !== interactionId ||
+          !this.activeRun
+        ) {
+          throw new Error("The summary review is no longer pending.");
+        }
+        const updatedReview = cloneSummaryReviewRequest(
+          updatedRequest,
+          interactionId,
+        );
+        pending.request = updatedReview;
+        this.emit(
+          "summary_review_updated",
+          structuredClone(updatedReview),
+          this.activeRun.request_id,
+        );
+      },
+    };
   }
 
   private rejectSummaryReview(error: Error): void {

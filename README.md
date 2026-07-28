@@ -117,18 +117,21 @@ only `web_search`; it does not include upstream page fetching, local paths,
 browser-cookie access, curator servers, session storage, cloning, or video/PDF
 pipelines. It accepts one focused query or up to four varied queries, optional
 domain and recency filters, and raw, automatic-summary, or reviewed-summary
-workflows. Reviewed summary first asks which query results to keep, generates
-from only that evidence, then allows editing, Markdown preview, regeneration
-with feedback, changing the summary provider/model, approval, or returning to
+workflows. Reviewed summary opens its in-app curator before retrieval and
+streams each completed query/provider result into a separate evidence card.
+Once retrieval finishes, it asks which results to keep, generates from only
+that evidence, then allows editing, Markdown preview, regeneration with
+feedback, changing the summary provider/model, approval, or returning to
 selection. While selecting evidence, another bounded search angle can be
 entered directly or improved with the selected summary model before retrieval.
 These query drafts and added searches exist only for the active tool call.
 The draft reports the model actually used, generation time,
 estimated tokens, and deterministic fallback reason. The review exists only
-while the tool call is active. If a review remains unresolved past its
-configurable deadline, its pending interaction is cancelled and the selected
-evidence is returned as a deterministic cited digest. Automatic summary uses
-the chat's active model.
+while the tool call is active. Its configurable review deadline begins after
+initial retrieval, so slow providers do not consume the user's review time.
+If review remains unresolved, its pending interaction is cancelled and the
+selected evidence is returned as a deterministic cited digest. Automatic
+summary uses the chat's active model.
 A reviewed summary may use any ready model; if an explicit choice fails, it
 retries with the active model before producing a deterministic, source-linked
 digest. Retrieval is routed through a provider interface; Exa MCP is currently

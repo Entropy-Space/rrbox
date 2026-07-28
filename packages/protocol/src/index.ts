@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 15 as const;
+export const PROTOCOL_VERSION = 16 as const;
 
 export const SUMMARY_REVIEW_MAX_SECTIONS = 20;
 export const SUMMARY_REVIEW_MAX_TEXT_LENGTH = 256 * 1024;
@@ -28,6 +28,7 @@ export type SummaryReviewDraftMetadata = {
 export type SummaryReviewRequest = {
   interaction_id: string;
   stage: "select-evidence" | "review-summary";
+  is_loading: boolean;
   title: string;
   draft_text: string;
   summary_model: ModelSelection | null;
@@ -377,6 +378,10 @@ export type CoreEvent =
       SessionScope & SummaryReviewRequest
     >
   | CorrelatedEventEnvelope<
+      "summary_review_updated",
+      SessionScope & SummaryReviewRequest
+    >
+  | CorrelatedEventEnvelope<
       "summary_review_resolved",
       SessionScope & {
         interaction_id: string;
@@ -682,9 +687,10 @@ export function parseCoreEvent(value: unknown): CoreEvent {
   if (typeof value.type !== "string" || !isRecord(value.payload)) {
     throw new Error("Core event type and payload are required.");
   }
+  const eventType = value.type;
   const payload = value.payload;
 
-  switch (value.type) {
+  switch (eventType) {
     case "core_lifecycle": {
       const statusMessage = optionalString(payload, "status_message", true);
       return eventEnvelope(
@@ -800,14 +806,15 @@ export function parseCoreEvent(value: unknown): CoreEvent {
         requestId,
       );
     case "summary_review_requested":
+    case "summary_review_updated":
       return eventEnvelope(
-        "summary_review_requested",
+        eventType,
         eventId,
         {
           ...parseSessionScope(payload),
           ...parseSummaryReviewRequest(payload),
         },
-        requireEventRequestId(requestId, "summary_review_requested"),
+        requireEventRequestId(requestId, eventType),
       );
     case "summary_review_resolved": {
       assertExactKeys(
@@ -1094,6 +1101,7 @@ function requireEventRequestId(
     | "workspace_change_snapshot"
     | "workspace_change_reverted"
     | "summary_review_requested"
+    | "summary_review_updated"
     | "summary_review_resolved",
 ): string {
   if (requestId === undefined) {
@@ -1112,6 +1120,7 @@ function parseSummaryReviewRequest(
       "session_id",
       "interaction_id",
       "stage",
+      "is_loading",
       "title",
       "draft_text",
       "summary_model",
@@ -1124,8 +1133,9 @@ function parseSummaryReviewRequest(
     "summary_review_requested payload",
   );
   const sections = requireArray(value, "sections");
+  const isLoading = requireBoolean(value, "is_loading");
   if (
-    sections.length === 0 ||
+    (sections.length === 0 && !isLoading) ||
     sections.length > SUMMARY_REVIEW_MAX_SECTIONS
   ) {
     throw new Error("Summary review sections are out of bounds.");
@@ -1143,6 +1153,11 @@ function parseSummaryReviewRequest(
     throw new Error("Summary review section ids must be unique.");
   }
   const stage = parseSummaryReviewStage(value.stage);
+  if (isLoading && stage !== "select-evidence") {
+    throw new Error(
+      "Only evidence selection may report a loading review.",
+    );
+  }
   const draftText = requireBoundedString(
     value,
     "draft_text",
@@ -1177,6 +1192,7 @@ function parseSummaryReviewRequest(
   return {
     interaction_id: requireString(value, "interaction_id"),
     stage,
+    is_loading: isLoading,
     title: requireBoundedString(value, "title", 200),
     draft_text: draftText,
     summary_model: summaryModel,

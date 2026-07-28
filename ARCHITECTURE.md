@@ -92,7 +92,7 @@ packages/viewer → browser workspace adapter → browser/archive.worker.ts
 The viewer depends on `CoreTransport`, not on `Worker`. Both applications
 construct `WorkerCoreTransport`, which validates all incoming protocol values,
 isolates subscribers, and owns worker teardown. The viewer and core worker
-exchange only protocol-v15 JSON values. Transport shutdown uses a separate
+exchange only protocol-v16 JSON values. Transport shutdown uses a separate
 versioned control envelope: it asks the worker to abort and drain the core,
 waits for disposal acknowledgement, and force-terminates after a bounded
 timeout if cleanup cannot finish. A
@@ -180,18 +180,22 @@ constrained completion hook. During reviewed synthesis, the viewer may choose
 any ready provider/model from the live catalog; the core resolves that choice
 instead of accepting an arbitrary model descriptor. A failed explicit choice
 retries once with the active model under the same deadline before producing a
-deterministic source-linked summary. The summary-review workflow first pauses
-the tool so the viewer can select evidence or send it raw. Only the selected
-evidence reaches summary generation. A second ephemeral interaction reports
+deterministic source-linked summary. The summary-review workflow opens one
+updateable interaction before retrieval; completed query/provider results
+stream into that interaction while submission controls remain unavailable.
+After retrieval, the same interaction becomes selectable so the viewer can
+choose evidence or send it raw. Only the selected evidence reaches summary
+generation. A second ephemeral interaction reports
 the actual model, duration, token estimate, and fallback reason, and allows
 editing, Markdown preview, regeneration with feedback, changing models,
 returning to selection, approval, or cancellation. During evidence selection,
 the viewer can improve a bounded query with the selected summary model or add
 another bounded search; neither query drafts nor results persist after the
 tool call. These internal model calls use the same model transport and
-cancellation boundary as the active agent. Each review interaction also has a
-bounded deadline. Expiry aborts and clears the pending core interaction
-before the plugin returns a deterministic summary of the current selection.
+cancellation boundary as the active agent. Each actionable review interaction
+also has a bounded deadline; initial retrieval does not consume that review
+window. Expiry aborts and clears the pending core interaction before the
+plugin returns a deterministic summary of the current selection.
 
 The router supports an explicit provider, configurable ordered automatic
 fallback for transient, quota, and network failures, or bounded all-provider
@@ -209,9 +213,10 @@ credentials, or session state.
 
 The fork intentionally excludes upstream URL fetching, arbitrary/local paths,
 browser cookies, API-key configuration, curator servers, persistent result
-storage, repository cloning, and media extraction. Its curator is an in-viewer,
-session-bound protocol interaction rather than an HTTP server and retains no
-review state after the active tool call. Additional providers and ordered
+storage, repository cloning, and media extraction. Its curator is an
+updateable, in-viewer, session-bound protocol interaction rather than an HTTP
+server and retains no review state after the active tool call. Additional
+providers and ordered
 fallback can be added behind the routing interface without changing the tool
 contract. Adding content fetching later requires a separate SSRF and redirect
 policy; it must not be smuggled through the search tool.

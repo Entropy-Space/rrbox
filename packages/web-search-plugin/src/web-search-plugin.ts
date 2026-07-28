@@ -107,10 +107,14 @@ type PluginModelCompleter = (
 type SummaryReviewRequester = NonNullable<
   AgentPluginContext["request_summary_review"]
 >;
+type SummaryReviewOpener = NonNullable<
+  AgentPluginContext["open_summary_review"]
+>;
 type SummaryReviewInput = Parameters<SummaryReviewRequester>[0];
 type SummaryReviewResolution = Awaited<
   ReturnType<SummaryReviewRequester>
 >;
+type SummaryReviewInteraction = ReturnType<SummaryReviewOpener>;
 
 export function createWebSearchAgentPlugin(
   executor: WebSearchExecutor,
@@ -207,14 +211,30 @@ export function createWebSearchAgentPlugin(
                   ),
                 }),
           };
-          const queryResults = await executeQueries(
-            executor,
-            queries,
-            searchOptions,
-            signal,
-          );
-          let reviewResults = createReviewResults(queryResults);
-          let selectedResults = queryResults;
+          if (
+            workflow === "summary-review" &&
+            !context.open_summary_review &&
+            !context.request_summary_review
+          ) {
+            return createReviewErrorResult(
+              queries.length,
+              provider,
+              workflow,
+              "Summary review is unavailable in this application.",
+            );
+          }
+          const requestSummaryReview: SummaryReviewRequester | undefined =
+            context.request_summary_review ??
+              (context.open_summary_review
+                ? (request, reviewSignal) =>
+                  context.open_summary_review!(
+                    request,
+                    reviewSignal,
+                  ).resolution
+                : undefined);
+          let queryResults: QueryResult[] = [];
+          let reviewResults: QueryResult[] = [];
+          let selectedResults: QueryResult[] = [];
           let synthesis: Awaited<ReturnType<typeof synthesizeResults>> | null =
             null;
           let reviewed = false;
@@ -222,39 +242,180 @@ export function createWebSearchAgentPlugin(
           let summaryModel: ModelSelection | null = null;
           let queryDraft = "";
           let queryNotice: string | null = null;
-          let selectedSectionIds = reviewResults.flatMap(
-            (result, index) =>
-              result.response ? [String(index)] : [],
-          );
+          let selectedSectionIds: string[] = [];
           let approvedText: string | undefined;
-          if (workflow === "summary-review") {
-            if (!context.request_summary_review) {
-              return createReviewErrorResult(
-                queries.length,
-                provider,
-                workflow,
-                "Summary review is unavailable in this application.",
+          let pendingSelection:
+            | Promise<SummaryReviewResolution | null>
+            | null = null;
+          if (
+            workflow === "summary-review" &&
+            context.open_summary_review
+          ) {
+            const partialResults: QueryResult[] = [];
+            const searchController = new AbortController();
+            const searchSignal = signal
+              ? AbortSignal.any([signal, searchController.signal])
+              : searchController.signal;
+            const reviewController = new AbortController();
+            const liveReview = context.open_summary_review(
+              {
+                stage: "select-evidence",
+                is_loading: true,
+                title: "Select web search evidence",
+                draft_text: "",
+                summary_model: null,
+                draft_metadata: null,
+                query_draft: "",
+                query_notice:
+                  `Searching 0 of ${queries.length} queries…`,
+                sections: [],
+                selected_section_ids: [],
+              },
+              signal
+                ? AbortSignal.any([signal, reviewController.signal])
+                : reviewController.signal,
+            );
+            void liveReview.resolution.catch(() => undefined);
+            const searches = executeQueries(
+              executor,
+              queries,
+              searchOptions,
+              searchSignal,
+              (result, completedCount, totalCount) => {
+                partialResults.push(result);
+                const partialReviewResults = createReviewResults(
+                  partialResults,
+                );
+                try {
+                  liveReview.update({
+                    stage: "select-evidence",
+                    is_loading: true,
+                    title: "Select web search evidence",
+                    draft_text: "",
+                    summary_model: null,
+                    draft_metadata: null,
+                    query_draft: "",
+                    query_notice:
+                      `Searching ${completedCount} of ${totalCount} queries…`,
+                    sections: createReviewSections(partialReviewResults),
+                    selected_section_ids: selectableSectionIds(
+                      partialReviewResults,
+                    ),
+                  });
+                } catch {
+                  // Resolution or timeout wins the race below.
+                }
+              },
+            );
+            void searches.catch(() => undefined);
+            const liveOutcome = await Promise.race([
+              searches.then((results) => ({
+                kind: "searches" as const,
+                results,
+              })),
+              liveReview.resolution.then((resolution) => ({
+                kind: "resolution" as const,
+                resolution,
+              })),
+            ]);
+            if (liveOutcome.kind === "resolution") {
+              searchController.abort();
+              try {
+                await searches;
+              } catch (error) {
+                if (signal?.aborted) throw error;
+              }
+              queryResults = partialResults;
+              reviewResults = createReviewResults(queryResults);
+              selectedSectionIds = selectableSectionIds(reviewResults);
+              selectedResults = reviewResults.filter(
+                (result) => result.response,
               );
-            }
-            selectionLoop:
-            while (true) {
-              const sections = createReviewSections(reviewResults);
-              const selection = await requestSummaryReviewWithDeadline(
-                context.request_summary_review,
-                {
+              if (liveOutcome.resolution?.decision === "cancel") {
+                return createReviewErrorResult(
+                  queries.length,
+                  provider,
+                  workflow,
+                  "Search review was cancelled by the user.",
+                );
+              }
+              if (liveOutcome.resolution !== null) {
+                throw new Error(
+                  "A loading search review may only be cancelled.",
+                );
+              }
+              synthesis = createReviewTimeoutSynthesis(
+                selectedResults.length > 0
+                  ? selectedResults
+                  : reviewResults,
+                options.maximum_output_bytes,
+              );
+              approvedText = synthesis.text;
+              reviewed = true;
+            } else {
+              queryResults = liveOutcome.results;
+              reviewResults = createReviewResults(queryResults);
+              selectedResults = queryResults;
+              selectedSectionIds = selectableSectionIds(reviewResults);
+              try {
+                liveReview.update({
                   stage: "select-evidence",
+                  is_loading: false,
                   title: "Select web search evidence",
                   draft_text: "",
-                  summary_model: summaryModel,
+                  summary_model: null,
                   draft_metadata: null,
-                  query_draft: queryDraft,
-                  query_notice: queryNotice,
-                  sections,
+                  query_draft: "",
+                  query_notice: null,
+                  sections: createReviewSections(reviewResults),
                   selected_section_ids: selectedSectionIds,
-                },
+                });
+              } catch {
+                // A simultaneous timeout is observed through resolution.
+              }
+              pendingSelection = waitForSummaryReviewWithDeadline(
+                liveReview.resolution,
+                reviewController,
                 options.review_timeout_ms,
                 signal,
               );
+            }
+          } else {
+            queryResults = await executeQueries(
+              executor,
+              queries,
+              searchOptions,
+              signal,
+            );
+            reviewResults = createReviewResults(queryResults);
+            selectedResults = queryResults;
+            selectedSectionIds = selectableSectionIds(reviewResults);
+          }
+          if (workflow === "summary-review") {
+            selectionLoop:
+            while (approvedText === undefined) {
+              const sections = createReviewSections(reviewResults);
+              const selection: SummaryReviewResolution | null =
+                pendingSelection
+                ? await pendingSelection
+                : await requestSummaryReviewWithDeadline(
+                  requestSummaryReview!,
+                  {
+                    stage: "select-evidence",
+                    is_loading: false,
+                    title: "Select web search evidence",
+                    draft_text: "",
+                    summary_model: summaryModel,
+                    draft_metadata: null,
+                    query_draft: queryDraft,
+                    query_notice: queryNotice,
+                    sections,
+                    selected_section_ids: selectedSectionIds,
+                  },
+                  options.review_timeout_ms,
+                  signal,
+                );
+              pendingSelection = null;
               if (selection === null) {
                 const selectableSectionIds = reviewResults.flatMap(
                   (result, index) =>
@@ -383,9 +544,10 @@ export function createWebSearchAgentPlugin(
               );
               while (true) {
                 const resolution = await requestSummaryReviewWithDeadline(
-                  context.request_summary_review,
+                  requestSummaryReview!,
                   {
                     stage: "review-summary",
+                    is_loading: false,
                     title: "Review web search summary",
                     draft_text: synthesis.text,
                     summary_model: summaryModel,
@@ -537,6 +699,12 @@ function createReviewSections(results: QueryResult[]) {
       url: source.url,
     })),
   }));
+}
+
+function selectableSectionIds(results: QueryResult[]): string[] {
+  return results.flatMap((result, index) =>
+    result.response ? [String(index)] : []
+  );
 }
 
 function createReviewResults(results: QueryResult[]): QueryResult[] {
@@ -691,27 +859,35 @@ async function executeQueries(
   queries: string[],
   options: Omit<WebSearchRequest, "query">,
   signal?: AbortSignal,
+  onResult?: (
+    result: QueryResult,
+    completedCount: number,
+    totalCount: number,
+  ) => void,
 ): Promise<QueryResult[]> {
   const results: QueryResult[] = [];
   for (const query of queries) {
+    let result: QueryResult;
     try {
-      results.push({
+      result = {
         query,
         response: await executor.search({
           query,
           ...options,
         }, signal),
-      });
+      };
     } catch (error) {
       if (signal?.aborted || isAbortError(error)) throw error;
-      results.push({
+      result = {
         query,
         error: error instanceof Error
           ? error.message
           : "The web search failed.",
         provider_errors: extractProviderFailures(error),
-      });
+      };
     }
+    results.push(result);
+    onResult?.(result, results.length, queries.length);
   }
   return results;
 }
@@ -749,8 +925,53 @@ async function requestSummaryReviewWithDeadline(
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<SummaryReviewResolution | null> {
+  return openSummaryReviewWithDeadline(
+    (initialRequest, reviewSignal) => ({
+      resolution: requestReview(initialRequest, reviewSignal),
+      update() {
+        throw new Error("This summary review cannot be updated.");
+      },
+    }),
+    request,
+    timeoutMs,
+    signal,
+  ).resolution;
+}
+
+function openSummaryReviewWithDeadline(
+  openReview: SummaryReviewOpener,
+  request: SummaryReviewInput,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): {
+  resolution: Promise<SummaryReviewResolution | null>;
+  update: SummaryReviewInteraction["update"];
+} {
   if (signal?.aborted) throw createAbortError();
   const timeoutController = new AbortController();
+  const reviewSignal = signal
+    ? AbortSignal.any([signal, timeoutController.signal])
+    : timeoutController.signal;
+  const interaction = openReview(request, reviewSignal);
+  const reviewPromise = interaction.resolution;
+  void reviewPromise.catch(() => undefined);
+  return {
+    update: interaction.update,
+    resolution: waitForSummaryReviewWithDeadline(
+      reviewPromise,
+      timeoutController,
+      timeoutMs,
+      signal,
+    ),
+  };
+}
+
+async function waitForSummaryReviewWithDeadline(
+  reviewPromise: Promise<SummaryReviewResolution>,
+  timeoutController: AbortController,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<SummaryReviewResolution | null> {
   const timeoutMarker = Symbol("summary-review-timeout");
   let resolveTimeout!: () => void;
   const timeoutPromise = new Promise<typeof timeoutMarker>((resolve) => {
@@ -760,9 +981,6 @@ async function requestSummaryReviewWithDeadline(
     timeoutController.abort();
     resolveTimeout();
   }, timeoutMs);
-  const reviewSignal = signal
-    ? AbortSignal.any([signal, timeoutController.signal])
-    : timeoutController.signal;
   let rejectCallerAbort: (() => void) | undefined;
   const callerAbortPromise = signal
     ? new Promise<never>((_resolve, reject) => {
@@ -772,8 +990,6 @@ async function requestSummaryReviewWithDeadline(
         });
       })
     : null;
-  const reviewPromise = requestReview(request, reviewSignal);
-  void reviewPromise.catch(() => undefined);
   try {
     const outcome = await Promise.race([
       reviewPromise,

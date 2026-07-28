@@ -33,6 +33,10 @@ const localModel = {
 
 test("summary review pauses a tool until the viewer approves it", async () => {
   const events = [];
+  let publishReviewResults;
+  const reviewResultsReady = new Promise((resolve) => {
+    publishReviewResults = resolve;
+  });
   const core = createCore(
     new MemoryProjectStore(),
     createWorkspaceProvider(),
@@ -67,8 +71,22 @@ test("summary review pauses a tool until the viewer approves it", async () => {
             description: "Exercise summary review.",
             parameters: Type.Object({}),
             async execute(_callId, _params, signal) {
-              const resolution = await context.request_summary_review({
+              const interaction = context.open_summary_review({
+                stage: "select-evidence",
+                is_loading: true,
+                title: "Find evidence",
+                draft_text: "",
+                summary_model: null,
+                draft_metadata: null,
+                query_draft: "",
+                query_notice: "Searching…",
+                sections: [],
+                selected_section_ids: [],
+              }, signal);
+              await reviewResultsReady;
+              interaction.update({
                 stage: "review-summary",
+                is_loading: false,
                 title: "Review summary",
                 draft_text: "Draft summary",
                 summary_model: null,
@@ -92,7 +110,8 @@ test("summary review pauses a tool until the viewer approves it", async () => {
                   sources: [],
                 }],
                 selected_section_ids: ["0"],
-              }, signal);
+              });
+              const resolution = await interaction.resolution;
               return {
                 content: [{
                   type: "text",
@@ -120,7 +139,38 @@ test("summary review pauses a tool until the viewer approves it", async () => {
   const review = events.findLast(
     (event) => event.type === "summary_review_requested",
   );
-  assert.equal(review.payload.draft_text, "Draft summary");
+  assert.equal(review.payload.is_loading, true);
+  assert.deepEqual(review.payload.sections, []);
+  await core.handle(createCommand("summary_review_resolve", {
+    project_id: review.payload.project_id,
+    session_id: review.payload.session_id,
+    interaction_id: review.payload.interaction_id,
+    resolution: {
+      decision: "approve",
+      approved_text: "Premature summary",
+      selected_section_ids: [],
+      feedback_text: "",
+      summary_model: null,
+      query_text: "",
+    },
+  }));
+  assert.match(
+    events.findLast((event) => event.type === "error").payload.message,
+    /cannot be submitted while it is loading/u,
+  );
+
+  publishReviewResults();
+  await waitForCondition(
+    () => events.some((event) => event.type === "summary_review_updated"),
+  );
+  const reviewUpdate = events.findLast(
+    (event) => event.type === "summary_review_updated",
+  );
+  assert.equal(
+    reviewUpdate.payload.interaction_id,
+    review.payload.interaction_id,
+  );
+  assert.equal(reviewUpdate.payload.draft_text, "Draft summary");
 
   await core.handle(createCommand("summary_review_resolve", {
     project_id: review.payload.project_id,
@@ -208,6 +258,7 @@ test("a local review deadline clears the interaction without aborting the run", 
               try {
                 await context.request_summary_review({
                   stage: "select-evidence",
+                  is_loading: false,
                   title: "Select evidence",
                   draft_text: "",
                   summary_model: null,

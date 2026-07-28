@@ -518,6 +518,168 @@ test("summary-review returns only the user-approved synthesis", async () => {
   });
 });
 
+test("summary-review streams initial searches into one open review", async () => {
+  const searchedQueries = [];
+  const plugin = createWebSearchAgentPlugin({
+    async search(request) {
+      searchedQueries.push(request.query);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return {
+        query: request.query,
+        provider: "exa",
+        answer: `Evidence for ${request.query}`,
+        sources: [{
+          title: request.query,
+          url: `https://example.com/${searchedQueries.length}`,
+          snippet: "Evidence",
+        }],
+      };
+    },
+    close() {},
+  }, {
+    maximum_results: 5,
+    maximum_output_bytes: 64 * 1024,
+    default_provider: "exa",
+    default_workflow: "summary-review",
+    summary_timeout_ms: 1_000,
+    review_timeout_ms: 1,
+  });
+  const selectionUpdates = [];
+  let selectionOpenCount = 0;
+  const [tool] = plugin.createTools({
+    project_id: "project",
+    session_id: "session",
+    async complete_model() {
+      return {
+        text: "Live review summary",
+        provider_id: "openai",
+        model_id: "test-model",
+      };
+    },
+    open_summary_review(request) {
+      if (request.stage === "review-summary") {
+        return {
+          resolution: Promise.resolve({
+            decision: "approve",
+            approved_text: request.draft_text,
+            selected_section_ids: request.selected_section_ids,
+            feedback_text: "",
+            summary_model: null,
+            query_text: "",
+          }),
+          update() {
+            throw new Error("Draft review should not be updated.");
+          },
+        };
+      }
+      selectionOpenCount += 1;
+      assert.equal(searchedQueries.length, 0);
+      assert.equal(request.is_loading, true);
+      assert.deepEqual(request.sections, []);
+      let resolveSelection;
+      return {
+        resolution: new Promise((resolve) => {
+          resolveSelection = resolve;
+        }),
+        update(updatedRequest) {
+          selectionUpdates.push(structuredClone(updatedRequest));
+          if (!updatedRequest.is_loading) {
+            resolveSelection({
+              decision: "summarize",
+              approved_text: "",
+              selected_section_ids:
+                updatedRequest.selected_section_ids,
+              feedback_text: "",
+              summary_model: null,
+              query_text: "",
+            });
+          }
+        },
+      };
+    },
+  });
+
+  const result = await tool.execute(
+    "call",
+    { queries: ["angle one", "angle two"] },
+    new AbortController().signal,
+    () => {},
+  );
+
+  assert.equal(selectionOpenCount, 1);
+  assert.deepEqual(
+    selectionUpdates.map((request) => ({
+      is_loading: request.is_loading,
+      section_count: request.sections.length,
+      selected_section_ids: request.selected_section_ids,
+    })),
+    [{
+      is_loading: true,
+      section_count: 1,
+      selected_section_ids: ["0"],
+    }, {
+      is_loading: true,
+      section_count: 2,
+      selected_section_ids: ["0", "1"],
+    }, {
+      is_loading: false,
+      section_count: 2,
+      selected_section_ids: ["0", "1"],
+    }],
+  );
+  assert.equal(result.content[0].text, "Live review summary");
+});
+
+test("cancelling a loading review aborts its active search", async () => {
+  let searchAborted = false;
+  const plugin = createWebSearchAgentPlugin({
+    async search(_request, signal) {
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          searchAborted = true;
+          reject(new DOMException("Cancelled", "AbortError"));
+        }, { once: true });
+      });
+    },
+    close() {},
+  }, {
+    maximum_results: 5,
+    maximum_output_bytes: 64 * 1024,
+    default_provider: "exa",
+    default_workflow: "summary-review",
+    summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
+  });
+  const [tool] = plugin.createTools({
+    project_id: "project",
+    session_id: "session",
+    open_summary_review() {
+      return {
+        resolution: Promise.resolve({
+          decision: "cancel",
+          approved_text: "",
+          selected_section_ids: [],
+          feedback_text: "",
+          summary_model: null,
+          query_text: "",
+        }),
+        update() {},
+      };
+    },
+  });
+
+  const result = await tool.execute(
+    "call",
+    { query: "cancel me" },
+    new AbortController().signal,
+    () => {},
+  );
+
+  assert.equal(searchAborted, true);
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /cancelled by the user/u);
+});
+
 test("all-provider review keeps provider evidence independently selectable", async () => {
   const exaResponse = {
     query: "example",

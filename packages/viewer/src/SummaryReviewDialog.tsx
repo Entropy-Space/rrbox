@@ -65,10 +65,15 @@ function ActiveSummaryReviewDialog({
   const [summaryModelId, setSummaryModelId] = useState(
     review.summary_model?.model_id ?? "",
   );
-  const [selectedSectionIds, setSelectedSectionIds] = useState<Set<string>>(
-    () => new Set(review.selected_section_ids),
+  const [selectedSectionIdsOverride, setSelectedSectionIds] = useState<
+    Set<string> | null
+  >(
+    null,
   );
+  const selectedSectionIds = selectedSectionIdsOverride ??
+    new Set(review.selected_section_ids);
   const isSelecting = review.stage === "select-evidence";
+  const isLoading = review.is_loading;
   const selectionChanged = !sameStringSet(
     selectedSectionIds,
     review.selected_section_ids,
@@ -163,7 +168,7 @@ function ActiveSummaryReviewDialog({
                 <span>Summary provider</span>
                 <select
                   value={summaryProviderId}
-                  disabled={review.is_submitting}
+                  disabled={review.is_submitting || isLoading}
                   onChange={(event) => {
                     const providerId = event.target.value;
                     const provider = readyProviders.find(
@@ -192,7 +197,9 @@ function ActiveSummaryReviewDialog({
                 <select
                   value={summaryModelId}
                   disabled={
-                    review.is_submitting || summaryProviderId === ""
+                    review.is_submitting ||
+                    isLoading ||
+                    summaryProviderId === ""
                   }
                   onChange={(event) =>
                     setSummaryModelId(event.target.value)}
@@ -228,6 +235,9 @@ function ActiveSummaryReviewDialog({
             aria-labelledby="summary-review-evidence-title"
           >
             <h3 id="summary-review-evidence-title">Search evidence</h3>
+            {isLoading && review.sections.length === 0 && (
+              <p role="status">Searching for evidence…</p>
+            )}
             {review.sections.map((section) => {
               const selected = selectedSectionIds.has(section.section_id);
               return (
@@ -242,11 +252,15 @@ function ActiveSummaryReviewDialog({
                       type="checkbox"
                       checked={selected}
                       disabled={
-                        review.is_submitting || !section.is_selectable
+                        review.is_submitting ||
+                        isLoading ||
+                        !section.is_selectable
                       }
                       onChange={(event) => {
                         setSelectedSectionIds((current) => {
-                          const next = new Set(current);
+                          const next = new Set(
+                            current ?? review.selected_section_ids,
+                          );
                           if (event.target.checked) {
                             next.add(section.section_id);
                           } else {
@@ -287,7 +301,7 @@ function ActiveSummaryReviewDialog({
                   type="text"
                   value={queryText}
                   maxLength={4 * 1024}
-                  disabled={review.is_submitting}
+                  disabled={review.is_submitting || isLoading}
                   placeholder="Enter another research angle"
                   onChange={(event) => setQueryText(event.target.value)}
                 />
@@ -298,7 +312,9 @@ function ActiveSummaryReviewDialog({
                   <button
                     type="button"
                     disabled={
-                      review.is_submitting || queryText.trim().length === 0
+                      review.is_submitting ||
+                      isLoading ||
+                      queryText.trim().length === 0
                     }
                     onClick={() => {
                       onResolve({
@@ -318,7 +334,9 @@ function ActiveSummaryReviewDialog({
                     className="primary"
                     type="button"
                     disabled={
-                      review.is_submitting || queryText.trim().length === 0
+                      review.is_submitting ||
+                      isLoading ||
+                      queryText.trim().length === 0
                     }
                     onClick={() => {
                       onResolve({
@@ -389,7 +407,9 @@ function ActiveSummaryReviewDialog({
             role={review.error_message ? "alert" : "status"}
           >
             {review.error_message ??
-              `${selectedSectionIds.size} of ${review.sections.length} evidence sections selected`}
+              (isLoading
+                ? `Searching… ${review.sections.length} evidence sections received`
+                : `${selectedSectionIds.size} of ${review.sections.length} evidence sections selected`)}
           </span>
           <div>
             <button
@@ -406,6 +426,7 @@ function ActiveSummaryReviewDialog({
                       type="button"
                       disabled={
                         review.is_submitting ||
+                        isLoading ||
                         selectedSectionIds.size === 0
                       }
                       onClick={() => {
@@ -427,6 +448,7 @@ function ActiveSummaryReviewDialog({
                       type="button"
                       disabled={
                         review.is_submitting ||
+                        isLoading ||
                         selectedSectionIds.size === 0
                       }
                       onClick={() => {

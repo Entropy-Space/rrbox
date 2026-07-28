@@ -7,6 +7,13 @@ import type {
 
 export type { ModelSelection };
 
+export type SummaryReviewInteraction = {
+  resolution: Promise<SummaryReviewResolution>;
+  update(
+    request: Omit<SummaryReviewRequest, "interaction_id">,
+  ): void;
+};
+
 export type AgentPluginContext = {
   project_id: string;
   session_id: string;
@@ -19,6 +26,10 @@ export type AgentPluginContext = {
     request: Omit<SummaryReviewRequest, "interaction_id">,
     signal?: AbortSignal,
   ) => Promise<SummaryReviewResolution>;
+  open_summary_review?: (
+    request: Omit<SummaryReviewRequest, "interaction_id">,
+    signal?: AbortSignal,
+  ) => SummaryReviewInteraction;
 };
 
 export type AgentPluginModelCompletion = {

@@ -9,7 +9,7 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v15 command", () => {
+test("round-trips every protocol-v16 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("bootstrap", {
@@ -374,6 +374,7 @@ test("round-trips every normalized timeline core event", () => {
         ...scope,
         interaction_id: "review-1",
         stage: "review-summary",
+        is_loading: false,
         title: "Review web search summary",
         draft_text: "Draft summary",
         summary_model: null,
@@ -400,6 +401,24 @@ test("round-trips every normalized timeline core event", () => {
           }],
         }],
         selected_section_ids: ["0"],
+      },
+      "request-review",
+    ),
+    coreEvent(
+      "summary_review_updated",
+      {
+        ...scope,
+        interaction_id: "review-2",
+        stage: "select-evidence",
+        is_loading: true,
+        title: "Select web search evidence",
+        draft_text: "",
+        summary_model: null,
+        draft_metadata: null,
+        query_draft: "",
+        query_notice: "Searching 0 of 2 queries…",
+        sections: [],
+        selected_section_ids: [],
       },
       "request-review",
     ),
@@ -534,6 +553,7 @@ test("validates summary model selections and draft metadata", () => {
       session_id: "session-1",
       interaction_id: "review-1",
       stage: "review-summary",
+      is_loading: false,
       title: "Review web search summary",
       draft_text: "Draft summary",
       summary_model: {
@@ -608,6 +628,7 @@ test("bounds query curation and permits empty evidence selection", () => {
       session_id: "session-1",
       interaction_id: "review-1",
       stage: "select-evidence",
+      is_loading: false,
       title: "Select evidence",
       draft_text: "",
       summary_model: null,
@@ -626,6 +647,27 @@ test("bounds query curation and permits empty evidence selection", () => {
     "request-review",
   );
   assert.deepEqual(parseCoreEvent(selectionRequest), selectionRequest);
+
+  const loadingRequest = structuredClone(selectionRequest);
+  loadingRequest.type = "summary_review_updated";
+  loadingRequest.payload.is_loading = true;
+  loadingRequest.payload.sections = [];
+  assert.deepEqual(parseCoreEvent(loadingRequest), loadingRequest);
+
+  const emptyReadyRequest = structuredClone(loadingRequest);
+  emptyReadyRequest.payload.is_loading = false;
+  assert.throws(
+    () => parseCoreEvent(emptyReadyRequest),
+    /sections are out of bounds/,
+  );
+
+  const loadingDraftRequest = structuredClone(selectionRequest);
+  loadingDraftRequest.payload.stage = "review-summary";
+  loadingDraftRequest.payload.is_loading = true;
+  assert.throws(
+    () => parseCoreEvent(loadingDraftRequest),
+    /Only evidence selection may report a loading review/,
+  );
 
   const unavailableSelection = structuredClone(selectionRequest);
   unavailableSelection.payload.sections[0].is_selectable = false;
@@ -835,6 +877,7 @@ test("requires request correlation for commands and interactive results", () => 
       session_id: "session-1",
       interaction_id: "review-1",
       stage: "select-evidence",
+      is_loading: false,
       title: "Select evidence",
       draft_text: "",
       summary_model: null,

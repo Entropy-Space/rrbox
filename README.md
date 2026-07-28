@@ -26,6 +26,8 @@ macOS, iOS, and Android.
   `replace_text`, and reversible `remove_file` tools
 - Opt-in, stateless `run_python` tool backed by RustPython: browsers lazily
   start an isolated Wasm Worker, while native lifecycle stays in Rust
+- Opt-in, stateless `web_search` tool adapted from `pi-web-access`, with a
+  fixed Exa MCP destination and bounded requests, responses, and timeouts
 - App-private native persistence through a Rust-owned catalog and one
   transactional SQLite database per project
 - Atomic file-change receipts with line statistics, live workspace refresh, and
@@ -62,6 +64,7 @@ packages/
   workspace-archive/   Deterministic workspace ZIP capture and codec
   project-store/       Project/session records and persistence contract
   python-plugin/       Opt-in Python tool, protocol, Rust core, and Wasm
+  web-search-plugin/   Clean, stateless pi-web-access search fork
 ```
 
 Applications are composition roots. Reusable packages do not import Next.js,
@@ -107,6 +110,14 @@ Open **Plugins** in the application sidebar to enable Python and configure its
 per-call execution timeout and combined output limit. Plugin settings are
 stored on the local device, and saving them restarts the local core so the
 agent's tool list updates immediately.
+
+Web search is also opt-in from **Plugins**. The cleaned integration exposes
+only `web_search`; it does not include upstream page fetching, local paths,
+browser-cookie access, curator UI, session storage, cloning, or video/PDF
+pipelines. Both app workers call the fixed, CORS-enabled Exa MCP endpoint
+directly. Searches have explicit result, response-size, and timeout bounds and
+retain no state. See `packages/web-search-plugin/THIRD_PARTY_NOTICES.md` for
+the MIT-licensed upstream attribution.
 
 ### Native app
 

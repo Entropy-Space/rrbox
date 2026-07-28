@@ -14,7 +14,14 @@ test("validates exact web core plugin initialization", () => {
       timeout_ms: 12_000,
       max_output_bytes: 64 * 1024,
     },
+    web_search_plugin: {
+      enabled: true,
+      timeout_ms: 20_000,
+      maximum_results: 5,
+      max_output_bytes: 64 * 1024,
+    },
   };
+  assert.equal(WEB_CORE_WORKER_PROTOCOL_VERSION, 2);
   assert.deepEqual(
     parseWebCoreWorkerInitializeMessage(initialization),
     initialization,

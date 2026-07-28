@@ -23,6 +23,10 @@ import { createPythonAgentPlugin } from "@researchbox/python-plugin";
 import {
   NativePythonRpcClient,
 } from "@researchbox/python-plugin/native";
+import { createWebSearchAgentPlugin } from "@researchbox/web-search-plugin";
+import {
+  ExaMcpWebSearchExecutor,
+} from "@researchbox/web-search-plugin/executor";
 
 const host = self as unknown as WorkerHost;
 const workerNavigator = navigator as WorkerNavigator & {
@@ -52,6 +56,20 @@ host.onmessage = (event) => {
         },
       )
     : null;
+  const webSearchExecutor = initialization.web_search_plugin.enabled
+    ? new ExaMcpWebSearchExecutor(initialization.web_search_plugin)
+    : null;
+  const plugins = [
+    ...(pythonClient
+      ? [createPythonAgentPlugin(pythonClient)]
+      : []),
+    ...(webSearchExecutor
+      ? [createWebSearchAgentPlugin(
+          webSearchExecutor,
+          initialization.web_search_plugin.maximum_results,
+        )]
+      : []),
+  ];
 
   startResearchBoxCoreWorker({
     host,
@@ -59,12 +77,14 @@ host.onmessage = (event) => {
     providers: createResearchBoxProviderDefinitions({
       include_local_openai: true,
     }),
-    plugins: pythonClient
-      ? [createPythonAgentPlugin(pythonClient)]
-      : [],
-    close_plugins: pythonClient
-      ? () => pythonClient.close()
-      : undefined,
+    plugins,
+    close_plugins:
+      pythonClient || webSearchExecutor
+        ? async () => {
+            await pythonClient?.close();
+            await webSearchExecutor?.close();
+          }
+        : undefined,
     create_storage_services() {
       return {
         projectStore,

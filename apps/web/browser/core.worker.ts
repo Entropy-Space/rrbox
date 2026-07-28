@@ -9,6 +9,10 @@ import {
   BrowserPythonExecutor,
 } from "@researchbox/python-plugin/browser";
 import { createPythonAgentPlugin } from "@researchbox/python-plugin";
+import { createWebSearchAgentPlugin } from "@researchbox/web-search-plugin";
+import {
+  ExaMcpWebSearchExecutor,
+} from "@researchbox/web-search-plugin/executor";
 import {
   parseWebCoreWorkerInitializeMessage,
 } from "./core-worker-initialization.ts";
@@ -35,16 +39,32 @@ host.onmessage = (event) => {
         },
       })
     : null;
+  const webSearchExecutor = initialization.web_search_plugin.enabled
+    ? new ExaMcpWebSearchExecutor(initialization.web_search_plugin)
+    : null;
+  const plugins = [
+    ...(pythonExecutor
+      ? [createPythonAgentPlugin(pythonExecutor)]
+      : []),
+    ...(webSearchExecutor
+      ? [createWebSearchAgentPlugin(
+          webSearchExecutor,
+          initialization.web_search_plugin.maximum_results,
+        )]
+      : []),
+  ];
 
   startResearchBoxCoreWorker({
     host,
     lock_manager: navigator.locks,
-    plugins: pythonExecutor
-      ? [createPythonAgentPlugin(pythonExecutor)]
-      : [],
-    close_plugins: pythonExecutor
-      ? () => pythonExecutor.close()
-      : undefined,
+    plugins,
+    close_plugins:
+      pythonExecutor || webSearchExecutor
+        ? async () => {
+            await pythonExecutor?.close();
+            await webSearchExecutor?.close();
+          }
+        : undefined,
     providers: createResearchBoxProviderDefinitions({
       include_local_openai: true,
     }),

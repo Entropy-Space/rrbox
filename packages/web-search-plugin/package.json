@@ -1,0 +1,16 @@
+{
+  "name": "@researchbox/web-search-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./executor": "./src/exa-mcp-executor.ts",
+    "./settings": "./src/plugin-settings.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.79.0",
+    "@earendil-works/pi-ai": "0.79.0",
+    "@researchbox/agent-core": "workspace:*"
+  }
+}

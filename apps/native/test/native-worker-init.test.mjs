@@ -22,9 +22,15 @@ test("uses distinct strict versions for core and LLM worker initialization", () 
       timeout_ms: 15_000,
       max_output_bytes: 1024,
     },
+    web_search_plugin: {
+      enabled: true,
+      timeout_ms: 20_000,
+      maximum_results: 5,
+      max_output_bytes: 64 * 1024,
+    },
   };
 
-  assert.equal(NATIVE_CORE_WORKER_PROTOCOL_VERSION, 4);
+  assert.equal(NATIVE_CORE_WORKER_PROTOCOL_VERSION, 5);
   assert.deepEqual(
     parseNativeCoreWorkerInitializeMessage(coreInitialization),
     coreInitialization,

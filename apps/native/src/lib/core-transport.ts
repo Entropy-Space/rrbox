@@ -2,6 +2,9 @@ import type { CoreTransportFactory } from "@researchbox/client";
 import {
   resolvePythonPluginRuntimeConfiguration,
 } from "@researchbox/python-plugin/settings";
+import {
+  resolveWebSearchPluginRuntimeConfiguration,
+} from "@researchbox/web-search-plugin/settings";
 import { WorkerCoreTransport } from "@researchbox/runtime-browser";
 import { loadPluginSettings } from "@researchbox/viewer";
 import {
@@ -36,6 +39,7 @@ export const createNativeCoreTransport: CoreTransportFactory = () => {
   const pythonBroker = createNativePythonPortBroker(
     pythonChannel.port1,
   );
+  const pluginSettings = loadPluginSettings();
   const workerTransport = new WorkerCoreTransport(worker, {
     onClosed() {
       storageBroker.close();
@@ -50,7 +54,10 @@ export const createNativeCoreTransport: CoreTransportFactory = () => {
     provider_port: providerChannel.port2,
     python_port: pythonChannel.port2,
     python_plugin: resolvePythonPluginRuntimeConfiguration(
-      loadPluginSettings().plugins.python,
+      pluginSettings.plugins.python,
+    ),
+    web_search_plugin: resolveWebSearchPluginRuntimeConfiguration(
+      pluginSettings.plugins["web-search"],
     ),
   };
 

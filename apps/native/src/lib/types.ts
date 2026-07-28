@@ -18,8 +18,12 @@ import {
   parsePythonPluginRuntimeConfiguration,
   type PythonPluginRuntimeConfiguration,
 } from "@researchbox/python-plugin/settings";
+import {
+  parseWebSearchPluginRuntimeConfiguration,
+  type WebSearchPluginRuntimeConfiguration,
+} from "@researchbox/web-search-plugin/settings";
 
-export const NATIVE_CORE_WORKER_PROTOCOL_VERSION = 4 as const;
+export const NATIVE_CORE_WORKER_PROTOCOL_VERSION = 5 as const;
 export const NATIVE_LLM_WORKER_PROTOCOL_VERSION = 1 as const;
 
 export type NativeCoreWorkerInitializeMessage = {
@@ -29,6 +33,7 @@ export type NativeCoreWorkerInitializeMessage = {
   provider_port: MessagePort;
   python_port: MessagePort;
   python_plugin: PythonPluginRuntimeConfiguration;
+  web_search_plugin: WebSearchPluginRuntimeConfiguration;
 };
 
 export type NativeLlmWorkerInitializeMessage = {
@@ -70,6 +75,7 @@ export function parseNativeCoreWorkerInitializeMessage(
     "provider_port",
     "python_port",
     "python_plugin",
+    "web_search_plugin",
   ])) {
     throw new Error("Invalid native core worker initialization.");
   }
@@ -90,6 +96,9 @@ export function parseNativeCoreWorkerInitializeMessage(
     python_port: value.python_port,
     python_plugin: parsePythonPluginRuntimeConfiguration(
       value.python_plugin,
+    ),
+    web_search_plugin: parseWebSearchPluginRuntimeConfiguration(
+      value.web_search_plugin,
     ),
   };
 }

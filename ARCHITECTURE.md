@@ -160,6 +160,25 @@ against same-origin code. Server-held credentials must remain on the server.
     active agent registry. It does not keep a separate fixed allowlist that
     could silently remove application-composed plugin tools.
 
+## Web search plugin boundary
+
+`packages/web-search-plugin` is a deliberately narrow fork of the
+MIT-licensed `pi-web-access` Exa MCP path. It defines one `web_search` tool and
+a shared executor used by both browser and native core Workers. The plugin is
+absent unless application composition enables it.
+
+The executor has one compiled outbound destination, validates query and result
+bounds before networking, combines caller cancellation with a configured
+timeout, bounds the provider response before decoding it, and truncates tool
+output to the configured budget. It retains no search results, credentials, or
+session state.
+
+The fork intentionally excludes upstream URL fetching, arbitrary/local paths,
+browser cookies, API-key configuration, provider fallback chains, curator
+servers, persistent result storage, repository cloning, and media extraction.
+Adding content fetching later requires a separate SSRF and redirect policy;
+it must not be smuggled through the search tool.
+
 ## Python plugin boundary
 
 `packages/python-plugin` defines the `run_python` tool, a strict versioned

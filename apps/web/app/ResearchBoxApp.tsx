@@ -9,6 +9,10 @@ import {
   pythonPluginCatalogEntry,
   resolvePythonPluginRuntimeConfiguration,
 } from "@researchbox/python-plugin/settings";
+import {
+  resolveWebSearchPluginRuntimeConfiguration,
+  webSearchPluginCatalogEntry,
+} from "@researchbox/web-search-plugin/settings";
 import { BrowserWorkspaceTransferAdapter } from "../browser/workspace-transfer.ts";
 import {
   WEB_CORE_WORKER_PROTOCOL_VERSION,
@@ -33,6 +37,9 @@ function createTransport(): WorkerCoreTransport {
     python_plugin: resolvePythonPluginRuntimeConfiguration(
       settings.plugins.python,
     ),
+    web_search_plugin: resolveWebSearchPluginRuntimeConfiguration(
+      settings.plugins["web-search"],
+    ),
   };
   try {
     worker.postMessage(initialization);
@@ -47,7 +54,10 @@ export default function ResearchBoxApp() {
   return (
     <ResearchBoxViewer
       createTransport={createTransport}
-      plugins={[pythonPluginCatalogEntry]}
+      plugins={[
+        pythonPluginCatalogEntry,
+        webSearchPluginCatalogEntry,
+      ]}
       workspaceTransferAdapter={workspaceTransferAdapter}
     />
   );

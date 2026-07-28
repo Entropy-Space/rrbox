@@ -15,6 +15,7 @@
     "@researchbox/python-plugin": "workspace:*",
     "@researchbox/runtime-browser": "workspace:*",
     "@researchbox/viewer": "workspace:*",
+    "@researchbox/web-search-plugin": "workspace:*",
     "@researchbox/workspace-archive": "workspace:*",
     "next": "16.2.6",
     "react": "19.2.6",

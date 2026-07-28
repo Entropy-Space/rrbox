@@ -1,7 +1,8 @@
-export const PROTOCOL_VERSION = 13 as const;
+export const PROTOCOL_VERSION = 14 as const;
 
 export const SUMMARY_REVIEW_MAX_SECTIONS = 20;
 export const SUMMARY_REVIEW_MAX_TEXT_LENGTH = 256 * 1024;
+export const SUMMARY_REVIEW_MAX_QUERY_LENGTH = 4 * 1024;
 
 export type SummaryReviewSource = {
   title: string;
@@ -30,6 +31,8 @@ export type SummaryReviewRequest = {
   draft_text: string;
   summary_model: ModelSelection | null;
   draft_metadata: SummaryReviewDraftMetadata | null;
+  query_draft: string;
+  query_notice: string | null;
   sections: SummaryReviewSection[];
   selected_section_ids: string[];
 };
@@ -38,6 +41,8 @@ export type SummaryReviewResolution = {
   decision:
     | "summarize"
     | "raw"
+    | "add-search"
+    | "rewrite-query"
     | "regenerate"
     | "back"
     | "approve"
@@ -46,6 +51,7 @@ export type SummaryReviewResolution = {
   selected_section_ids: string[];
   feedback_text: string;
   summary_model: ModelSelection | null;
+  query_text: string;
 };
 
 export type FileEntry = {
@@ -1109,6 +1115,8 @@ function parseSummaryReviewRequest(
       "draft_text",
       "summary_model",
       "draft_metadata",
+      "query_draft",
+      "query_notice",
       "sections",
       "selected_section_ids",
     ],
@@ -1140,7 +1148,7 @@ function parseSummaryReviewRequest(
     "selected_section_ids",
   );
   if (
-    selectedSectionIds.length === 0 ||
+    (stage === "review-summary" && selectedSectionIds.length === 0) ||
     selectedSectionIds.some((sectionId) => !sectionIds.has(sectionId))
   ) {
     throw new Error(
@@ -1153,6 +1161,9 @@ function parseSummaryReviewRequest(
   const draftMetadata = parseNullableSummaryReviewDraftMetadata(
     value.draft_metadata,
   );
+  const queryNotice = value.query_notice === null
+    ? null
+    : requireBoundedString(value, "query_notice", 300);
   return {
     interaction_id: requireString(value, "interaction_id"),
     stage,
@@ -1160,6 +1171,13 @@ function parseSummaryReviewRequest(
     draft_text: draftText,
     summary_model: summaryModel,
     draft_metadata: draftMetadata,
+    query_draft: requireBoundedString(
+      value,
+      "query_draft",
+      SUMMARY_REVIEW_MAX_QUERY_LENGTH,
+      true,
+    ),
+    query_notice: queryNotice,
     sections: parsedSections,
     selected_section_ids: selectedSectionIds,
   };
@@ -1274,6 +1292,7 @@ function parseSummaryReviewResolution(
       "selected_section_ids",
       "feedback_text",
       "summary_model",
+      "query_text",
     ],
     "summary review resolution",
   );
@@ -1294,9 +1313,17 @@ function parseSummaryReviewResolution(
     8 * 1024,
     true,
   );
+  const queryText = requireBoundedString(
+    value,
+    "query_text",
+    SUMMARY_REVIEW_MAX_QUERY_LENGTH,
+    true,
+  );
   if (
     decision !== "cancel" &&
     decision !== "back" &&
+    decision !== "add-search" &&
+    decision !== "rewrite-query" &&
     selectedSectionIds.length === 0
   ) {
     throw new Error(
@@ -1306,6 +1333,12 @@ function parseSummaryReviewResolution(
   if (decision === "approve" && approvedText.trim().length === 0) {
     throw new Error("Approved summary reviews require text.");
   }
+  if (
+    (decision === "add-search" || decision === "rewrite-query") &&
+    queryText.trim().length === 0
+  ) {
+    throw new Error("Query curation decisions require query text.");
+  }
   return {
     decision,
     approved_text: approvedText,
@@ -1314,6 +1347,7 @@ function parseSummaryReviewResolution(
     summary_model: parseNullableSummaryModelSelection(
       value.summary_model,
     ),
+    query_text: queryText,
   };
 }
 
@@ -1341,6 +1375,8 @@ function parseSummaryReviewDecision(
   if (
     value !== "summarize" &&
     value !== "raw" &&
+    value !== "add-search" &&
+    value !== "rewrite-query" &&
     value !== "regenerate" &&
     value !== "back" &&
     value !== "approve" &&

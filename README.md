@@ -120,7 +120,10 @@ domain and recency filters, and raw, automatic-summary, or reviewed-summary
 workflows. Reviewed summary first asks which query results to keep, generates
 from only that evidence, then allows editing, Markdown preview, regeneration
 with feedback, changing the summary provider/model, approval, or returning to
-selection. The draft reports the model actually used, generation time,
+selection. While selecting evidence, another bounded search angle can be
+entered directly or improved with the selected summary model before retrieval.
+These query drafts and added searches exist only for the active tool call.
+The draft reports the model actually used, generation time,
 estimated tokens, and deterministic fallback reason. The review exists only
 while the tool call is active. Automatic summary uses the chat's active model.
 A reviewed summary may use any ready model; if an explicit choice fails, it

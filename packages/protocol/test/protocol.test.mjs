@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   PROTOCOL_VERSION,
+  SUMMARY_REVIEW_MAX_QUERY_LENGTH,
   createCommand,
   parseCoreEvent,
   parseTimeline,
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v13 command", () => {
+test("round-trips every protocol-v14 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("bootstrap", {
@@ -75,6 +76,7 @@ test("round-trips every protocol-v13 command", () => {
           provider_id: "local-openai",
           model_id: "gpt-5.4",
         },
+        query_text: "",
       },
     }),
     createCommand("workspace_export", { project_id: "p1" }),
@@ -385,6 +387,8 @@ test("round-trips every normalized timeline core event", () => {
           fallback_used: false,
           fallback_reason: null,
         },
+        query_draft: "",
+        query_notice: null,
         sections: [{
           section_id: "0",
           title: "Query",
@@ -545,6 +549,8 @@ test("validates summary model selections and draft metadata", () => {
         fallback_used: false,
         fallback_reason: null,
       },
+      query_draft: "new angle",
+      query_notice: "Review the improved query.",
       sections: [{
         section_id: "0",
         title: "Query",
@@ -589,6 +595,71 @@ test("validates summary model selections and draft metadata", () => {
   assert.throws(
     () => parseCoreEvent(oversizedReason),
     /fallback_reason must not exceed 256 characters/,
+  );
+});
+
+test("bounds query curation and permits empty evidence selection", () => {
+  const selectionRequest = coreEvent(
+    "summary_review_requested",
+    {
+      project_id: "project-1",
+      session_id: "session-1",
+      interaction_id: "review-1",
+      stage: "select-evidence",
+      title: "Select evidence",
+      draft_text: "",
+      summary_model: null,
+      draft_metadata: null,
+      query_draft: "another research angle",
+      query_notice: null,
+      sections: [{
+        section_id: "0",
+        title: "Initial query",
+        body: "Evidence",
+        sources: [],
+      }],
+      selected_section_ids: [],
+    },
+    "request-review",
+  );
+  assert.deepEqual(parseCoreEvent(selectionRequest), selectionRequest);
+
+  const addSearch = createCommand("summary_review_resolve", {
+    project_id: "project-1",
+    session_id: "session-1",
+    interaction_id: "review-1",
+    resolution: {
+      decision: "add-search",
+      approved_text: "",
+      selected_section_ids: [],
+      feedback_text: "",
+      summary_model: null,
+      query_text: "another research angle",
+    },
+  });
+  assert.deepEqual(parseViewerCommand(addSearch), addSearch);
+
+  const emptyQuery = structuredClone(addSearch);
+  emptyQuery.payload.resolution.query_text = " ";
+  assert.throws(
+    () => parseViewerCommand(emptyQuery),
+    /require query text/,
+  );
+
+  const oversizedQuery = structuredClone(addSearch);
+  oversizedQuery.payload.resolution.query_text =
+    "q".repeat(SUMMARY_REVIEW_MAX_QUERY_LENGTH + 1);
+  assert.throws(
+    () => parseViewerCommand(oversizedQuery),
+    /must not exceed/,
+  );
+
+  const reviewRequest = structuredClone(selectionRequest);
+  reviewRequest.payload.stage = "review-summary";
+  reviewRequest.payload.draft_text = "Draft summary";
+  assert.throws(
+    () => parseCoreEvent(reviewRequest),
+    /selected section ids/,
   );
 });
 
@@ -753,6 +824,8 @@ test("requires request correlation for commands and interactive results", () => 
       draft_text: "",
       summary_model: null,
       draft_metadata: null,
+      query_draft: "",
+      query_notice: null,
       sections: [{
         section_id: "0",
         title: "Query",

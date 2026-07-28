@@ -92,7 +92,7 @@ packages/viewer → browser workspace adapter → browser/archive.worker.ts
 The viewer depends on `CoreTransport`, not on `Worker`. Both applications
 construct `WorkerCoreTransport`, which validates all incoming protocol values,
 isolates subscribers, and owns worker teardown. The viewer and core worker
-exchange only protocol-v13 JSON values. Transport shutdown uses a separate
+exchange only protocol-v14 JSON values. Transport shutdown uses a separate
 versioned control envelope: it asks the worker to abort and drain the core,
 waits for disposal acknowledgement, and force-terminates after a bounded
 timeout if cleanup cannot finish. A
@@ -185,9 +185,11 @@ the tool so the viewer can select evidence or send it raw. Only the selected
 evidence reaches summary generation. A second ephemeral interaction reports
 the actual model, duration, token estimate, and fallback reason, and allows
 editing, Markdown preview, regeneration with feedback, changing models,
-returning to selection, approval, or cancellation. These internal model calls
-use the same model transport and cancellation boundary as the
-active agent.
+returning to selection, approval, or cancellation. During evidence selection,
+the viewer can improve a bounded query with the selected summary model or add
+another bounded search; neither query drafts nor results persist after the
+tool call. These internal model calls use the same model transport and
+cancellation boundary as the active agent.
 
 The router supports an explicit provider, configurable ordered automatic
 fallback for transient, quota, and network failures, or bounded all-provider

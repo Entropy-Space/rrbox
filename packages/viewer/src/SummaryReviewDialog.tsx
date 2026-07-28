@@ -57,6 +57,7 @@ function ActiveSummaryReviewDialog({
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const [approvedText, setApprovedText] = useState(review.draft_text);
   const [feedbackText, setFeedbackText] = useState("");
+  const [queryText, setQueryText] = useState(review.query_draft);
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [summaryProviderId, setSummaryProviderId] = useState(
     review.summary_model?.provider_id ?? "",
@@ -131,6 +132,7 @@ function ActiveSummaryReviewDialog({
       selected_section_ids: [],
       feedback_text: "",
       summary_model: selectedSummaryModel(),
+      query_text: "",
     });
   }
 
@@ -273,6 +275,66 @@ function ActiveSummaryReviewDialog({
                 </article>
               );
             })}
+            {isSelecting && (
+              <div className="summary-review-query-curation">
+                <label htmlFor="summary-review-add-query">
+                  Add another search
+                </label>
+                <input
+                  id="summary-review-add-query"
+                  type="text"
+                  value={queryText}
+                  maxLength={4 * 1024}
+                  disabled={review.is_submitting}
+                  placeholder="Enter another research angle"
+                  onChange={(event) => setQueryText(event.target.value)}
+                />
+                {review.query_notice && (
+                  <small role="status">{review.query_notice}</small>
+                )}
+                <div>
+                  <button
+                    type="button"
+                    disabled={
+                      review.is_submitting || queryText.trim().length === 0
+                    }
+                    onClick={() => {
+                      onResolve({
+                        decision: "rewrite-query",
+                        approved_text: "",
+                        selected_section_ids: selectedIds(),
+                        feedback_text: "",
+                        summary_model: selectedSummaryModel(),
+                        query_text: queryText.trim(),
+                      });
+                    }}
+                  >
+                    <RefreshCw size={15} />
+                    Improve query
+                  </button>
+                  <button
+                    className="primary"
+                    type="button"
+                    disabled={
+                      review.is_submitting || queryText.trim().length === 0
+                    }
+                    onClick={() => {
+                      onResolve({
+                        decision: "add-search",
+                        approved_text: "",
+                        selected_section_ids: selectedIds(),
+                        feedback_text: "",
+                        summary_model: selectedSummaryModel(),
+                        query_text: queryText.trim(),
+                      });
+                    }}
+                  >
+                    <Search size={15} />
+                    Add search
+                  </button>
+                </div>
+              </div>
+            )}
           </section>
 
           {!isSelecting && (
@@ -351,6 +413,7 @@ function ActiveSummaryReviewDialog({
                           selected_section_ids: selectedIds(),
                           feedback_text: "",
                           summary_model: selectedSummaryModel(),
+                          query_text: "",
                         });
                       }}
                     >
@@ -371,6 +434,7 @@ function ActiveSummaryReviewDialog({
                           selected_section_ids: selectedIds(),
                           feedback_text: "",
                           summary_model: selectedSummaryModel(),
+                          query_text: "",
                         });
                       }}
                     >
@@ -391,6 +455,7 @@ function ActiveSummaryReviewDialog({
                           selected_section_ids: selectedIds(),
                           feedback_text: "",
                           summary_model: selectedSummaryModel(),
+                          query_text: "",
                         });
                       }}
                     >
@@ -410,6 +475,7 @@ function ActiveSummaryReviewDialog({
                           selected_section_ids: selectedIds(),
                           feedback_text: feedbackText.trim(),
                           summary_model: selectedSummaryModel(),
+                          query_text: "",
                         });
                       }}
                     >
@@ -435,6 +501,7 @@ function ActiveSummaryReviewDialog({
                           selected_section_ids: selectedIds(),
                           feedback_text: "",
                           summary_model: selectedSummaryModel(),
+                          query_text: "",
                         });
                       }}
                     >

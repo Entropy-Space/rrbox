@@ -613,6 +613,64 @@
   overflow-wrap: anywhere;
 }
 
+.summary-review-query-curation {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.summary-review-query-curation > label {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.summary-review-query-curation > input {
+  min-height: 38px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  padding: 8px 10px;
+  background: white;
+  color: var(--ink);
+  font: inherit;
+}
+
+.summary-review-query-curation > small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.summary-review-query-curation > div {
+  display: flex;
+  gap: 8px;
+}
+
+.summary-review-query-curation button {
+  display: inline-flex;
+  min-height: 34px;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 8px;
+  background: white;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.summary-review-query-curation button.primary {
+  background: var(--ink);
+  color: white;
+}
+
+.summary-review-query-curation > input:focus {
+  border-color: var(--accent);
+  outline: 2px solid color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
 .summary-review-editor {
   display: flex;
   min-height: 0;
@@ -711,6 +769,8 @@
 .summary-review-footer button:disabled,
 .summary-review-header button:disabled,
 .summary-review-models select:disabled,
+.summary-review-query-curation input:disabled,
+.summary-review-query-curation button:disabled,
 .summary-review-editor textarea:disabled,
 .summary-review-editor > input:disabled,
 .summary-review-section input:disabled {

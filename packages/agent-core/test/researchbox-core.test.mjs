@@ -73,6 +73,8 @@ test("summary review pauses a tool until the viewer approves it", async () => {
                 draft_text: "Draft summary",
                 summary_model: null,
                 draft_metadata: null,
+                query_draft: "",
+                query_notice: null,
                 sections: [{
                   section_id: "0",
                   title: "Query",
@@ -123,6 +125,7 @@ test("summary review pauses a tool until the viewer approves it", async () => {
       selected_section_ids: ["0"],
       feedback_text: "",
       summary_model: null,
+      query_text: "",
     },
   }));
   await prompt;

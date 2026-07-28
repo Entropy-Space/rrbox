@@ -25,6 +25,11 @@ test("summary review is a modal approval boundary with editable output", () => {
   assert.match(dialogSource, /decision: "summarize"/u);
   assert.match(dialogSource, /decision: "regenerate"/u);
   assert.match(dialogSource, /decision: "back"/u);
+  assert.match(dialogSource, /decision: "rewrite-query"/u);
+  assert.match(dialogSource, /decision: "add-search"/u);
+  assert.match(dialogSource, /Add another search/u);
+  assert.match(dialogSource, /Improve query/u);
+  assert.match(dialogSource, /query_notice/u);
   assert.match(dialogSource, /<MarkdownContent/u);
   assert.match(dialogSource, /Summary regeneration feedback/u);
   assert.match(dialogSource, /Summary provider/u);
@@ -49,4 +54,5 @@ test("summary review bounds evidence and editor layout", () => {
   assert.match(stylesSource, /\.summary-review-editor textarea \{/u);
   assert.match(stylesSource, /\.summary-review-preview \{/u);
   assert.match(stylesSource, /\.summary-review-models \{/u);
+  assert.match(stylesSource, /\.summary-review-query-curation \{/u);
 });

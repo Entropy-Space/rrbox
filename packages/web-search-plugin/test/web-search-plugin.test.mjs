@@ -136,6 +136,55 @@ test("falls back deterministically when summary generation fails", async () => {
   assert.equal(result.details.synthesis.fallback_used, true);
 });
 
+test("treats an empty summary completion as a deterministic fallback", async () => {
+  const plugin = createWebSearchAgentPlugin({
+    async search(request) {
+      return {
+        query: request.query,
+        provider: "exa",
+        answer: "Bounded factual evidence.",
+        sources: [{
+          title: "Example",
+          url: "https://example.com/",
+          snippet: "Evidence",
+        }],
+      };
+    },
+    close() {},
+  }, {
+    maximum_results: 5,
+    maximum_output_bytes: 64 * 1024,
+    default_provider: "exa",
+    default_workflow: "auto-summary",
+    summary_timeout_ms: 1_000,
+  });
+  const [tool] = plugin.createTools({
+    project_id: "project",
+    session_id: "session",
+    async complete_model() {
+      return {
+        text: " \n ",
+        provider_id: "openai",
+        model_id: "empty-model",
+      };
+    },
+  });
+
+  const result = await tool.execute(
+    "call",
+    { query: "example" },
+    new AbortController().signal,
+    () => {},
+  );
+
+  assert.match(result.content[0].text, /Bounded factual evidence/u);
+  assert.equal(result.details.synthesis.fallback_used, true);
+  assert.equal(
+    result.details.synthesis.fallback_reason,
+    "summary-model-empty-response",
+  );
+});
+
 test("summary-review returns only the user-approved synthesis", async () => {
   const plugin = createWebSearchAgentPlugin({
     async search(request) {
@@ -167,7 +216,13 @@ test("summary-review returns only the user-approved synthesis", async () => {
     async complete_model(prompt, _signal, model) {
       summaryPrompt = prompt;
       requestedSummaryModels.push(model);
-      if (model) throw new Error("Selected model is temporarily unavailable.");
+      if (model) {
+        return {
+          text: "",
+          provider_id: model.provider_id,
+          model_id: model.model_id,
+        };
+      }
       return {
         text: "Draft summary",
         provider_id: "openai",
@@ -186,6 +241,7 @@ test("summary-review returns only the user-approved synthesis", async () => {
             provider_id: "local-openai",
             model_id: "summary-model",
           },
+          query_text: "",
         };
       }
       return {
@@ -197,6 +253,7 @@ test("summary-review returns only the user-approved synthesis", async () => {
           provider_id: "local-openai",
           model_id: "summary-model",
         },
+        query_text: "",
       };
     },
   });
@@ -293,6 +350,7 @@ test("summary-review regenerates selected evidence with feedback", async () => {
           selected_section_ids: ["0"],
           feedback_text: "",
           summary_model: null,
+          query_text: "",
         };
       }
       if (reviewCount === 2) {
@@ -302,6 +360,7 @@ test("summary-review regenerates selected evidence with feedback", async () => {
           selected_section_ids: ["0"],
           feedback_text: "Emphasize the caveat.",
           summary_model: null,
+          query_text: "",
         };
       }
       return {
@@ -310,6 +369,7 @@ test("summary-review regenerates selected evidence with feedback", async () => {
         selected_section_ids: ["0"],
         feedback_text: "",
         summary_model: null,
+        query_text: "",
       };
     },
   });
@@ -325,6 +385,110 @@ test("summary-review regenerates selected evidence with feedback", async () => {
   assert.match(prompts[1], /<user_feedback>/u);
   assert.match(prompts[1], /Emphasize the caveat\./u);
   assert.equal(result.content[0].text, "Draft 2");
+});
+
+test("summary-review rewrites and adds another bounded search", async () => {
+  const searchedQueries = [];
+  const plugin = createWebSearchAgentPlugin({
+    async search(request) {
+      searchedQueries.push(request.query);
+      return {
+        query: request.query,
+        provider: "exa",
+        answer: `Evidence for ${request.query}`,
+        sources: [{
+          title: request.query,
+          url: `https://example.com/${searchedQueries.length}`,
+          snippet: "Evidence",
+        }],
+      };
+    },
+    close() {},
+  }, {
+    maximum_results: 5,
+    maximum_output_bytes: 64 * 1024,
+    default_provider: "auto",
+    default_workflow: "summary-review",
+    summary_timeout_ms: 1_000,
+  });
+  const reviewRequests = [];
+  const modelPrompts = [];
+  const [tool] = plugin.createTools({
+    project_id: "project",
+    session_id: "session",
+    async complete_model(prompt) {
+      modelPrompts.push(prompt);
+      return {
+        text: prompt.includes("Rewrite the following")
+          ? '"refined research angle"'
+          : "Combined summary",
+        provider_id: "openai",
+        model_id: "test-model",
+      };
+    },
+    async request_summary_review(request) {
+      reviewRequests.push(request);
+      if (reviewRequests.length === 1) {
+        return {
+          decision: "rewrite-query",
+          approved_text: "",
+          selected_section_ids: ["0"],
+          feedback_text: "",
+          summary_model: null,
+          query_text: "rough angle",
+        };
+      }
+      if (reviewRequests.length === 2) {
+        assert.equal(request.query_draft, "refined research angle");
+        assert.match(request.query_notice, /improved/u);
+        return {
+          decision: "add-search",
+          approved_text: "",
+          selected_section_ids: ["0"],
+          feedback_text: "",
+          summary_model: null,
+          query_text: request.query_draft,
+        };
+      }
+      if (request.stage === "select-evidence") {
+        assert.equal(request.sections.length, 2);
+        assert.deepEqual(request.selected_section_ids, ["0", "1"]);
+        return {
+          decision: "summarize",
+          approved_text: "",
+          selected_section_ids: ["0", "1"],
+          feedback_text: "",
+          summary_model: null,
+          query_text: "",
+        };
+      }
+      return {
+        decision: "approve",
+        approved_text: request.draft_text,
+        selected_section_ids: ["0", "1"],
+        feedback_text: "",
+        summary_model: null,
+        query_text: "",
+      };
+    },
+  });
+
+  const result = await tool.execute(
+    "call",
+    { query: "initial angle" },
+    new AbortController().signal,
+    () => {},
+  );
+
+  assert.deepEqual(searchedQueries, [
+    "initial angle",
+    "refined research angle",
+  ]);
+  assert.equal(modelPrompts.length, 2);
+  assert.match(modelPrompts[0], /Do not answer the query/u);
+  assert.equal(result.content[0].text, "Combined summary");
+  assert.equal(result.details.query_count, 2);
+  assert.equal(result.details.selected_query_count, 2);
 });
 
 test("summary-review can return selected raw evidence without synthesis", async () => {
@@ -364,6 +528,7 @@ test("summary-review can return selected raw evidence without synthesis", async 
         selected_section_ids: ["1"],
         feedback_text: "",
         summary_model: null,
+        query_text: "",
       };
     },
   });

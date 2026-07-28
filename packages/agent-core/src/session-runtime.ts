@@ -235,6 +235,17 @@ export class SessionRuntime {
         "The summary review selected an unavailable section.",
       );
     }
+    if (
+      pending.request.stage !== "select-evidence" &&
+      (
+        resolution.decision === "add-search" ||
+        resolution.decision === "rewrite-query"
+      )
+    ) {
+      throw new Error(
+        "Query curation is unavailable during summary review.",
+      );
+    }
     this.clearPendingSummaryReview();
     pending.resolve(structuredClone(resolution));
   }
@@ -304,6 +315,8 @@ export class SessionRuntime {
       draft_metadata: request.draft_metadata
         ? structuredClone(request.draft_metadata)
         : null,
+      query_draft: request.query_draft,
+      query_notice: request.query_notice,
       sections: structuredClone(request.sections),
       selected_section_ids: [...request.selected_section_ids],
     };

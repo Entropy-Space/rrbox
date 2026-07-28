@@ -99,6 +99,77 @@ test("searches multiple angles and summarizes with the active model", async () =
   });
 });
 
+test("automatic summary keeps all-provider evidence separated", async () => {
+  const plugin = createWebSearchAgentPlugin({
+    async search(request) {
+      return {
+        query: request.query,
+        provider: "all",
+        answer: "Combined provider answer",
+        sources: [{
+          title: "Shared",
+          url: "https://example.com/shared",
+        }],
+        provider_responses: [{
+          query: request.query,
+          provider: "exa",
+          answer: "Exa evidence",
+          sources: [{
+            title: "Shared",
+            url: "https://example.com/shared",
+          }],
+        }, {
+          query: request.query,
+          provider: "anysearch",
+          answer: "AnySearch evidence",
+          sources: [{
+            title: "AnySearch",
+            url: "https://example.com/anysearch",
+          }],
+        }],
+        provider_errors: [],
+      };
+    },
+    close() {},
+  }, {
+    maximum_results: 5,
+    maximum_output_bytes: 64 * 1024,
+    default_provider: "all",
+    default_workflow: "auto-summary",
+    summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
+  });
+  let summaryPrompt = "";
+  const [tool] = plugin.createTools({
+    project_id: "project",
+    session_id: "session",
+    async complete_model(prompt) {
+      summaryPrompt = prompt;
+      return {
+        text: "Attributed summary",
+        provider_id: "openai",
+        model_id: "test-model",
+      };
+    },
+  });
+
+  const result = await tool.execute(
+    "call",
+    { query: "example", provider: "all" },
+    new AbortController().signal,
+    () => {},
+  );
+
+  assert.match(summaryPrompt, /Provider: exa/u);
+  assert.match(summaryPrompt, /Exa evidence/u);
+  assert.match(summaryPrompt, /Provider: anysearch/u);
+  assert.match(summaryPrompt, /AnySearch evidence/u);
+  assert.doesNotMatch(summaryPrompt, /Combined provider answer/u);
+  assert.equal(result.details.selected_query_count, 1);
+  assert.equal(result.details.successful_queries, 1);
+  assert.equal(result.details.total_results, 2);
+});
+
 test("falls back deterministically when summary generation fails", async () => {
   const plugin = createWebSearchAgentPlugin({
     async search(request) {

@@ -464,8 +464,9 @@ export function createWebSearchAgentPlugin(
               }
             }
           } else if (workflow === "auto-summary") {
+            selectedResults = reviewResults;
             synthesis = await synthesizeResults(
-              queryResults,
+              selectedResults,
               context.complete_model,
               options.summary_timeout_ms,
               options.maximum_output_bytes,

@@ -30,6 +30,12 @@ import {
 import {
   ExaMcpWebSearchProvider,
 } from "@researchbox/web-search-plugin/providers/exa";
+import {
+  NativeAnySearchWebSearchProvider,
+} from "@researchbox/web-search-plugin/native";
+import {
+  webSearchRoutingProviderIds,
+} from "@researchbox/web-search-plugin/settings";
 
 const host = self as unknown as WorkerHost;
 const workerNavigator = navigator as WorkerNavigator & {
@@ -65,9 +71,22 @@ host.onmessage = (event) => {
           new ExaMcpWebSearchProvider(
             initialization.web_search_plugin,
           ),
+          new NativeAnySearchWebSearchProvider(
+            initialization.web_search_port,
+            {
+              timeout_ms:
+                initialization.web_search_plugin.timeout_ms,
+            },
+          ),
         ],
         default_provider:
           initialization.web_search_plugin.provider,
+        routing: {
+          providers: webSearchRoutingProviderIds(
+            initialization.web_search_plugin.routing_order,
+          ),
+          fallback_on: ["transient", "quota", "network"],
+        },
       })
     : null;
   const plugins = [

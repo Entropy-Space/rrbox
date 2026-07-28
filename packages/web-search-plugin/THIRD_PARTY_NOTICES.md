@@ -1,7 +1,8 @@
 # Third-party notices
 
-The search contract, selection-first summary review workflow, deterministic
-fallback, and Exa MCP provider handling in this package are adapted from
+The search contract, provider routing, AnySearch and Exa provider handling,
+selection-first summary review workflow, and deterministic fallback in this
+package are adapted from
 [`pi-web-access`](https://github.com/nicobailon/pi-web-access), commit
 `b537183632d555d1b2e61cb8f6bdf585766f2380`.
 

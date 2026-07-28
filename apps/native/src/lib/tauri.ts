@@ -20,12 +20,21 @@ import {
   type PythonExecuteRequest,
   type PythonExecuteResponse,
 } from "@researchbox/python-plugin/protocol";
+import {
+  parseNativeWebSearchResponse,
+  type NativeWebSearchCancelRequest,
+  type NativeWebSearchCancelResponse,
+  type NativeWebSearchExecuteRequest,
+  type NativeWebSearchExecuteResponse,
+} from "@researchbox/web-search-plugin/native-protocol";
 
 const NATIVE_STORAGE_COMMAND = "native_storage_request";
 const NATIVE_PROVIDER_FETCH_COMMAND = "native_provider_fetch";
 const NATIVE_PROVIDER_CANCEL_COMMAND = "native_provider_cancel";
 const NATIVE_PYTHON_EXECUTE_COMMAND = "native_python_execute";
 const NATIVE_PYTHON_CANCEL_COMMAND = "native_python_cancel";
+const NATIVE_WEB_SEARCH_EXECUTE_COMMAND = "native_web_search_execute";
+const NATIVE_WEB_SEARCH_CANCEL_COMMAND = "native_web_search_cancel";
 
 export async function invokeNativeStorageRequest(
   request: NativeStorageRequest,
@@ -94,6 +103,41 @@ export async function invokeNativePythonCancel(
 export const nativePythonCommands = {
   execute: invokeNativePythonExecute,
   cancel: invokeNativePythonCancel,
+};
+
+export async function invokeNativeWebSearchExecute(
+  request: NativeWebSearchExecuteRequest,
+): Promise<NativeWebSearchExecuteResponse> {
+  const response = parseNativeWebSearchResponse(
+    await invoke<unknown>(NATIVE_WEB_SEARCH_EXECUTE_COMMAND, {
+      request,
+    }),
+  );
+  assertMatchingRequestId(response.request_id, request.request_id);
+  if (response.kind !== "web_search_execute_result") {
+    throw new Error("Native web search returned the wrong response.");
+  }
+  return response;
+}
+
+export async function invokeNativeWebSearchCancel(
+  request: NativeWebSearchCancelRequest,
+): Promise<NativeWebSearchCancelResponse> {
+  const response = parseNativeWebSearchResponse(
+    await invoke<unknown>(NATIVE_WEB_SEARCH_CANCEL_COMMAND, {
+      request,
+    }),
+  );
+  assertMatchingRequestId(response.request_id, request.request_id);
+  if (response.kind !== "web_search_cancel_result") {
+    throw new Error("Native web search returned the wrong response.");
+  }
+  return response;
+}
+
+export const nativeWebSearchCommands = {
+  execute: invokeNativeWebSearchExecute,
+  cancel: invokeNativeWebSearchCancel,
 };
 
 function assertMatchingRequestId(

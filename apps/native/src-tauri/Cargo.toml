@@ -26,7 +26,7 @@ base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 fs2 = "0.4"
 futures-util = "0.3"
-reqwest = { version = "0.13", default-features = false, features = ["stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"] }
 researchbox-python-plugin = { path = "../../../packages/python-plugin" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

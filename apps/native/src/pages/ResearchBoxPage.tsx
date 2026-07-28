@@ -3,7 +3,7 @@ import {
   pythonPluginCatalogEntry,
 } from "@researchbox/python-plugin/settings";
 import {
-  webSearchPluginCatalogEntry,
+  nativeWebSearchPluginCatalogEntry,
 } from "@researchbox/web-search-plugin/settings";
 import { createNativeCoreTransport } from "../lib/core-transport.ts";
 
@@ -13,7 +13,7 @@ export function ResearchBoxPage() {
       createTransport={createNativeCoreTransport}
       plugins={[
         pythonPluginCatalogEntry,
-        webSearchPluginCatalogEntry,
+        nativeWebSearchPluginCatalogEntry,
       ]}
     />
   );

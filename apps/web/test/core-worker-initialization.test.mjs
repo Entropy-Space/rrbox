@@ -17,6 +17,7 @@ test("validates exact web core plugin initialization", () => {
     web_search_plugin: {
       enabled: true,
       provider: "auto",
+      routing_order: "exa-anysearch",
       workflow: "auto-summary",
       timeout_ms: 20_000,
       summary_timeout_ms: 30_000,
@@ -24,7 +25,7 @@ test("validates exact web core plugin initialization", () => {
       max_output_bytes: 64 * 1024,
     },
   };
-  assert.equal(WEB_CORE_WORKER_PROTOCOL_VERSION, 3);
+  assert.equal(WEB_CORE_WORKER_PROTOCOL_VERSION, 4);
   assert.deepEqual(
     parseWebCoreWorkerInitializeMessage(initialization),
     initialization,

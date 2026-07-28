@@ -1,5 +1,6 @@
 import type {
   WebSearchProviderId,
+  WebSearchResolvedProviderId,
   WebSearchWorkflow,
 } from "./web-search-plugin.ts";
 
@@ -13,95 +14,143 @@ export const DEFAULT_WEB_SEARCH_PROVIDER = "auto" as const;
 export const DEFAULT_WEB_SEARCH_WORKFLOW = "summary-review" as const;
 export const DEFAULT_WEB_SEARCH_SUMMARY_TIMEOUT_MS = 30_000;
 export const MAX_WEB_SEARCH_SUMMARY_TIMEOUT_MS = 60_000;
+export const DEFAULT_WEB_SEARCH_ROUTING_ORDER =
+  "exa-anysearch" as const;
 
-export const webSearchPluginCatalogEntry = {
-  plugin_id: "web-search",
-  display_name: "Web search",
-  description:
-    "Search from one or several angles and synthesize cited findings.",
-  default_enabled: false,
-  configuration_fields: [
-    {
-      kind: "select",
-      configuration_key: "provider",
-      display_name: "Search provider",
-      description:
-        "Auto selects the first available provider; Exa is currently built in.",
-      default_value: DEFAULT_WEB_SEARCH_PROVIDER,
-      options: [
-        { value: "auto", display_name: "Automatic" },
-        { value: "exa", display_name: "Exa" },
-      ],
-    },
-    {
-      kind: "select",
-      configuration_key: "workflow",
-      display_name: "Default workflow",
-      description:
-        "Synthesize results with the active model or return raw evidence.",
-      default_value: DEFAULT_WEB_SEARCH_WORKFLOW,
-      options: [
-        {
-          value: "summary-review",
-          display_name: "Review summary",
-        },
-        {
-          value: "auto-summary",
-          display_name: "Automatic summary",
-        },
-        { value: "none", display_name: "Raw results" },
-      ],
-    },
-    {
-      kind: "number",
-      configuration_key: "timeout_seconds",
-      display_name: "Search timeout",
-      description: "Maximum runtime for one web search.",
-      default_value: DEFAULT_WEB_SEARCH_TIMEOUT_MS / 1_000,
-      minimum: 5,
-      maximum: MAX_WEB_SEARCH_TIMEOUT_MS / 1_000,
-      step: 1,
-      suffix: "seconds",
-    },
-    {
-      kind: "number",
-      configuration_key: "summary_timeout_seconds",
-      display_name: "Summary timeout",
-      description: "Maximum runtime for the synthesis model.",
-      default_value: DEFAULT_WEB_SEARCH_SUMMARY_TIMEOUT_MS / 1_000,
-      minimum: 5,
-      maximum: MAX_WEB_SEARCH_SUMMARY_TIMEOUT_MS / 1_000,
-      step: 1,
-      suffix: "seconds",
-    },
-    {
-      kind: "number",
-      configuration_key: "maximum_results",
-      display_name: "Maximum results",
-      description: "Upper bound the agent may request per search.",
-      default_value: DEFAULT_WEB_SEARCH_MAX_RESULTS,
-      minimum: 1,
-      maximum: MAX_WEB_SEARCH_RESULTS,
-      step: 1,
-      suffix: "results",
-    },
-    {
-      kind: "number",
-      configuration_key: "max_output_kib",
-      display_name: "Maximum output",
-      description: "Maximum search result text returned to the agent.",
-      default_value: DEFAULT_WEB_SEARCH_MAX_OUTPUT_BYTES / 1_024,
-      minimum: 16,
-      maximum: MAX_WEB_SEARCH_OUTPUT_BYTES / 1_024,
-      step: 16,
-      suffix: "KiB",
-    },
-  ],
-} as const;
+export type WebSearchRoutingOrder =
+  | "exa-anysearch"
+  | "anysearch-exa";
+
+export function createWebSearchPluginCatalogEntry(options: {
+  include_anysearch: boolean;
+}) {
+  const providerOptions = [
+    { value: "auto", display_name: "Automatic" },
+    { value: "all", display_name: "All available" },
+    { value: "exa", display_name: "Exa" },
+    ...(options.include_anysearch
+      ? [{ value: "anysearch", display_name: "AnySearch" }]
+      : []),
+  ] as const;
+  const routingFields = options.include_anysearch
+    ? [{
+        kind: "select" as const,
+        configuration_key: "routing_order",
+        display_name: "Automatic routing order",
+        description:
+          "Provider order used by Automatic before classified fallback.",
+        default_value: DEFAULT_WEB_SEARCH_ROUTING_ORDER,
+        options: [
+          {
+            value: "exa-anysearch",
+            display_name: "Exa, then AnySearch",
+          },
+          {
+            value: "anysearch-exa",
+            display_name: "AnySearch, then Exa",
+          },
+        ],
+      }] as const
+    : [];
+  return {
+    plugin_id: "web-search",
+    display_name: "Web search",
+    description:
+      "Search from one or several angles and synthesize cited findings.",
+    default_enabled: false,
+    configuration_fields: [
+      {
+        kind: "select",
+        configuration_key: "provider",
+        display_name: "Search provider",
+        description:
+          "Auto uses ordered fallback; All merges every available provider.",
+        default_value: DEFAULT_WEB_SEARCH_PROVIDER,
+        options: providerOptions,
+      },
+      ...routingFields,
+      {
+        kind: "select",
+        configuration_key: "workflow",
+        display_name: "Default workflow",
+        description:
+          "Synthesize results with the active model or return raw evidence.",
+        default_value: DEFAULT_WEB_SEARCH_WORKFLOW,
+        options: [
+          {
+            value: "summary-review",
+            display_name: "Review summary",
+          },
+          {
+            value: "auto-summary",
+            display_name: "Automatic summary",
+          },
+          { value: "none", display_name: "Raw results" },
+        ],
+      },
+      {
+        kind: "number",
+        configuration_key: "timeout_seconds",
+        display_name: "Search timeout",
+        description: "Maximum runtime for one web search.",
+        default_value: DEFAULT_WEB_SEARCH_TIMEOUT_MS / 1_000,
+        minimum: 5,
+        maximum: MAX_WEB_SEARCH_TIMEOUT_MS / 1_000,
+        step: 1,
+        suffix: "seconds",
+      },
+      {
+        kind: "number",
+        configuration_key: "summary_timeout_seconds",
+        display_name: "Summary timeout",
+        description: "Maximum runtime for the synthesis model.",
+        default_value:
+          DEFAULT_WEB_SEARCH_SUMMARY_TIMEOUT_MS / 1_000,
+        minimum: 5,
+        maximum: MAX_WEB_SEARCH_SUMMARY_TIMEOUT_MS / 1_000,
+        step: 1,
+        suffix: "seconds",
+      },
+      {
+        kind: "number",
+        configuration_key: "maximum_results",
+        display_name: "Maximum results",
+        description: "Upper bound the agent may request per search.",
+        default_value: DEFAULT_WEB_SEARCH_MAX_RESULTS,
+        minimum: 1,
+        maximum: MAX_WEB_SEARCH_RESULTS,
+        step: 1,
+        suffix: "results",
+      },
+      {
+        kind: "number",
+        configuration_key: "max_output_kib",
+        display_name: "Maximum output",
+        description: "Maximum search result text returned to the agent.",
+        default_value: DEFAULT_WEB_SEARCH_MAX_OUTPUT_BYTES / 1_024,
+        minimum: 16,
+        maximum: MAX_WEB_SEARCH_OUTPUT_BYTES / 1_024,
+        step: 16,
+        suffix: "KiB",
+      },
+    ],
+  } as const;
+}
+
+export const webSearchPluginCatalogEntry =
+  createWebSearchPluginCatalogEntry({
+    include_anysearch: false,
+  });
+
+export const nativeWebSearchPluginCatalogEntry =
+  createWebSearchPluginCatalogEntry({
+    include_anysearch: true,
+  });
 
 export type WebSearchPluginRuntimeConfiguration = {
   enabled: boolean;
   provider: WebSearchProviderId;
+  routing_order: WebSearchRoutingOrder;
   workflow: WebSearchWorkflow;
   timeout_ms: number;
   summary_timeout_ms: number;
@@ -123,6 +172,7 @@ export function resolveWebSearchPluginRuntimeConfiguration(
   return {
     enabled: setting?.enabled === true,
     provider: resolveProvider(configuration.provider),
+    routing_order: resolveRoutingOrder(configuration.routing_order),
     workflow: resolveWorkflow(configuration.workflow),
     timeout_ms: boundedInteger(
       configuration.timeout_seconds,
@@ -157,6 +207,7 @@ export function parseWebSearchPluginRuntimeConfiguration(
   if (!isExactRecord(value, [
     "enabled",
     "provider",
+    "routing_order",
     "workflow",
     "timeout_ms",
     "summary_timeout_ms",
@@ -168,6 +219,7 @@ export function parseWebSearchPluginRuntimeConfiguration(
   return {
     enabled: value.enabled,
     provider: parseProvider(value.provider),
+    routing_order: parseRoutingOrder(value.routing_order),
     workflow: parseWorkflow(value.workflow),
     timeout_ms: boundedInteger(
       value.timeout_ms,
@@ -197,12 +249,40 @@ export function parseWebSearchPluginRuntimeConfiguration(
 }
 
 function resolveProvider(value: unknown): WebSearchProviderId {
-  return value === "exa" ? value : DEFAULT_WEB_SEARCH_PROVIDER;
+  return value === "all" || value === "exa" || value === "anysearch"
+    ? value
+    : DEFAULT_WEB_SEARCH_PROVIDER;
 }
 
 function parseProvider(value: unknown): WebSearchProviderId {
-  if (value !== "auto" && value !== "exa") {
+  if (
+    value !== "auto" &&
+    value !== "all" &&
+    value !== "exa" &&
+    value !== "anysearch"
+  ) {
     throw new Error("Invalid web search provider.");
+  }
+  return value;
+}
+
+export function webSearchRoutingProviderIds(
+  order: WebSearchRoutingOrder,
+): readonly WebSearchResolvedProviderId[] {
+  return order === "anysearch-exa"
+    ? ["anysearch", "exa"]
+    : ["exa", "anysearch"];
+}
+
+function resolveRoutingOrder(value: unknown): WebSearchRoutingOrder {
+  return value === "anysearch-exa"
+    ? value
+    : DEFAULT_WEB_SEARCH_ROUTING_ORDER;
+}
+
+function parseRoutingOrder(value: unknown): WebSearchRoutingOrder {
+  if (value !== "exa-anysearch" && value !== "anysearch-exa") {
+    throw new Error("Invalid web search routing order.");
   }
   return value;
 }

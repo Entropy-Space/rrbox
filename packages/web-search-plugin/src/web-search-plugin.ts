@@ -14,7 +14,11 @@ export type WebSearchWorkflow =
   | "none"
   | "auto-summary"
   | "summary-review";
-export type WebSearchProviderId = "auto" | "exa";
+export type WebSearchResolvedProviderId = "exa" | "anysearch";
+export type WebSearchProviderId =
+  | "auto"
+  | "all"
+  | WebSearchResolvedProviderId;
 
 export type WebSearchRequest = {
   query: string;
@@ -128,7 +132,9 @@ export function createWebSearchAgentPlugin(
         })),
         provider: Type.Optional(Type.Union([
           Type.Literal("auto"),
+          Type.Literal("all"),
           Type.Literal("exa"),
+          Type.Literal("anysearch"),
         ], {
           description:
             "Search provider. Omit to use the configured provider.",

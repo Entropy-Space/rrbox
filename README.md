@@ -123,8 +123,12 @@ with feedback, approval, or returning to selection. The review exists only
 while the tool call is active. Automatic summary uses the chat's active model
 and falls back to a deterministic, source-linked digest on timeout or model
 failure. Retrieval is routed through a provider interface; Exa MCP is currently
-the only built-in, zero-config provider. Searches have explicit result,
-response-size, synthesis, and timeout bounds and retain no state. See
+available in both applications, while native also offers anonymous AnySearch
+through a fixed-endpoint Rust service. Automatic routing falls back only for
+transient, quota, or network failures; native settings can choose the provider
+order. **All available** merges bounded, URL-deduplicated results with
+round-robin source diversity. Searches have explicit result, response-size,
+synthesis, and timeout bounds and retain no state. See
 `packages/web-search-plugin/THIRD_PARTY_NOTICES.md` for the MIT-licensed
 upstream attribution.
 

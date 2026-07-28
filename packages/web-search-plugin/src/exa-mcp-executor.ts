@@ -56,6 +56,7 @@ export class ExaMcpWebSearchProvider implements WebSearchProvider {
     try {
       const response = await this.fetch(EXA_MCP_URL, {
         method: "POST",
+        redirect: "error",
         headers: {
           "Content-Type": "application/json",
           "Accept": "application/json, text/event-stream",
@@ -80,7 +81,7 @@ export class ExaMcpWebSearchProvider implements WebSearchProvider {
       const body = await readBoundedText(response, MAX_RESPONSE_BYTES);
       if (!response.ok) {
         throw new Error(
-          `Web search failed with HTTP ${response.status}: ${body.slice(0, 300)}`,
+          `Web search failed with HTTP ${response.status}.`,
         );
       }
       const parsed = parseMcpResponse(body);

@@ -22,8 +22,14 @@ import {
   parseWebSearchPluginRuntimeConfiguration,
   type WebSearchPluginRuntimeConfiguration,
 } from "@researchbox/web-search-plugin/settings";
+import type {
+  NativeWebSearchCancelRequest,
+  NativeWebSearchCancelResponse,
+  NativeWebSearchExecuteRequest,
+  NativeWebSearchExecuteResponse,
+} from "@researchbox/web-search-plugin/native-protocol";
 
-export const NATIVE_CORE_WORKER_PROTOCOL_VERSION = 6 as const;
+export const NATIVE_CORE_WORKER_PROTOCOL_VERSION = 7 as const;
 export const NATIVE_LLM_WORKER_PROTOCOL_VERSION = 1 as const;
 
 export type NativeCoreWorkerInitializeMessage = {
@@ -32,6 +38,7 @@ export type NativeCoreWorkerInitializeMessage = {
   storage_port: MessagePort;
   provider_port: MessagePort;
   python_port: MessagePort;
+  web_search_port: MessagePort;
   python_plugin: PythonPluginRuntimeConfiguration;
   web_search_plugin: WebSearchPluginRuntimeConfiguration;
 };
@@ -65,6 +72,15 @@ export type NativePythonCommands = {
   ): Promise<PythonCancelResponse>;
 };
 
+export type NativeWebSearchCommands = {
+  execute(
+    request: NativeWebSearchExecuteRequest,
+  ): Promise<NativeWebSearchExecuteResponse>;
+  cancel(
+    request: NativeWebSearchCancelRequest,
+  ): Promise<NativeWebSearchCancelResponse>;
+};
+
 export function parseNativeCoreWorkerInitializeMessage(
   value: unknown,
 ): NativeCoreWorkerInitializeMessage {
@@ -74,6 +90,7 @@ export function parseNativeCoreWorkerInitializeMessage(
     "storage_port",
     "provider_port",
     "python_port",
+    "web_search_port",
     "python_plugin",
     "web_search_plugin",
   ])) {
@@ -84,7 +101,8 @@ export function parseNativeCoreWorkerInitializeMessage(
     value.kind !== "native_core_initialize" ||
     !isMessagePort(value.storage_port) ||
     !isMessagePort(value.provider_port) ||
-    !isMessagePort(value.python_port)
+    !isMessagePort(value.python_port) ||
+    !isMessagePort(value.web_search_port)
   ) {
     throw new Error("Invalid native core worker initialization.");
   }
@@ -94,6 +112,7 @@ export function parseNativeCoreWorkerInitializeMessage(
     storage_port: value.storage_port,
     provider_port: value.provider_port,
     python_port: value.python_port,
+    web_search_port: value.web_search_port,
     python_plugin: parsePythonPluginRuntimeConfiguration(
       value.python_plugin,
     ),

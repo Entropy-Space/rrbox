@@ -30,6 +30,7 @@ test("calls only the fixed Exa MCP tool and parses an SSE result", async () => {
   });
 
   assert.equal(captured.url, "https://mcp.exa.ai/mcp");
+  assert.equal(captured.init.redirect, "error");
   const body = JSON.parse(captured.init.body);
   assert.equal(body.params.name, "web_search_exa");
   assert.deepEqual(body.params.arguments, {

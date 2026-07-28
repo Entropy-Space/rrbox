@@ -165,9 +165,11 @@ against same-origin code. Server-held credentials must remain on the server.
 `packages/web-search-plugin` is a stateless adaptation of the MIT-licensed
 `pi-web-access` search workflow. It defines one `web_search` tool, a
 provider-independent routing executor, and provider adapters used by both
-browser and native core Workers. Exa MCP is the first zero-configuration
-provider rather than the plugin's public boundary. The plugin is absent unless
-application composition enables it.
+browser and native core Workers. Exa MCP is available in both applications.
+The native application also exposes anonymous AnySearch through a dedicated
+MessagePort and a fixed-endpoint Rust service because the REST endpoint is not
+a browser-CORS boundary. The plugin is absent unless application composition
+enables it.
 
 The tool supports a single query or a bounded batch of varied queries, domain
 and recency filters, larger inline excerpts, explicit provider selection, and
@@ -183,11 +185,16 @@ feedback, returning to selection, approval, or cancellation. These internal
 model calls use the same model transport and cancellation boundary as the
 active agent.
 
-Each provider validates query and result bounds before networking, combines
-caller cancellation with a configured timeout, bounds its response before
-decoding it, and limits normalized source content to the configured budget.
-The current Exa adapter has one compiled outbound destination. The router and
-tool retain no search results, credentials, or session state.
+The router supports an explicit provider, configurable ordered automatic
+fallback for transient, quota, and network failures, or bounded all-provider
+aggregation with round-robin source diversity, URL deduplication, and
+partial-failure diagnostics. Each provider validates query and result bounds
+before networking, combines caller cancellation with a configured timeout,
+bounds its response before decoding it, and limits normalized source content
+to the configured budget. Both provider adapters have one compiled outbound
+destination and reject redirects. Native AnySearch does not forward provider
+error bodies because quota responses can contain generated credentials. The
+router and tool retain no search results, credentials, or session state.
 
 The fork intentionally excludes upstream URL fetching, arbitrary/local paths,
 browser cookies, API-key configuration, curator servers, persistent result

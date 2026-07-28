@@ -13,6 +13,9 @@ import {
 import {
   createNativePythonPortBroker,
 } from "./native-python-broker.ts";
+import {
+  createNativeWebSearchPortBroker,
+} from "./native-web-search-broker.ts";
 import { createNativeStoragePortBroker } from "./native-storage-broker.ts";
 import {
   NATIVE_CORE_WORKER_PROTOCOL_VERSION,
@@ -30,6 +33,7 @@ export const createNativeCoreTransport: CoreTransportFactory = () => {
   const storageChannel = new MessageChannel();
   const providerChannel = new MessageChannel();
   const pythonChannel = new MessageChannel();
+  const webSearchChannel = new MessageChannel();
   const storageBroker = createNativeStoragePortBroker(
     storageChannel.port1,
   );
@@ -39,12 +43,16 @@ export const createNativeCoreTransport: CoreTransportFactory = () => {
   const pythonBroker = createNativePythonPortBroker(
     pythonChannel.port1,
   );
+  const webSearchBroker = createNativeWebSearchPortBroker(
+    webSearchChannel.port1,
+  );
   const pluginSettings = loadPluginSettings();
   const workerTransport = new WorkerCoreTransport(worker, {
     onClosed() {
       storageBroker.close();
       providerBroker.close();
       pythonBroker.close();
+      webSearchBroker.close();
     },
   });
   const initialization: NativeCoreWorkerInitializeMessage = {
@@ -53,6 +61,7 @@ export const createNativeCoreTransport: CoreTransportFactory = () => {
     storage_port: storageChannel.port2,
     provider_port: providerChannel.port2,
     python_port: pythonChannel.port2,
+    web_search_port: webSearchChannel.port2,
     python_plugin: resolvePythonPluginRuntimeConfiguration(
       pluginSettings.plugins.python,
     ),
@@ -66,12 +75,14 @@ export const createNativeCoreTransport: CoreTransportFactory = () => {
       storageChannel.port2,
       providerChannel.port2,
       pythonChannel.port2,
+      webSearchChannel.port2,
     ]);
   } catch (error) {
     workerTransport.close();
     storageBroker.close();
     providerBroker.close();
     pythonBroker.close();
+    webSearchBroker.close();
     throw error;
   }
 

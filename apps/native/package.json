@@ -10,6 +10,12 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@researchbox/app-runtime-browser": "workspace:*",
+    "@researchbox/client": "workspace:*",
+    "@researchbox/mock-provider": "workspace:*",
+    "@researchbox/model-transport": "workspace:*",
+    "@researchbox/runtime-browser": "workspace:*",
+    "@researchbox/viewer": "workspace:*",
     "@tauri-apps/api": "^2",
     "react": "19.2.6",
     "react-dom": "19.2.6"

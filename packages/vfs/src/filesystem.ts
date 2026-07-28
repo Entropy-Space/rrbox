@@ -866,7 +866,7 @@ export function normalizePath(path: string): string {
     throw new VfsError("invalid_path", "Path must be a string.");
   }
 
-  const segments = path.replaceAll("\\", "/").split("/");
+  const segments = path.replace(/\\/g, "/").split("/");
   const normalized: string[] = [];
 
   for (const segment of segments) {

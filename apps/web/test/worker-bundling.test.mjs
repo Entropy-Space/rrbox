@@ -3,6 +3,7 @@ import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 
 const assetsUrl = new URL("../dist/client/assets/", import.meta.url);
+const MAX_FOCUSED_WORKER_BYTES = 256 * 1024;
 
 test("emits and links separate core, LLM, and archive worker bundles", async () => {
   const assets = await readdir(assetsUrl);
@@ -27,6 +28,8 @@ test("emits and links separate core, LLM, and archive worker bundles", async () 
   assert.match(llmSource, /Model endpoint returned/);
   assert.match(archiveSource, /researchbox-workspace\.json/);
   assert.match(archiveSource, /workspace_archive_encoded/);
+  assertFocusedWorkerSize("LLM", llmSource);
+  assertFocusedWorkerSize("archive", archiveSource);
 });
 
 function findOnly(assets, pattern) {
@@ -37,4 +40,12 @@ function findOnly(assets, pattern) {
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function assertFocusedWorkerSize(label, source) {
+  const byteLength = Buffer.byteLength(source);
+  assert.ok(
+    byteLength <= MAX_FOCUSED_WORKER_BYTES,
+    `${label} worker is ${byteLength} bytes; check for broad barrel imports`,
+  );
 }

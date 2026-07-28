@@ -19,7 +19,7 @@ import {
 } from "../browser/workspace-transfer.ts";
 import {
   BROWSER_WORKSPACE_ARCHIVE_LIMITS,
-} from "../browser/workspace-transfer-limits.ts";
+} from "@researchbox/app-runtime-browser/workspace-transfer-limits";
 
 test("derives safe project and download names", () => {
   assert.equal(

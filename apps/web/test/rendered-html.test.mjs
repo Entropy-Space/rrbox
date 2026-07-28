@@ -75,6 +75,7 @@ test("keeps package boundaries explicit", async () => {
     session,
     workerTransport,
     coreWorker,
+    sharedCoreWorker,
     llmWorker,
     archiveWorker,
     workspaceTransfer,
@@ -106,6 +107,13 @@ test("keeps package boundaries explicit", async () => {
         "utf8",
       ),
       readFile(new URL("../browser/core.worker.ts", import.meta.url), "utf8"),
+      readFile(
+        new URL(
+          "../../../packages/app-runtime-browser/src/researchbox-core-worker.ts",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
       readFile(new URL("../browser/llm.worker.ts", import.meta.url), "utf8"),
       readFile(
         new URL("../browser/archive.worker.ts", import.meta.url),
@@ -155,11 +163,13 @@ test("keeps package boundaries explicit", async () => {
   assert.match(viewer, /aria-busy=\{status === "running"\}/);
   assert.doesNotMatch(viewer, /from "@earendil-works\/pi-agent-core"/);
   assert.match(coreWorker, /new Worker\(new URL\("\.\/llm\.worker\.ts"/);
-  assert.match(coreWorker, /WorkerModelTransport/);
-  assert.match(coreWorker, /startBrowserRuntime/);
-  assert.match(coreWorker, /new ResearchBoxCore/);
-  assert.match(coreWorker, /IndexedDbProjectStore/);
-  assert.match(coreWorker, /BrowserWorkspaceBackend/);
+  assert.match(coreWorker, /startResearchBoxCoreWorker/);
+  assert.match(sharedCoreWorker, /WorkerModelTransport/);
+  assert.match(sharedCoreWorker, /startBrowserRuntime/);
+  assert.match(sharedCoreWorker, /new ResearchBoxCore/);
+  assert.match(sharedCoreWorker, /IndexedDbProjectStore/);
+  assert.match(sharedCoreWorker, /BrowserWorkspaceBackend/);
+  assert.doesNotMatch(coreWorker, /new ResearchBoxCore/);
   assert.doesNotMatch(coreWorker, /HttpNdjsonModelTransport/);
   assert.match(llmWorker, /attachLlmWorkerHost/);
   assert.match(llmWorker, /HttpNdjsonModelTransport/);
@@ -170,7 +180,10 @@ test("keeps package boundaries explicit", async () => {
   );
   assert.match(archiveWorker, /encodeWorkspaceArchive/);
   assert.match(archiveWorker, /decodeWorkspaceArchive/);
-  assert.doesNotMatch(coreWorker, /archive_bytes|workspace-archive/);
+  assert.doesNotMatch(
+    `${coreWorker}\n${sharedCoreWorker}`,
+    /archive_bytes|workspace-archive/,
+  );
   assert.match(core, /ProjectStore/);
   assert.match(core, /WorkspaceBackend/);
   assert.match(runtime, /new Agent\(/);

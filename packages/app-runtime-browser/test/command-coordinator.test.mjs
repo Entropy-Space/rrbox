@@ -8,7 +8,7 @@ import {
   RESEARCHBOX_MAINTENANCE_LOCK,
   projectCommandLock,
   sessionRunCommandLock,
-} from "../browser/command-coordinator.ts";
+} from "@researchbox/app-runtime-browser/command-coordinator";
 
 test("bootstrap maintenance blocks catalog changes but not providers", async () => {
   const lockManager = new TestLockManager();

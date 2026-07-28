@@ -1,4 +1,5 @@
 import type { ResearchBoxCoreOptions } from "@researchbox/agent-core";
+import type { ModelDescriptor } from "@researchbox/model-transport";
 
 export const researchBoxMockModel: ResearchBoxCoreOptions["model"] = {
   id: "researchbox-mock",
@@ -16,6 +17,18 @@ export const researchBoxMockModel: ResearchBoxCoreOptions["model"] = {
   },
   contextWindow: 32_000,
   maxTokens: 4_096,
+};
+
+export const researchBoxMockModelDescriptor: ModelDescriptor = {
+  provider_id: researchBoxMockModel.provider,
+  provider_display_name: "ResearchBox",
+  model_id: researchBoxMockModel.id,
+  display_name: researchBoxMockModel.name,
+  context_window: researchBoxMockModel.contextWindow,
+  max_output_tokens: researchBoxMockModel.maxTokens,
+  supports_tools: true,
+  supports_reasoning: researchBoxMockModel.reasoning,
+  supports_reasoning_effort: false,
 };
 
 export const researchBoxSystemPrompt =

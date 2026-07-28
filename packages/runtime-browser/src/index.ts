@@ -1,3 +1,4 @@
+export * from "./core-worker-lifecycle.ts";
 export * from "./worker-host.ts";
 export * from "./llm-worker-host.ts";
 export * from "./worker-core-transport.ts";

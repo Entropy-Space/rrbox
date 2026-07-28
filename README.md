@@ -2,8 +2,9 @@
 
 ResearchBox is a browser-native workspace for Pi agents. Its viewer, protocol,
 agent runtime, model transport, and virtual filesystem are independent
-workspace packages. The browser remains a first-class runtime, while one
-Tauri 2 composition root prepares the same product for macOS, iOS, and Android.
+workspace packages. The browser remains a first-class runtime, and the same
+viewer and browser runtime now run in a Tauri 2 WebView composition targeting
+macOS, iOS, and Android.
 
 ## Current vertical slice
 
@@ -14,8 +15,9 @@ Tauri 2 composition root prepares the same product for macOS, iOS, and Android.
 - Keyboard-accessible search across saved chats in every project
 - Real `@earendil-works/pi-agent-core` loop inside a Web Worker
 - Dedicated LLM Web Worker for multiplexed model requests and cancellation
-- Chat-scoped provider/model picker with a built-in mock and dynamic
-  OpenAI-compatible discovery at `localhost:4141`
+- Chat-scoped provider/model picker; the browser includes a built-in mock and
+  dynamic OpenAI-compatible discovery at `localhost:4141`, while Tauri
+  currently exposes the mock only
 - Versioned, runtime-validated JSON commands and events
 - Streaming mock-model service with a real tool-result continuation loop
 - One canonical, ordered timeline that preserves reasoning, assistant text,
@@ -46,6 +48,7 @@ packages/
   agent-core/          Pi agent orchestration and tools
   viewer/              React conversation and workspace UI
   model-transport/     Model request/stream contract and HTTP adapter
+  app-runtime-browser/ Shared browser/WebView core composition and locking
   runtime-browser/     Core and LLM Web Worker hosts and transports
   storage-browser/     IndexedDB and OPFS project/workspace adapters
   mock-provider/       Framework-neutral mock model request handler
@@ -56,9 +59,9 @@ packages/
 ```
 
 Applications are composition roots. Reusable packages do not import Next.js,
-Vinext, Tauri, or application files. The native root currently proves the
-static shell and build boundary; connecting the shared viewer through typed
-Tauri IPC is the next native milestone. See
+Vinext, Tauri, or application files. The native root mounts the shared viewer
+through the same Worker transport and browser-backed core as the web app.
+Typed Tauri filesystem and provider adapters are the next native milestone. See
 [ARCHITECTURE.md](./ARCHITECTURE.md) for the dependency rules.
 
 ## Requirements
@@ -83,7 +86,7 @@ cannot assume the gateway enables CORS. The mock provider remains available
 when the local gateway is stopped. Set `RESEARCHBOX_LOCAL_OPENAI_BASE_URL` to
 override the local base URL during development.
 
-### Native shell
+### Native app
 
 Build the shared static frontend without opening a native window:
 
@@ -92,11 +95,18 @@ pnpm build:native
 pnpm check:native
 ```
 
-Run the macOS desktop shell:
+Run the macOS desktop app:
 
 ```bash
 pnpm dev:native
 ```
+
+The current native runtime stores projects in IndexedDB and OPFS belonging to
+the Tauri WebView origin. That data is separate from `http://localhost:3000`
+and is not migrated automatically. Development and packaged native builds may
+also use different WebView origins, so this storage is not yet a stable native
+application data boundary. The native model picker currently offers only the
+in-process mock provider.
 
 Tauri's generated Android and iOS projects are intentionally not checked in
 yet. Initialize them from `apps/native` only on a machine with the relevant
@@ -125,15 +135,23 @@ deployment target. Never publish ResearchBox to `chatgpt.site`.
 
 ## Storage
 
-The browser storage package stores project metadata, drafts, normalized session
-timelines, transactional file manifests, undo-ready change receipts, and
-workspace revisions in one versioned IndexedDB database. When the browser can
+The browser storage package, used by both the web app and the current native
+WebView runtime, stores project metadata, drafts, normalized session timelines,
+transactional file manifests, undo-ready change receipts, and workspace
+revisions in one versioned IndexedDB database. When the current origin can
 successfully create and close an OPFS writable stream, immutable
 content-addressed UTF-8 file objects live in OPFS; otherwise new workspaces keep
 their content inline in IndexedDB. A new chat remains project-scoped draft state
 until its first prompt; its selected model, staged user timeline entry, session,
 and cleared project draft commit atomically before model transport starts.
 Existing chats retain their own model selection.
+
+Storage is origin-local. The browser origin and Tauri WebView origin do not
+share IndexedDB or OPFS, and ResearchBox currently performs no migration
+between them. A native development server and a packaged application can also
+have distinct WebView origins. Native application storage and provider
+networking will replace these WebView-specific edges through typed Tauri IPC
+without changing the viewer/core protocol.
 
 An OPFS mutation closes its immutable object before one IndexedDB transaction
 publishes the new manifest pointer, optional receipt, monotonic receipt clock,

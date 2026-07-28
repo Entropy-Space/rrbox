@@ -94,7 +94,6 @@ export class ResearchBoxCore {
   private readonly workspaceBackend: WorkspaceBackend;
   private readonly modelTransport: ModelTransport;
   private readonly providerCatalog: ProviderCatalogService;
-  private readonly defaultModel: Model<string>;
   private readonly defaultModelSelection: ModelSelection;
   private readonly systemPrompt: string;
   private readonly eventSink: CoreEventSink;
@@ -139,7 +138,6 @@ export class ResearchBoxCore {
     this.workspaceBackend =
       options.workspaceBackend ?? options.workspaceProvider;
     this.modelTransport = options.modelTransport;
-    this.defaultModel = options.model;
     this.defaultModelSelection = {
       provider_id: options.model.provider,
       model_id: options.model.id,

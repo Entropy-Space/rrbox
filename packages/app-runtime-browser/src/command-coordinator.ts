@@ -20,10 +20,193 @@ export type CommandLockManager = {
   ): Promise<T>;
 };
 
+type InMemoryLockRequest = {
+  mode: "exclusive" | "shared";
+  status: "queued" | "active" | "settled";
+  signal: AbortSignal | undefined;
+  abort_listener: (() => void) | null;
+  run(lock: Lock, release: () => void): void;
+  reject(reason: unknown): void;
+};
+
+type InMemoryLockState = {
+  active_exclusive: boolean;
+  active_shared: number;
+  queue: InMemoryLockRequest[];
+};
+
 type CommandLockScope = {
   name: string;
   mode: "exclusive" | "shared";
 };
+
+/**
+ * A process-local Web Locks substitute for runtimes without `navigator.locks`.
+ *
+ * Requests are granted in FIFO cohorts: consecutive shared requests may run
+ * together, while an exclusive request prevents later readers from bypassing
+ * it. This matches the coordination guarantees ResearchBox needs without
+ * pretending to coordinate separate workers or processes.
+ */
+export class InMemoryCommandLockManager implements CommandLockManager {
+  private readonly locks = new Map<string, InMemoryLockState>();
+
+  request<T>(
+    name: string,
+    options: {
+      mode: "exclusive" | "shared";
+      signal?: AbortSignal;
+    },
+    operation: (lock: Lock | null) => Promise<T> | T,
+  ): Promise<T> {
+    const signal = options.signal;
+    if (signal?.aborted) {
+      return Promise.reject(abortReason(signal));
+    }
+
+    const state = this.locks.get(name) ?? createInMemoryLockState();
+    this.locks.set(name, state);
+
+    return new Promise<T>((resolve, reject) => {
+      const request: InMemoryLockRequest = {
+        mode: options.mode,
+        status: "queued",
+        signal,
+        abort_listener: null,
+        run(lock, release) {
+          void Promise.resolve()
+            .then(() => operation(lock))
+            .then(
+              (value) => {
+                release();
+                resolve(value);
+              },
+              (error: unknown) => {
+                release();
+                reject(error);
+              },
+            );
+        },
+        reject,
+      };
+      const abort = () => {
+        this.abortQueuedRequest(
+          name,
+          state,
+          request,
+          signal ? abortReason(signal) : createAbortError(),
+        );
+      };
+      request.abort_listener = abort;
+      state.queue.push(request);
+      signal?.addEventListener("abort", abort, { once: true });
+
+      if (signal?.aborted) {
+        abort();
+        return;
+      }
+      this.drain(name, state);
+    });
+  }
+
+  private abortQueuedRequest(
+    name: string,
+    state: InMemoryLockState,
+    request: InMemoryLockRequest,
+    reason: unknown,
+  ): void {
+    if (request.status !== "queued") return;
+    const index = state.queue.indexOf(request);
+    if (index === -1) return;
+
+    state.queue.splice(index, 1);
+    request.status = "settled";
+    this.detachAbortListener(request);
+    request.reject(reason);
+    this.drain(name, state);
+  }
+
+  private drain(name: string, state: InMemoryLockState): void {
+    if (state.active_exclusive) return;
+
+    const first = state.queue[0];
+    if (!first) {
+      this.deleteIdleState(name, state);
+      return;
+    }
+
+    if (first.mode === "exclusive") {
+      if (state.active_shared > 0) return;
+      state.queue.shift();
+      this.grant(name, state, first);
+      return;
+    }
+
+    while (
+      !state.active_exclusive &&
+      state.queue[0]?.mode === "shared"
+    ) {
+      const request = state.queue.shift();
+      if (request) this.grant(name, state, request);
+    }
+  }
+
+  private grant(
+    name: string,
+    state: InMemoryLockState,
+    request: InMemoryLockRequest,
+  ): void {
+    request.status = "active";
+    this.detachAbortListener(request);
+    if (request.mode === "exclusive") {
+      state.active_exclusive = true;
+    } else {
+      state.active_shared += 1;
+    }
+
+    const lock: Lock = Object.freeze({
+      name,
+      mode: request.mode,
+    });
+    let isReleased = false;
+    const release = () => {
+      if (isReleased) return;
+      isReleased = true;
+      request.status = "settled";
+      if (request.mode === "exclusive") {
+        state.active_exclusive = false;
+      } else {
+        state.active_shared -= 1;
+      }
+      this.drain(name, state);
+    };
+
+    request.run(lock, release);
+  }
+
+  private detachAbortListener(request: InMemoryLockRequest): void {
+    if (!request.abort_listener) return;
+    request.signal?.removeEventListener(
+      "abort",
+      request.abort_listener,
+    );
+    request.abort_listener = null;
+  }
+
+  private deleteIdleState(
+    name: string,
+    state: InMemoryLockState,
+  ): void {
+    if (
+      state.active_exclusive ||
+      state.active_shared !== 0 ||
+      state.queue.length !== 0
+    ) {
+      return;
+    }
+    if (this.locks.get(name) === state) this.locks.delete(name);
+  }
+}
 
 export class BrowserCommandCoordinator {
   private readonly lockManager: CommandLockManager;
@@ -190,4 +373,20 @@ function exclusive(name: string): CommandLockScope {
 
 function shared(name: string): CommandLockScope {
   return { name, mode: "shared" };
+}
+
+function createInMemoryLockState(): InMemoryLockState {
+  return {
+    active_exclusive: false,
+    active_shared: 0,
+    queue: [],
+  };
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? createAbortError();
+}
+
+function createAbortError(): DOMException {
+  return new DOMException("The lock request was aborted.", "AbortError");
 }

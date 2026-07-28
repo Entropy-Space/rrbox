@@ -10,21 +10,22 @@ apps/web
   │                                  │
   ├─ WorkerCoreTransport ────────────┘
   │    └─ browser/core.worker.ts
-  │         ├─ packages/runtime-browser
-  │         ├─ packages/storage-browser
-  │         ├─ packages/agent-core
-  │         │    ├─ packages/protocol
-  │         │    ├─ packages/model-transport
-  │         │    ├─ packages/project-store
-  │         │    └─ packages/vfs
-  │         └─ worker model transport
-  │              │ versioned JSON, multiplexed by stream_id
-  │              ▼
-  │            browser/llm.worker.ts
-  │              ├─ packages/runtime-browser LLM host
-  │              ├─ mock NDJSON transport → /api/mock
-  │              └─ OpenAI-compatible SSE transport
-  │                    └─ same-origin bridge → localhost:4141/v1
+  │         └─ packages/app-runtime-browser
+  │              ├─ packages/runtime-browser
+  │              ├─ packages/storage-browser
+  │              ├─ packages/agent-core
+  │              │    ├─ packages/protocol
+  │              │    ├─ packages/model-transport
+  │              │    ├─ packages/project-store
+  │              │    └─ packages/vfs
+  │              └─ worker model transport
+  │                   │ versioned JSON, multiplexed by stream_id
+  │                   ▼
+  │                 browser/llm.worker.ts
+  │                   ├─ packages/runtime-browser LLM host
+  │                   ├─ mock NDJSON transport → /api/mock
+  │                   └─ OpenAI-compatible SSE transport
+  │                         └─ same-origin bridge → localhost:4141/v1
   └─ thin web routes
        └─ packages/mock-provider
 ```
@@ -33,20 +34,36 @@ The native composition is deliberately a separate application root:
 
 ```text
 apps/native (Tauri 2)
-  ├─ static React/WebView shell
-  ├─ future CoreTransport implementation
-  │    └─ worker → window → typed Tauri IPC
+  ├─ packages/viewer
+  │    └─ packages/client + packages/protocol
+  ├─ WorkerCoreTransport
+  │    └─ workers/core.worker.ts
+  │         └─ packages/app-runtime-browser
+  │              ├─ packages/storage-browser → WebView IndexedDB/OPFS
+  │              ├─ packages/agent-core
+  │              └─ WorkerModelTransport → workers/llm.worker.ts
+  │                   └─ in-process packages/mock-provider handler
   └─ Rust host
-       ├─ application-managed storage adapter
-       ├─ provider networking adapter
-       └─ lifecycle/checkpoint adapter
+       └─ window lifecycle and packaging; no product commands yet
 ```
 
-The first native checkpoint establishes the macOS/iOS/Android build boundary
-without reading or migrating browser data. Native commands and storage arrive
-only after the worker-to-window bridge is exercised on each target. This keeps
-the browser product running while the platform seam is implemented
-incrementally.
+Both application roots mount the same viewer and browser core composition. The
+web root enables the mock and local OpenAI-compatible providers; the native
+root currently enables only the in-process mock provider.
+
+Native projects currently live in IndexedDB and OPFS belonging to the Tauri
+WebView origin. They neither share nor automatically migrate data from the web
+app's `localhost` origin, and native development and packaged builds may use
+different origins from one another. The next native boundary is typed Tauri
+IPC for application-managed filesystem persistence and provider networking.
+Those adapters can replace the WebView-specific edges without changing
+`CoreTransport` or the viewer/core JSON protocol.
+
+The current single-WebView native composition uses Web Locks when WKWebView
+provides them and otherwise preserves command ordering with a process-local
+shared/exclusive lock manager. That fallback does not coordinate multiple
+windows; a future multi-window native composition must move coordination behind
+the typed host boundary.
 
 Browser-only workspace transfer stays beside that JSON boundary:
 
@@ -55,10 +72,13 @@ packages/viewer → browser workspace adapter → browser/archive.worker.ts
                                               └─ packages/workspace-archive
 ```
 
-The viewer depends on `CoreTransport`, not on `Worker`. The web application
-constructs `WorkerCoreTransport`, which validates all incoming protocol values,
+The viewer depends on `CoreTransport`, not on `Worker`. Both applications
+construct `WorkerCoreTransport`, which validates all incoming protocol values,
 isolates subscribers, and owns worker teardown. The viewer and core worker
-exchange only protocol-v11 JSON values. A
+exchange only protocol-v11 JSON values. Transport shutdown uses a separate
+versioned control envelope: it asks the worker to abort and drain the core,
+waits for disposal acknowledgement, and force-terminates after a bounded
+timeout if cleanup cannot finish. A
 `project_id` plus nullable `session_id` scopes the active composer: `null`
 identifies that project's single virtual new chat, while incremental run events
 always identify a durable session. Filesystem and draft acknowledgements use a
@@ -89,22 +109,25 @@ against same-origin code. Server-held credentials must remain on the server.
 3. `packages/client` owns the platform-neutral viewer/core transport contract.
    Concrete transports belong to runtime or application packages.
 4. `packages/mock-provider` owns mock-model behavior and is mounted by a thin
-   web route.
+   web route or invoked in-process by the native LLM worker.
 5. `packages/viewer` depends only on React, UI primitives, the client contract,
    and the protocol. It does not construct workers.
-6. `packages/agent-core` contains a project/session manager above an optional
+6. `packages/app-runtime-browser` composes the browser/WebView core lifecycle,
+   command locking, seed data, provider definitions, and browser storage. It
+   imports no application root or framework.
+7. `packages/agent-core` contains a project/session manager above an optional
    active Pi session runtime and depends only on abstract model, project-store,
    and VFS contracts.
-7. `packages/runtime-browser` hosts compatible core and LLM handlers plus the
+8. `packages/runtime-browser` hosts compatible core and LLM handlers plus the
    Web Worker transport; it does not construct ResearchBox, select providers,
    or import Pi.
-8. `packages/storage-browser` owns concrete IndexedDB and OPFS adapters. The
-   web core worker imports it; the portable core does not.
-9. `packages/model-transport`, `packages/protocol`, `packages/project-store`,
+9. `packages/storage-browser` owns concrete IndexedDB and OPFS adapters. The
+   browser app runtime imports it; the portable core does not.
+10. `packages/model-transport`, `packages/protocol`, `packages/project-store`,
    `packages/vfs`, and `packages/workspace-archive` have no application or
    framework dependencies. The archive codec depends on VFS reader and seed
    types, not on a concrete backend.
-10. Applications compose packages; shared packages never import an application
+11. Applications compose packages; shared packages never import an application
     or platform host.
 
 ## Serialization
@@ -118,9 +141,9 @@ identifier.
 
 ## Provider boundary
 
-The LLM worker routes the deterministic mock provider and an OpenAI-compatible
-provider whose models are discovered dynamically from `localhost:4141`. It is
-started before workspace writer election. A platform-neutral
+The web LLM worker routes the deterministic mock provider and an
+OpenAI-compatible provider whose models are discovered dynamically from
+`localhost:4141`. It is started before workspace bootstrap. A platform-neutral
 `ProviderCatalogService` in the browser runtime owns normalized availability,
 capabilities, refresh coalescing, and model lookup while the LLM worker remains
 the trusted home of provider endpoints and request adapters.
@@ -133,7 +156,7 @@ assistant content blocks, tool results, tool schemas, and optional reasoning
 effort. The LLM worker normalizes provider output into validated text,
 reasoning, and tool-call lifecycle events with monotonically increasing content
 indices. OpenAI SSE fragments are assembled there before those ordered events
-are returned to the elected core. The viewer receives only validated
+are returned to the active core. The viewer receives only validated
 provider/model summaries.
 
 Provider URLs are application configuration, never viewer input. For the
@@ -144,15 +167,18 @@ stored yet. A future fully browser-only composition can replace the bridge with
 a CORS-capable local gateway or an in-browser/Wasm provider adapter without
 changing the core/viewer protocol.
 
+The native LLM worker currently exposes only the deterministic mock provider.
+It calls the framework-neutral mock request handler in-process, so it needs no
+HTTP server or provider credentials. Typed Tauri provider networking is the
+next native provider boundary.
+
 ## Project and session persistence
 
-The browser runtime attaches its JSON command coordinator immediately. Provider
-refresh commands remain available in every tab; workspace commands wait for an
-elected core. Writer election first probes conditionally, reports
-`waiting_for_writer` rather than silently blocking, then queues an abortable
-request for automatic promotion.
+The browser/WebView runtime attaches its JSON command coordinator and creates
+its stateful core immediately. Provider refresh commands remain available while
+workspace commands wait for bootstrap to complete.
 
-The elected browser core owns one IndexedDB database with `meta`, `projects`,
+Each browser/WebView core owns one IndexedDB database with `meta`, `projects`,
 `sessions`, `session_documents`, `project_filesystems`, `files`,
 `file_path_tombstones`, `file_changes`, `file_change_quarantines`, and
 `opfs_files` stores. Project-store mutations read the canonical state inside
@@ -253,8 +279,7 @@ well as a stop between project deletion and workspace cleanup.
 - memory: implemented deterministic test backend
 - IndexedDB: implemented durable metadata, journal, and fallback content backend
 - OPFS: implemented immutable content backend with resumable IndexedDB migration
-- native folder: planned desktop backend
-- iOS application storage: planned native mobile backend
+- native application storage: planned typed Tauri backend for desktop and mobile
 - ZIP: implemented deterministic content-transfer codec, not a live backend
 
 The current workspace format contains UTF-8 text files and infers directories

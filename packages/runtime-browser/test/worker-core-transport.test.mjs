@@ -4,7 +4,11 @@ import {
   PROTOCOL_VERSION,
   createCommand,
 } from "@researchbox/protocol";
-import { WorkerCoreTransport } from "../src/index.ts";
+import {
+  createCoreWorkerDisposeRequest,
+  createCoreWorkerDisposedAck,
+  WorkerCoreTransport,
+} from "../src/index.ts";
 
 test("sends commands and delivers validated core events", () => {
   const detached = createDetachedWorker();
@@ -56,7 +60,7 @@ test("maps worker failures without coupling subscribers to browser events", () =
   assert.deepEqual(failures, ["transport_error"]);
 });
 
-test("closes and detaches the worker exactly once", () => {
+test("waits for graceful disposal acknowledgement before terminating", () => {
   const detached = createDetachedWorker();
   const transport = new WorkerCoreTransport(detached.worker);
   const events = [];
@@ -69,12 +73,31 @@ test("closes and detaches the worker exactly once", () => {
   transport.close();
   detached.emitMessage(coreLifecycleEvent("event-after-close"));
 
-  assert.equal(detached.terminateCount(), 1);
+  assert.deepEqual(detached.commands, [createCoreWorkerDisposeRequest()]);
+  assert.equal(detached.terminateCount(), 0);
   assert.deepEqual(events, []);
   assert.throws(
     () => transport.send(createCommand("bootstrap", {})),
     /transport is closed/,
   );
+
+  detached.emitMessage(createCoreWorkerDisposedAck());
+  detached.emitMessage(createCoreWorkerDisposedAck());
+  assert.equal(detached.terminateCount(), 1);
+});
+
+test("forces termination when graceful disposal does not acknowledge", async () => {
+  const detached = createDetachedWorker();
+  const transport = new WorkerCoreTransport(detached.worker, {
+    disposeTimeoutMs: 5,
+  });
+
+  transport.close();
+  assert.equal(detached.terminateCount(), 0);
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(detached.terminateCount(), 1);
+  assert.deepEqual(detached.commands, [createCoreWorkerDisposeRequest()]);
 });
 
 function coreLifecycleEvent(eventId) {

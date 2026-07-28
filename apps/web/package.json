@@ -9,11 +9,10 @@
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start"
   },
   "dependencies": {
-    "@researchbox/agent-core": "workspace:*",
+    "@researchbox/app-runtime-browser": "workspace:*",
     "@researchbox/mock-provider": "workspace:*",
     "@researchbox/model-transport": "workspace:*",
     "@researchbox/runtime-browser": "workspace:*",
-    "@researchbox/storage-browser": "workspace:*",
     "@researchbox/viewer": "workspace:*",
     "@researchbox/workspace-archive": "workspace:*",
     "next": "16.2.6",

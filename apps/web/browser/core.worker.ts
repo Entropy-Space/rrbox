@@ -1,91 +1,23 @@
 /// <reference lib="webworker" />
 
 import {
-  ProviderCatalogService,
-  ResearchBoxCore,
-} from "@researchbox/agent-core";
-import {
-  WorkerModelTransport,
-  type WorkerHost,
-} from "@researchbox/runtime-browser";
-import {
-  BrowserWorkspaceBackend,
-  IndexedDbProjectStore,
-  ResearchBoxDatabase,
-} from "@researchbox/storage-browser";
-import { startBrowserRuntime } from "./browser-runtime.ts";
-import { researchBoxSeedFiles } from "./seed-files";
-import { researchBoxMockModel, researchBoxSystemPrompt } from "./mock-model";
-import { BROWSER_WORKSPACE_ARCHIVE_OPTIONS } from "./workspace-transfer-limits.ts";
+  createResearchBoxProviderDefinitions,
+  startResearchBoxCoreWorker,
+} from "@researchbox/app-runtime-browser/core-worker";
+import type { WorkerHost } from "@researchbox/runtime-browser";
 
 const host = self as unknown as WorkerHost;
-const providers = [
-  {
-    provider_id: researchBoxMockModel.provider,
-    display_name: "ResearchBox",
-    kind: "mock" as const,
-    models: [researchBoxMockModel],
-  },
-  {
-    provider_id: "local-openai",
-    display_name: "OpenAI-compatible · localhost:4141",
-    kind: "openai_compatible" as const,
-    discover_models: true,
-  },
-];
 
-startBrowserRuntime({
+startResearchBoxCoreWorker({
   host,
-  lockManager: navigator.locks,
-  createServices() {
-    const llmWorker = new Worker(new URL("./llm.worker.ts", import.meta.url), {
+  lock_manager: navigator.locks,
+  providers: createResearchBoxProviderDefinitions({
+    include_local_openai: true,
+  }),
+  create_model_worker() {
+    return new Worker(new URL("./llm.worker.ts", import.meta.url), {
       type: "module",
       name: "researchbox-llm",
-    });
-    const modelGateway = new WorkerModelTransport(llmWorker);
-    const database = new ResearchBoxDatabase();
-    const projectStore = new IndexedDbProjectStore(database);
-    const workspaceBackend = new BrowserWorkspaceBackend(
-      database,
-      researchBoxSeedFiles,
-    );
-    const providerCatalog = new ProviderCatalogService({
-      model: researchBoxMockModel,
-      providers,
-      modelCatalog: modelGateway,
-    });
-    const unsubscribeTransportFailure = modelGateway.subscribeFatalError(
-      (error) => {
-        providerCatalog.markProvidersUnavailable(
-          providers.map((provider) => provider.provider_id),
-          error.message,
-        );
-      },
-    );
-    return {
-      providerCatalog,
-      modelTransport: modelGateway,
-      projectStore,
-      workspaceBackend,
-      close() {
-        unsubscribeTransportFailure();
-        projectStore.close();
-        database.close();
-        providerCatalog.close();
-        modelGateway.close();
-      },
-    };
-  },
-  createCore(services, eventSink) {
-    return new ResearchBoxCore({
-      projectStore: services.projectStore,
-      workspaceBackend: services.workspaceBackend,
-      modelTransport: services.modelTransport,
-      providerCatalog: services.providerCatalog,
-      model: researchBoxMockModel,
-      systemPrompt: researchBoxSystemPrompt,
-      eventSink,
-      workspaceTransferOptions: BROWSER_WORKSPACE_ARCHIVE_OPTIONS,
     });
   },
 });

@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ProviderCatalogService } from "@researchbox/agent-core";
 import { createCommand } from "@researchbox/protocol";
-import { startBrowserRuntime } from "../browser/browser-runtime.ts";
 import {
   RESEARCHBOX_LEGACY_WRITER_LOCK,
   RESEARCHBOX_MAINTENANCE_LOCK,
   projectCommandLock,
-} from "../browser/command-coordinator.ts";
+} from "@researchbox/app-runtime-browser/command-coordinator";
+import { startBrowserRuntime } from "@researchbox/app-runtime-browser/runtime";
 
 test("creates a core immediately and locks bootstrap only for its command", async () => {
   const host = createHost();

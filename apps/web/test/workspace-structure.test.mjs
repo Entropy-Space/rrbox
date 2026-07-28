@@ -11,6 +11,7 @@ test("keeps the proposed workspace surfaces present", async () => {
     "apps/web",
     "apps/native",
     "packages/client",
+    "packages/app-runtime-browser",
     "packages/mock-provider",
     "packages/protocol",
     "packages/agent-core",
@@ -29,7 +30,12 @@ test("keeps the proposed workspace surfaces present", async () => {
   await Promise.all(
     [
       "apps/mock-server",
+      "apps/web/browser/browser-runtime.ts",
+      "apps/web/browser/command-coordinator.ts",
+      "apps/web/browser/mock-model.ts",
+      "apps/web/browser/seed-files.ts",
       "apps/web/browser/persistence",
+      "apps/web/browser/workspace-transfer-limits.ts",
       "platforms/ios",
       "platforms/desktop",
     ].map((relativePath) =>
@@ -37,6 +43,60 @@ test("keeps the proposed workspace surfaces present", async () => {
     ),
   );
   await assert.rejects(access(path.join(root, ".openai", "hosting.json")));
+});
+
+test("shares browser app runtime composition between web and native", async () => {
+  const [runtimeManifestSource, webManifestSource, nativeManifestSource] =
+    await Promise.all([
+      readFile(
+        path.join(root, "packages/app-runtime-browser/package.json"),
+        "utf8",
+      ),
+      readFile(path.join(root, "apps/web/package.json"), "utf8"),
+      readFile(path.join(root, "apps/native/package.json"), "utf8"),
+    ]);
+  const runtimeManifest = JSON.parse(runtimeManifestSource);
+  const webManifest = JSON.parse(webManifestSource);
+  const nativeManifest = JSON.parse(nativeManifestSource);
+
+  assert.equal(runtimeManifest.name, "@researchbox/app-runtime-browser");
+  assert.equal(runtimeManifest.exports["."], undefined);
+  assert.equal(
+    runtimeManifest.exports["./core-worker"],
+    "./src/researchbox-core-worker.ts",
+  );
+  assert.equal(
+    runtimeManifest.exports["./mock-model"],
+    "./src/mock-model.ts",
+  );
+  assert.equal(
+    runtimeManifest.exports["./runtime"],
+    "./src/browser-runtime.ts",
+  );
+  assert.equal(
+    runtimeManifest.exports["./command-coordinator"],
+    "./src/command-coordinator.ts",
+  );
+  assert.equal(
+    runtimeManifest.exports["./workspace-transfer-limits"],
+    "./src/workspace-transfer-limits.ts",
+  );
+  assert.equal(
+    runtimeManifest.dependencies["@researchbox/storage-browser"],
+    "workspace:*",
+  );
+  assert.equal(
+    runtimeManifest.dependencies["@researchbox/runtime-browser"],
+    "workspace:*",
+  );
+  assert.equal(
+    webManifest.dependencies["@researchbox/app-runtime-browser"],
+    "workspace:*",
+  );
+  assert.equal(
+    nativeManifest.dependencies["@researchbox/app-runtime-browser"],
+    "workspace:*",
+  );
 });
 
 test("keeps framework dependencies out of portable packages", async () => {

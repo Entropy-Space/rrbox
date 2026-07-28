@@ -1,0 +1,21 @@
+{
+  "name": "@researchbox/app-runtime-browser",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./command-coordinator": "./src/command-coordinator.ts",
+    "./core-worker": "./src/researchbox-core-worker.ts",
+    "./mock-model": "./src/mock-model.ts",
+    "./runtime": "./src/browser-runtime.ts",
+    "./workspace-transfer-limits": "./src/workspace-transfer-limits.ts"
+  },
+  "dependencies": {
+    "@researchbox/agent-core": "workspace:*",
+    "@researchbox/model-transport": "workspace:*",
+    "@researchbox/protocol": "workspace:*",
+    "@researchbox/runtime-browser": "workspace:*",
+    "@researchbox/storage-browser": "workspace:*",
+    "@researchbox/workspace-archive": "workspace:*"
+  }
+}

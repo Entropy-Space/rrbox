@@ -1,5 +1,8 @@
 import type { WorkspaceTransferAdapter } from "@researchbox/viewer";
 import {
+  BROWSER_WORKSPACE_ARCHIVE_LIMITS,
+} from "@researchbox/app-runtime-browser/workspace-transfer-limits";
+import {
   ArchiveWorkerProtocolError,
   createDecodeWorkspaceArchiveRequest,
   createEncodeWorkspaceArchiveRequest,
@@ -11,7 +14,6 @@ import {
   type WorkspaceArchiveDecodedResponse,
   type WorkspaceArchiveEncodedResponse,
 } from "./archive-worker-protocol.ts";
-import { BROWSER_WORKSPACE_ARCHIVE_LIMITS } from "./workspace-transfer-limits.ts";
 
 type WorkspaceTransferFile = Parameters<
   WorkspaceTransferAdapter["downloadWorkspaceExport"]

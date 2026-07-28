@@ -7,7 +7,10 @@ import {
   type ModelTransport,
 } from "@researchbox/model-transport";
 import { attachLlmWorkerHost, type LlmWorkerHost } from "@researchbox/runtime-browser";
-import { researchBoxMockModel } from "./mock-model";
+import {
+  researchBoxMockModel,
+  researchBoxMockModelDescriptor,
+} from "@researchbox/app-runtime-browser/mock-model";
 
 const host = self as unknown as LlmWorkerHost;
 const mockTransport = new HttpNdjsonModelTransport("/api/mock");
@@ -39,19 +42,7 @@ attachLlmWorkerHost(host, transport, {
     signal: AbortSignal,
   ): Promise<ModelDescriptor[]> {
     if (providerId === researchBoxMockModel.provider) {
-      return [
-        {
-          provider_id: researchBoxMockModel.provider,
-          provider_display_name: "ResearchBox",
-          model_id: researchBoxMockModel.id,
-          display_name: researchBoxMockModel.name,
-          context_window: researchBoxMockModel.contextWindow,
-          max_output_tokens: researchBoxMockModel.maxTokens,
-          supports_tools: true,
-          supports_reasoning: false,
-          supports_reasoning_effort: false,
-        },
-      ];
+      return [researchBoxMockModelDescriptor];
     }
     if (providerId === "local-openai") {
       return localOpenAiTransport.listModels(signal);

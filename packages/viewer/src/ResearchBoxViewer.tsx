@@ -971,7 +971,7 @@ function ThinkingDots() {
 }
 
 function formatToolName(toolName: string): string {
-  const label = toolName.replaceAll("_", " ");
+  const label = toolName.replace(/_/g, " ");
   return `${label.charAt(0).toUpperCase()}${label.slice(1)}`;
 }
 

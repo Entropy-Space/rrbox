@@ -125,9 +125,13 @@ export async function handleMockModelRequest(
 }
 
 function createMockResponse(request: ModelRequest): ModelStreamEvent[] {
-  const lastUserIndex = request.messages.findLastIndex(
-    (message) => message.role === "user",
-  );
+  let lastUserIndex = -1;
+  for (let index = request.messages.length - 1; index >= 0; index -= 1) {
+    if (request.messages[index]?.role === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
   const lastUser =
     lastUserIndex < 0 ? undefined : request.messages[lastUserIndex];
   const prompt = lastUser?.role === "user" ? lastUser.content : "";

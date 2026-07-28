@@ -1,8 +1,12 @@
 import {
   parseViewerCommand,
-  type CoreEvent,
   type ViewerCommand,
 } from "@researchbox/protocol";
+import {
+  createCoreWorkerDisposedAck,
+  isCoreWorkerDisposeRequest,
+  type CoreWorkerOutboundMessage,
+} from "./core-worker-lifecycle.ts";
 
 export interface CoreCommandHandler {
   handle(command: ViewerCommand): Promise<void>;
@@ -16,7 +20,7 @@ export interface CoreCommandHandler {
 
 export interface WorkerHost {
   onmessage: ((message: MessageEvent<unknown>) => void) | null;
-  postMessage(event: CoreEvent): void;
+  postMessage(message: CoreWorkerOutboundMessage): void;
 }
 
 export function attachWorkerHost(
@@ -42,6 +46,29 @@ export function attachWorkerHost(
         command.request_id,
       );
     });
+  };
+}
+
+export function attachCoreWorkerLifecycle(
+  host: WorkerHost,
+  dispose: () => void | Promise<void>,
+): void {
+  const handleCommand = host.onmessage;
+  let disposal: Promise<void> | null = null;
+
+  host.onmessage = (message) => {
+    if (!isCoreWorkerDisposeRequest(message.data)) {
+      handleCommand?.(message);
+      return;
+    }
+
+    if (!disposal) {
+      disposal = Promise.resolve().then(dispose);
+    }
+    void disposal.then(
+      () => host.postMessage(createCoreWorkerDisposedAck()),
+      () => host.postMessage(createCoreWorkerDisposedAck()),
+    );
   };
 }
 

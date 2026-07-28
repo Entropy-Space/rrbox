@@ -6,13 +6,15 @@ import {
   WorkspaceArchiveError,
 } from "@researchbox/workspace-archive";
 import {
+  BROWSER_WORKSPACE_ARCHIVE_OPTIONS,
+} from "@researchbox/app-runtime-browser/workspace-transfer-limits";
+import {
   ARCHIVE_WORKER_PROTOCOL_VERSION,
   ArchiveWorkerProtocolError,
   parseArchiveWorkerRequest,
   type ArchiveWorkerErrorCode,
   type ArchiveWorkerResponse,
 } from "./archive-worker-protocol.ts";
-import { BROWSER_WORKSPACE_ARCHIVE_OPTIONS } from "./workspace-transfer-limits.ts";
 
 const host = self as unknown as DedicatedWorkerGlobalScope;
 

@@ -32,6 +32,24 @@ importers:
 
   apps/native:
     dependencies:
+      '@researchbox/app-runtime-browser':
+        specifier: workspace:*
+        version: link:../../packages/app-runtime-browser
+      '@researchbox/client':
+        specifier: workspace:*
+        version: link:../../packages/client
+      '@researchbox/mock-provider':
+        specifier: workspace:*
+        version: link:../../packages/mock-provider
+      '@researchbox/model-transport':
+        specifier: workspace:*
+        version: link:../../packages/model-transport
+      '@researchbox/runtime-browser':
+        specifier: workspace:*
+        version: link:../../packages/runtime-browser
+      '@researchbox/viewer':
+        specifier: workspace:*
+        version: link:../../packages/viewer
       '@tauri-apps/api':
         specifier: ^2
         version: 2.11.0
@@ -66,9 +84,9 @@ importers:
 
   apps/web:
     dependencies:
-      '@researchbox/agent-core':
+      '@researchbox/app-runtime-browser':
         specifier: workspace:*
-        version: link:../../packages/agent-core
+        version: link:../../packages/app-runtime-browser
       '@researchbox/mock-provider':
         specifier: workspace:*
         version: link:../../packages/mock-provider
@@ -78,9 +96,6 @@ importers:
       '@researchbox/runtime-browser':
         specifier: workspace:*
         version: link:../../packages/runtime-browser
-      '@researchbox/storage-browser':
-        specifier: workspace:*
-        version: link:../../packages/storage-browser
       '@researchbox/viewer':
         specifier: workspace:*
         version: link:../../packages/viewer
@@ -145,6 +160,27 @@ importers:
       '@researchbox/vfs':
         specifier: workspace:*
         version: link:../vfs
+      '@researchbox/workspace-archive':
+        specifier: workspace:*
+        version: link:../workspace-archive
+
+  packages/app-runtime-browser:
+    dependencies:
+      '@researchbox/agent-core':
+        specifier: workspace:*
+        version: link:../agent-core
+      '@researchbox/model-transport':
+        specifier: workspace:*
+        version: link:../model-transport
+      '@researchbox/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@researchbox/runtime-browser':
+        specifier: workspace:*
+        version: link:../runtime-browser
+      '@researchbox/storage-browser':
+        specifier: workspace:*
+        version: link:../storage-browser
       '@researchbox/workspace-archive':
         specifier: workspace:*
         version: link:../workspace-archive

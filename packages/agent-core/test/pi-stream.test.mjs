@@ -212,6 +212,52 @@ test("forwards Pi reasoning effort only when explicitly supported", async () => 
   assert.equal(requests[2].reasoning_effort, "high");
 });
 
+test("forwards registered plugin tools to the model", async () => {
+  const requests = [];
+  const streamFn = createModelStreamFn({
+    async *stream(request) {
+      requests.push(structuredClone(request));
+      yield { type: "done", stop_reason: "stop" };
+    },
+  });
+
+  for await (const event of streamFn(
+    model,
+    {
+      systemPrompt: "Work carefully.",
+      messages: [],
+      tools: [{
+        name: "run_python",
+        label: "Run Python",
+        description: "Run stateless Python.",
+        parameters: {
+          type: "object",
+          properties: { code: { type: "string" } },
+          required: ["code"],
+          additionalProperties: false,
+        },
+        async execute() {
+          throw new Error("Not executed by this test.");
+        },
+      }],
+    },
+    { sessionId: "session-python" },
+  )) {
+    assert.notEqual(event.type, "error");
+  }
+
+  assert.deepEqual(requests[0].tools, [{
+    name: "run_python",
+    description: "Run stateless Python.",
+    parameters: {
+      type: "object",
+      properties: { code: { type: "string" } },
+      required: ["code"],
+      additionalProperties: false,
+    },
+  }]);
+});
+
 test("Pi transcript conversion preserves exact mutation arguments", async () => {
   const writeArguments = {
     path: "/notes.md",

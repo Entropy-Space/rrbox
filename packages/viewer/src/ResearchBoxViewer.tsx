@@ -54,6 +54,14 @@ import {
 import { MarkdownContent } from "./MarkdownContent.tsx";
 import { isStreamingAssistantText } from "./markdown.ts";
 import { ModelSelector } from "./ModelSelector.tsx";
+import { PluginsPage } from "./PluginsPage.tsx";
+import {
+  loadPluginSettings,
+  savePluginSettings,
+  updatePluginSetting,
+  type PluginCatalogEntry,
+  type PluginSetting,
+} from "./plugin-settings.ts";
 import {
   buildAssistantRunPresentation,
   buildTimelineRows,
@@ -79,6 +87,7 @@ import {
 
 export type ResearchBoxViewerProps = {
   createTransport: CoreTransportFactory;
+  plugins?: readonly PluginCatalogEntry[];
   workspaceTransferAdapter?: WorkspaceTransferAdapter;
 };
 
@@ -107,8 +116,14 @@ const suggestions = [
 
 export function ResearchBoxViewer({
   createTransport,
+  plugins = [],
   workspaceTransferAdapter,
 }: ResearchBoxViewerProps) {
+  const [pluginSettings, setPluginSettings] = useState(
+    loadPluginSettings,
+  );
+  const [pluginSettingsRevision, setPluginSettingsRevision] =
+    useState(0);
   const {
     coreState,
     transportError,
@@ -135,8 +150,11 @@ export function ResearchBoxViewer({
     abortRun,
     openFile,
     navigateToParent,
-  } = useAgentSession(createTransport);
+  } = useAgentSession(createTransport, pluginSettingsRevision);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [activePage, setActivePage] = useState<"chat" | "plugins">(
+    "chat",
+  );
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const [isMobileViewport, setMobileViewport] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
@@ -205,6 +223,31 @@ export function ResearchBoxViewer({
     [selectNewChat],
   );
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
+  const openPlugins = useCallback(() => {
+    setActivePage("plugins");
+    setSidebarOpen(false);
+  }, []);
+  const closePlugins = useCallback(() => setActivePage("chat"), []);
+  const savePlugin = useCallback(
+    (pluginId: string, setting: PluginSetting): string | null => {
+      try {
+        const next = updatePluginSetting(
+          pluginSettings,
+          pluginId,
+          setting,
+        );
+        savePluginSettings(next);
+        setPluginSettings(next);
+        setPluginSettingsRevision((current) => current + 1);
+        return null;
+      } catch (error) {
+        return error instanceof Error
+          ? error.message
+          : "Plugin settings could not be saved.";
+      }
+    },
+    [pluginSettings],
+  );
   const closeWorkspace = useCallback(() => {
     setWorkspaceOpen(false);
     closeChangeReview();
@@ -404,6 +447,8 @@ export function ResearchBoxViewer({
         }
         onSelectNewChat={selectNewChatAndFocus}
         onOpenChatSearch={openChatSearch}
+        onOpenPlugins={plugins.length > 0 ? openPlugins : undefined}
+        isPluginsActive={activePage === "plugins"}
         onRenameSession={renameSession}
         onDeleteSession={deleteSession}
         onSelectSession={selectSession}
@@ -418,8 +463,26 @@ export function ResearchBoxViewer({
         onSelectSession={selectChatSearchResult}
       />
 
+      {activePage === "plugins" && (
+        <PluginsPage
+          plugins={plugins}
+          settings={pluginSettings}
+          is_disabled={
+            !coreState.is_ready ||
+            coreState.is_running ||
+            isManagementPending ||
+            isInputDraftPending ||
+            coreState.pending_prompt !== null ||
+            isWorkspaceTransferPending
+          }
+          on_close={closePlugins}
+          on_save={savePlugin}
+        />
+      )}
+
       <section
         className="chat-surface"
+        hidden={activePage !== "chat"}
         inert={modalNavigationOpen ? true : undefined}
       >
         <header className="topbar">

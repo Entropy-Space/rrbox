@@ -1,38 +1,10 @@
-export type ModelToolName =
-  | "list_files"
-  | "read_file"
-  | "search_files"
-  | "write_file"
-  | "replace_text"
-  | "remove_file";
+export type ModelToolName = string;
 
-type ModelToolCallEnvelope<TName extends ModelToolName, TArguments> = {
+export type ModelToolCall = {
   tool_call_id: string;
-  tool_name: TName;
-  arguments: TArguments;
+  tool_name: ModelToolName;
+  arguments: Record<string, unknown>;
 };
-
-export type ModelToolCall =
-  | ModelToolCallEnvelope<
-      "list_files" | "read_file",
-      { path: string }
-    >
-  | ModelToolCallEnvelope<
-      "search_files",
-      { path: string; query: string }
-    >
-  | ModelToolCallEnvelope<
-      "write_file",
-      { path: string; content: string }
-    >
-  | ModelToolCallEnvelope<
-      "replace_text",
-      { path: string; old_text: string; new_text: string }
-    >
-  | ModelToolCallEnvelope<
-      "remove_file",
-      { path: string }
-    >;
 
 export type ModelToolResult = {
   tool_call_id: string;
@@ -509,7 +481,6 @@ export function parseModelToolCall(value: unknown): ModelToolCall {
   }
   const toolCallId = requireIdentifier(value, "tool_call_id");
   const toolName = requireModelToolName(value.tool_name);
-  const path = requireString(value.arguments, "path");
 
   switch (toolName) {
     case "list_files":
@@ -517,14 +488,16 @@ export function parseModelToolCall(value: unknown): ModelToolCall {
       return {
         tool_call_id: toolCallId,
         tool_name: toolName,
-        arguments: { path },
+        arguments: {
+          path: requireString(value.arguments, "path"),
+        },
       };
     case "search_files":
       return {
         tool_call_id: toolCallId,
         tool_name: toolName,
         arguments: {
-          path,
+          path: requireString(value.arguments, "path"),
           query: requireString(value.arguments, "query"),
         },
       };
@@ -533,7 +506,7 @@ export function parseModelToolCall(value: unknown): ModelToolCall {
         tool_call_id: toolCallId,
         tool_name: toolName,
         arguments: {
-          path,
+          path: requireString(value.arguments, "path"),
           content: requireString(value.arguments, "content", true),
         },
       };
@@ -542,7 +515,7 @@ export function parseModelToolCall(value: unknown): ModelToolCall {
         tool_call_id: toolCallId,
         tool_name: toolName,
         arguments: {
-          path,
+          path: requireString(value.arguments, "path"),
           old_text: requireString(value.arguments, "old_text", true),
           new_text: requireString(value.arguments, "new_text", true),
         },
@@ -552,7 +525,18 @@ export function parseModelToolCall(value: unknown): ModelToolCall {
       return {
         tool_call_id: toolCallId,
         tool_name: toolName,
-        arguments: { path },
+        arguments: {
+          path: requireString(value.arguments, "path"),
+        },
+      };
+    default:
+      return {
+        tool_call_id: toolCallId,
+        tool_name: toolName,
+        arguments: cloneJsonObject(
+          value.arguments,
+          `${toolName} arguments`,
+        ),
       };
   }
 }
@@ -575,24 +559,23 @@ function parseToolDefinition(value: unknown): ModelToolDefinition {
   return {
     name: requireModelToolName(value.name),
     description: requireString(value, "description", true),
-    parameters: value.parameters,
+    parameters: cloneJsonValue(
+      value.parameters,
+      "Tool definition parameters",
+    ),
   };
 }
 
 export function isModelToolName(value: unknown): value is ModelToolName {
   return (
-    value === "list_files" ||
-    value === "read_file" ||
-    value === "search_files" ||
-    value === "write_file" ||
-    value === "replace_text" ||
-    value === "remove_file"
+    typeof value === "string" &&
+    /^[a-z][a-z0-9_]{0,63}$/u.test(value)
   );
 }
 
 function requireModelToolName(value: unknown): ModelToolName {
   if (!isModelToolName(value)) {
-    throw new Error(`Unsupported tool: ${String(value)}`);
+    throw new Error(`Invalid tool name: ${String(value)}`);
   }
   return value;
 }
@@ -623,6 +606,60 @@ function assertExactKeys(
       `${label} must contain exactly: ${expected.join(", ")}.`,
     );
   }
+}
+
+function cloneJsonObject(
+  value: unknown,
+  label: string,
+): Record<string, unknown> {
+  if (!isRecord(value)) throw new Error(`${label} must be an object.`);
+  return cloneJsonValue(value, label) as Record<string, unknown>;
+}
+
+function cloneJsonValue(value: unknown, label: string): unknown {
+  assertJsonValue(value, label, new Set<object>());
+  return structuredClone(value);
+}
+
+function assertJsonValue(
+  value: unknown,
+  label: string,
+  ancestors: Set<object>,
+): void {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new Error(`${label} must contain only JSON values.`);
+    }
+    return;
+  }
+  if (typeof value !== "object") {
+    throw new Error(`${label} must contain only JSON values.`);
+  }
+  if (ancestors.has(value)) {
+    throw new Error(`${label} cannot contain cycles.`);
+  }
+  ancestors.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      assertJsonValue(item, label, ancestors);
+    }
+  } else {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new Error(`${label} must contain only JSON values.`);
+    }
+    for (const item of Object.values(value)) {
+      assertJsonValue(item, label, ancestors);
+    }
+  }
+  ancestors.delete(value);
 }
 
 function requireString(

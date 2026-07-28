@@ -17,9 +17,14 @@ test("uses distinct strict versions for core and LLM worker initialization", () 
     storage_port: storageChannel.port1,
     provider_port: providerChannel.port1,
     python_port: pythonChannel.port1,
+    python_plugin: {
+      enabled: true,
+      timeout_ms: 15_000,
+      max_output_bytes: 1024,
+    },
   };
 
-  assert.equal(NATIVE_CORE_WORKER_PROTOCOL_VERSION, 3);
+  assert.equal(NATIVE_CORE_WORKER_PROTOCOL_VERSION, 4);
   assert.deepEqual(
     parseNativeCoreWorkerInitializeMessage(coreInitialization),
     coreInitialization,

@@ -187,7 +187,10 @@ type ManagementCommand = Exclude<
   }
 >;
 
-export function useAgentSession(createTransport: CoreTransportFactory) {
+export function useAgentSession(
+  createTransport: CoreTransportFactory,
+  transport_lifecycle_key: unknown = null,
+) {
   const [coreState, dispatch] = useReducer(
     coreReducer,
     initialAgentSessionState,
@@ -378,6 +381,7 @@ export function useAgentSession(createTransport: CoreTransportFactory) {
     const unsubscribe = transport.subscribe(
       (event) => {
         try {
+          setTransportError(null);
           const handledWorkspaceTransfer =
             workspaceTransferRequestsRef.current?.accept(event) ?? false;
           const handledWorkspaceChange =
@@ -459,7 +463,7 @@ export function useAgentSession(createTransport: CoreTransportFactory) {
       closeTransport();
       if (transportRef.current === transport) transportRef.current = null;
     };
-  }, [createTransport]);
+  }, [createTransport, transport_lifecycle_key]);
 
   const submitPrompt = useCallback(
     (prompt: string): boolean => {

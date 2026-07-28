@@ -103,6 +103,10 @@ persist. Browser code creates the Python Worker and loads RustPython Wasm only
 on first use. Native code crosses a private typed `MessagePort` and Tauri
 command boundary so Rust owns execution, timeout, cancellation, and teardown.
 Network requests and direct workspace access are not exposed to Python yet.
+Open **Plugins** in the application sidebar to enable Python and configure its
+per-call execution timeout and combined output limit. Plugin settings are
+stored on the local device, and saving them restarts the local core so the
+agent's tool list updates immediately.
 
 ### Native app
 

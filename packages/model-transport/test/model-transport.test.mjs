@@ -174,7 +174,7 @@ test("allows empty user and tool content while requiring assistant blocks", () =
   );
 });
 
-test("rejects unsupported model tools", () => {
+test("rejects unsafe model tool names", () => {
   assert.throws(
     () =>
       parseModelStreamEvent({
@@ -182,11 +182,11 @@ test("rejects unsupported model tools", () => {
         content_index: 0,
         tool_call: {
           tool_call_id: "tool-1",
-          tool_name: "run_shell",
+          tool_name: "Run shell",
           arguments: { path: "/" },
         },
       }),
-    /Unsupported tool/,
+    /Invalid tool name/,
   );
 });
 
@@ -258,10 +258,23 @@ test("parses each model tool with its exact discriminated arguments", () => {
     "write_file",
     "replace_text",
     "remove_file",
+    "run_python",
   ]) {
     assert.equal(isModelToolName(name), true);
   }
-  assert.equal(isModelToolName("run_shell"), false);
+  assert.equal(isModelToolName("Run shell"), false);
+  assert.deepEqual(
+    parseModelToolCall({
+      tool_call_id: "python-1",
+      tool_name: "run_python",
+      arguments: { code: "print(42)" },
+    }),
+    {
+      tool_call_id: "python-1",
+      tool_name: "run_python",
+      arguments: { code: "print(42)" },
+    },
+  );
 });
 
 test("validates tool arguments according to the tool name", () => {

@@ -1,6 +1,7 @@
 use std::{
   collections::HashMap,
   sync::{Arc, Mutex},
+  thread,
   time::Duration,
 };
 
@@ -9,11 +10,13 @@ use researchbox_python_plugin::{
 };
 use serde::{Deserialize, Serialize};
 use tauri::State;
+use tokio::sync::oneshot;
 
 pub const PYTHON_PROTOCOL_VERSION: u32 = 1;
 const MAX_PYTHON_CODE_BYTES: usize = 256 * 1024;
 const MAX_PYTHON_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_PYTHON_TIMEOUT_MS: u64 = 60_000;
+const PYTHON_THREAD_STACK_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -180,15 +183,18 @@ pub async fn native_python_execute(
     return Ok(execute_error(request_id, "busy", message));
   }
 
-  let execution_service = service.clone();
-  let execution_operation_id = operation_id.clone();
-  let code = request.code;
-  let max_output_bytes = request.max_output_bytes;
-  let mut execution = tauri::async_runtime::spawn_blocking(move || {
-    execute_python_with_cancellation(&code, max_output_bytes, |cancellation| {
-      execution_service.register_cancellation(&execution_operation_id, cancellation);
-    })
-  });
+  let mut execution = match spawn_python_execution(
+    service.clone(),
+    operation_id.clone(),
+    request.code,
+    request.max_output_bytes,
+  ) {
+    Ok(execution) => execution,
+    Err(message) => {
+      service.finish(&operation_id);
+      return Ok(execute_error(request_id, "internal", message));
+    }
+  };
   let timeout = tokio::time::sleep(Duration::from_millis(request.timeout_ms));
   tokio::pin!(timeout);
 
@@ -229,12 +235,32 @@ pub async fn native_python_execute(
       },
     },
     Ok(Err(message)) => execute_error(request_id, "internal", message),
-    Err(error) => execute_error(
+    Err(_) => execute_error(
       request_id,
       "internal",
-      format!("Native Python worker failed: {error}"),
+      "The native Python execution thread stopped before returning a result.".to_owned(),
     ),
   })
+}
+
+fn spawn_python_execution(
+  service: PythonService,
+  operation_id: String,
+  code: String,
+  max_output_bytes: usize,
+) -> Result<oneshot::Receiver<Result<PythonExecutionResult, String>>, String> {
+  let (sender, receiver) = oneshot::channel();
+  thread::Builder::new()
+    .name("researchbox-python".to_owned())
+    .stack_size(PYTHON_THREAD_STACK_BYTES)
+    .spawn(move || {
+      let result = execute_python_with_cancellation(&code, max_output_bytes, |cancellation| {
+        service.register_cancellation(&operation_id, cancellation);
+      });
+      let _ = sender.send(result);
+    })
+    .map_err(|error| format!("Could not start the native Python execution thread: {error}"))?;
+  Ok(receiver)
 }
 
 #[tauri::command]
@@ -337,7 +363,7 @@ fn cancel_error(request_id: String, code: &'static str, message: String) -> Pyth
 mod tests {
   use super::{
     MAX_PYTHON_OUTPUT_BYTES, PYTHON_PROTOCOL_VERSION, PythonExecuteRequest,
-    PythonExecuteRequestKind, validate_execute_request,
+    PythonExecuteRequestKind, PythonService, spawn_python_execution, validate_execute_request,
   };
 
   #[test]
@@ -358,5 +384,27 @@ mod tests {
       ..valid
     };
     assert!(validate_execute_request(&invalid).is_some());
+  }
+
+  #[tokio::test]
+  async fn runs_rustpython_on_its_dedicated_native_thread() {
+    let service = PythonService::new();
+    let operation_id = "dedicated-thread-test".to_owned();
+    service.start(&operation_id).unwrap();
+
+    let execution = spawn_python_execution(
+      service.clone(),
+      operation_id.clone(),
+      "print(21 * 2)".to_owned(),
+      4096,
+    )
+    .unwrap()
+    .await
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(execution.stdout, "42\n");
+    assert_eq!(execution.error, None);
+    assert!(!service.finish(&operation_id));
   }
 }

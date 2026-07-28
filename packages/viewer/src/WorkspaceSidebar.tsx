@@ -7,6 +7,7 @@ import {
   FolderOpen,
   MessageSquareText,
   MoreHorizontal,
+  Puzzle,
   Plus,
   Search,
   SquarePen,
@@ -48,6 +49,8 @@ export function WorkspaceSidebar({
   onCancelWorkspaceTransfer,
   onSelectNewChat,
   onOpenChatSearch,
+  onOpenPlugins,
+  isPluginsActive = false,
   onRenameSession,
   onDeleteSession,
   onSelectSession,
@@ -71,6 +74,8 @@ export function WorkspaceSidebar({
   onCancelWorkspaceTransfer?: () => void;
   onSelectNewChat: (projectId?: string) => void;
   onOpenChatSearch: () => void;
+  onOpenPlugins?: () => void;
+  isPluginsActive?: boolean;
   onRenameSession: (projectId: string, sessionId: string, title: string) => void;
   onDeleteSession: (projectId: string, sessionId: string) => void;
   onSelectSession: (projectId: string, sessionId: string) => void;
@@ -421,6 +426,21 @@ export function WorkspaceSidebar({
             <span>Search chats</span>
             <kbd aria-hidden={true}>⌘ K</kbd>
           </button>
+          {onOpenPlugins && (
+            <button
+              className={isPluginsActive ? "active" : undefined}
+              type="button"
+              aria-current={isPluginsActive ? "page" : undefined}
+              disabled={isPending}
+              onClick={() => {
+                setOpenMenu(null);
+                onOpenPlugins();
+              }}
+            >
+              <Puzzle size={18} />
+              <span>Plugins</span>
+            </button>
+          )}
         </nav>
 
         <section

@@ -1,5 +1,9 @@
 import type { CoreTransportFactory } from "@researchbox/client";
+import {
+  resolvePythonPluginRuntimeConfiguration,
+} from "@researchbox/python-plugin/settings";
 import { WorkerCoreTransport } from "@researchbox/runtime-browser";
+import { loadPluginSettings } from "@researchbox/viewer";
 import {
   createNativeProviderPortBroker,
 } from "./native-provider-broker.ts";
@@ -45,6 +49,9 @@ export const createNativeCoreTransport: CoreTransportFactory = () => {
     storage_port: storageChannel.port2,
     provider_port: providerChannel.port2,
     python_port: pythonChannel.port2,
+    python_plugin: resolvePythonPluginRuntimeConfiguration(
+      loadPluginSettings().plugins.python,
+    ),
   };
 
   try {

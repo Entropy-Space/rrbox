@@ -8,6 +8,7 @@
     "./browser": "./src/browser-python-executor.ts",
     "./native": "./src/native-python-rpc-client.ts",
     "./protocol": "./src/protocol.ts",
+    "./settings": "./src/plugin-settings.ts",
     "./worker": "./src/python.worker.ts"
   },
   "dependencies": {

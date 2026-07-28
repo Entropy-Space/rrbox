@@ -298,17 +298,16 @@ function toModelRequest(
     messages: context.messages
       .map(toModelConversationMessage)
       .filter((message): message is ModelConversationMessage => message !== null),
-    tools: (context.tools ?? []).flatMap((tool): ModelToolDefinition[] =>
-      isModelToolName(tool.name)
-        ? [
-            {
-              name: tool.name,
-              description: tool.description,
-              parameters: structuredClone(tool.parameters),
-            },
-          ]
-        : [],
-    ),
+    tools: (context.tools ?? []).map((tool): ModelToolDefinition => {
+      if (!isModelToolName(tool.name)) {
+        throw new Error(`Invalid agent tool name: ${tool.name}`);
+      }
+      return {
+        name: tool.name,
+        description: tool.description,
+        parameters: structuredClone(tool.parameters),
+      };
+    }),
   };
 }
 

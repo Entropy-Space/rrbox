@@ -156,6 +156,9 @@ against same-origin code. Server-held credentials must remain on the server.
 13. Optional agent plugins are injected into `packages/agent-core`. The core
     owns their session-bound tool definitions, while application composition
     owns executor resources and teardown.
+14. Model transport accepts strictly named, JSON-schema-defined tools from the
+    active agent registry. It does not keep a separate fixed allowlist that
+    could silently remove application-composed plugin tools.
 
 ## Python plugin boundary
 
@@ -179,6 +182,12 @@ The WebView broker invokes typed Tauri commands, and `PythonService` owns the
 blocking RustPython task registry. RustPython's user-signal channel interrupts
 active bytecode on cancellation or timeout. Closing the core transport closes
 the broker and requests cancellation for every active native operation.
+
+The shared viewer exposes an application-level Plugins page. Its strict
+versioned settings document is stored locally and defaults Python to disabled.
+Web and native composition roots resolve that document into the same bounded
+runtime configuration. Saving a change recycles the core transport; project
+and workspace persistence remain owned by their existing storage services.
 
 ## Serialization
 

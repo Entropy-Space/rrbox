@@ -42,9 +42,16 @@ host.onmessage = (event) => {
     initialization.storage_port,
   );
   const projectStore = new NativeProjectStore(storageClient);
-  const pythonClient = new NativePythonRpcClient(
-    initialization.python_port,
-  );
+  const pythonClient = initialization.python_plugin.enabled
+    ? new NativePythonRpcClient(
+        initialization.python_port,
+        {
+          timeout_ms: initialization.python_plugin.timeout_ms,
+          max_output_bytes:
+            initialization.python_plugin.max_output_bytes,
+        },
+      )
+    : null;
 
   startResearchBoxCoreWorker({
     host,
@@ -52,10 +59,12 @@ host.onmessage = (event) => {
     providers: createResearchBoxProviderDefinitions({
       include_local_openai: true,
     }),
-    plugins: [createPythonAgentPlugin(pythonClient)],
-    close_plugins() {
-      pythonClient.close();
-    },
+    plugins: pythonClient
+      ? [createPythonAgentPlugin(pythonClient)]
+      : [],
+    close_plugins: pythonClient
+      ? () => pythonClient.close()
+      : undefined,
     create_storage_services() {
       return {
         projectStore,

@@ -14,8 +14,12 @@ import type {
   PythonExecuteRequest,
   PythonExecuteResponse,
 } from "@researchbox/python-plugin/protocol";
+import {
+  parsePythonPluginRuntimeConfiguration,
+  type PythonPluginRuntimeConfiguration,
+} from "@researchbox/python-plugin/settings";
 
-export const NATIVE_CORE_WORKER_PROTOCOL_VERSION = 3 as const;
+export const NATIVE_CORE_WORKER_PROTOCOL_VERSION = 4 as const;
 export const NATIVE_LLM_WORKER_PROTOCOL_VERSION = 1 as const;
 
 export type NativeCoreWorkerInitializeMessage = {
@@ -24,6 +28,7 @@ export type NativeCoreWorkerInitializeMessage = {
   storage_port: MessagePort;
   provider_port: MessagePort;
   python_port: MessagePort;
+  python_plugin: PythonPluginRuntimeConfiguration;
 };
 
 export type NativeLlmWorkerInitializeMessage = {
@@ -64,6 +69,7 @@ export function parseNativeCoreWorkerInitializeMessage(
     "storage_port",
     "provider_port",
     "python_port",
+    "python_plugin",
   ])) {
     throw new Error("Invalid native core worker initialization.");
   }
@@ -76,7 +82,16 @@ export function parseNativeCoreWorkerInitializeMessage(
   ) {
     throw new Error("Invalid native core worker initialization.");
   }
-  return value as NativeCoreWorkerInitializeMessage;
+  return {
+    protocol_version: NATIVE_CORE_WORKER_PROTOCOL_VERSION,
+    kind: "native_core_initialize",
+    storage_port: value.storage_port,
+    provider_port: value.provider_port,
+    python_port: value.python_port,
+    python_plugin: parsePythonPluginRuntimeConfiguration(
+      value.python_plugin,
+    ),
+  };
 }
 
 export function parseNativeLlmWorkerInitializeMessage(

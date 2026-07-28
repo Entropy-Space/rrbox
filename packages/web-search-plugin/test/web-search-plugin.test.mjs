@@ -583,10 +583,10 @@ test("summary-review streams initial searches into one open review", async () =>
         }),
         update(updatedRequest) {
           selectionUpdates.push(structuredClone(updatedRequest));
-          if (!updatedRequest.is_loading) {
+          if (updatedRequest.stage === "review-summary") {
             resolveSelection({
-              decision: "summarize",
-              approved_text: "",
+              decision: "approve",
+              approved_text: updatedRequest.draft_text,
               selected_section_ids:
                 updatedRequest.selected_section_ids,
               feedback_text: "",
@@ -609,19 +609,28 @@ test("summary-review streams initial searches into one open review", async () =>
   assert.equal(selectionOpenCount, 1);
   assert.deepEqual(
     selectionUpdates.map((request) => ({
+      stage: request.stage,
       is_loading: request.is_loading,
       section_count: request.sections.length,
       selected_section_ids: request.selected_section_ids,
     })),
     [{
+      stage: "select-evidence",
       is_loading: true,
       section_count: 1,
       selected_section_ids: ["0"],
     }, {
+      stage: "select-evidence",
       is_loading: true,
       section_count: 2,
       selected_section_ids: ["0", "1"],
     }, {
+      stage: "select-evidence",
+      is_loading: true,
+      section_count: 2,
+      selected_section_ids: ["0", "1"],
+    }, {
+      stage: "review-summary",
       is_loading: false,
       section_count: 2,
       selected_section_ids: ["0", "1"],
@@ -678,6 +687,107 @@ test("cancelling a loading review aborts its active search", async () => {
   assert.equal(searchAborted, true);
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /cancelled by the user/u);
+});
+
+test("automatic draft can return to selection and regenerate", async () => {
+  const plugin = createWebSearchAgentPlugin({
+    async search(request) {
+      return {
+        query: request.query,
+        provider: "exa",
+        answer: "Evidence",
+        sources: [{
+          title: "Example",
+          url: "https://example.com/",
+          snippet: "Evidence",
+        }],
+      };
+    },
+    close() {},
+  }, {
+    maximum_results: 5,
+    maximum_output_bytes: 64 * 1024,
+    default_provider: "exa",
+    default_workflow: "summary-review",
+    summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
+  });
+  let completionCount = 0;
+  let reviewCount = 0;
+  const [tool] = plugin.createTools({
+    project_id: "project",
+    session_id: "session",
+    async complete_model() {
+      completionCount += 1;
+      return {
+        text: `Draft ${completionCount}`,
+        provider_id: "openai",
+        model_id: "test-model",
+      };
+    },
+    open_summary_review(request) {
+      reviewCount += 1;
+      if (reviewCount === 1) {
+        let resolveInitialReview;
+        return {
+          resolution: new Promise((resolve) => {
+            resolveInitialReview = resolve;
+          }),
+          update(updatedRequest) {
+            if (updatedRequest.stage !== "review-summary") return;
+            assert.equal(updatedRequest.draft_text, "Draft 1");
+            resolveInitialReview({
+              decision: "back",
+              approved_text: "",
+              selected_section_ids:
+                updatedRequest.selected_section_ids,
+              feedback_text: "",
+              summary_model: null,
+              query_text: "",
+            });
+          },
+        };
+      }
+      if (reviewCount === 2) {
+        assert.equal(request.stage, "select-evidence");
+        return {
+          resolution: Promise.resolve({
+            decision: "summarize",
+            approved_text: "",
+            selected_section_ids: ["0"],
+            feedback_text: "",
+            summary_model: null,
+            query_text: "",
+          }),
+          update() {},
+        };
+      }
+      assert.equal(request.stage, "review-summary");
+      assert.equal(request.draft_text, "Draft 2");
+      return {
+        resolution: Promise.resolve({
+          decision: "approve",
+          approved_text: request.draft_text,
+          selected_section_ids: ["0"],
+          feedback_text: "",
+          summary_model: null,
+          query_text: "",
+        }),
+        update() {},
+      };
+    },
+  });
+
+  const result = await tool.execute(
+    "call",
+    { query: "example" },
+    new AbortController().signal,
+    () => {},
+  );
+
+  assert.equal(reviewCount, 3);
+  assert.equal(completionCount, 2);
+  assert.equal(result.content[0].text, "Draft 2");
 });
 
 test("all-provider review keeps provider evidence independently selectable", async () => {

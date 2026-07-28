@@ -119,11 +119,12 @@ pipelines. It accepts one focused query or up to four varied queries, optional
 domain and recency filters, and raw, automatic-summary, or reviewed-summary
 workflows. Reviewed summary opens its in-app curator before retrieval and
 streams each completed query/provider result into a separate evidence card.
-Once retrieval finishes, it asks which results to keep, generates from only
-that evidence, then allows editing, Markdown preview, regeneration with
+Once retrieval finishes, it automatically generates the first draft from all
+successful cards, then allows editing, Markdown preview, regeneration with
 feedback, changing the summary provider/model, approval, or returning to
-selection. While selecting evidence, another bounded search angle can be
-entered directly or improved with the selected summary model before retrieval.
+evidence selection. While selecting evidence, another bounded search angle can
+be entered directly or improved with the selected summary model before
+retrieval.
 These query drafts and added searches exist only for the active tool call.
 The draft reports the model actually used, generation time,
 estimated tokens, and deterministic fallback reason. The review exists only

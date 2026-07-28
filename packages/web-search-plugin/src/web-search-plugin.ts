@@ -247,6 +247,9 @@ export function createWebSearchAgentPlugin(
           let pendingSelection:
             | Promise<SummaryReviewResolution | null>
             | null = null;
+          let pendingDraftReview:
+            | Promise<SummaryReviewResolution | null>
+            | null = null;
           if (
             workflow === "summary-review" &&
             context.open_summary_review
@@ -355,30 +358,152 @@ export function createWebSearchAgentPlugin(
             } else {
               queryResults = liveOutcome.results;
               reviewResults = createReviewResults(queryResults);
-              selectedResults = queryResults;
               selectedSectionIds = selectableSectionIds(reviewResults);
-              try {
-                liveReview.update({
-                  stage: "select-evidence",
-                  is_loading: false,
-                  title: "Select web search evidence",
-                  draft_text: "",
-                  summary_model: null,
-                  draft_metadata: null,
-                  query_draft: "",
-                  query_notice: null,
-                  sections: createReviewSections(reviewResults),
-                  selected_section_ids: selectedSectionIds,
-                });
-              } catch {
-                // A simultaneous timeout is observed through resolution.
-              }
-              pendingSelection = waitForSummaryReviewWithDeadline(
-                liveReview.resolution,
-                reviewController,
-                options.review_timeout_ms,
-                signal,
+              selectedResults = reviewResults.filter(
+                (result) => result.response,
               );
+              const sections = createReviewSections(reviewResults);
+              if (selectedResults.length === 0) {
+                try {
+                  liveReview.update({
+                    stage: "select-evidence",
+                    is_loading: false,
+                    title: "Select web search evidence",
+                    draft_text: "",
+                    summary_model: null,
+                    draft_metadata: null,
+                    query_draft: "",
+                    query_notice:
+                      "No successful evidence is available to summarize.",
+                    sections,
+                    selected_section_ids: [],
+                  });
+                } catch {
+                  const resolution = await liveReview.resolution;
+                  if (resolution.decision === "cancel") {
+                    return createReviewErrorResult(
+                      queries.length,
+                      provider,
+                      workflow,
+                      "Search review was cancelled by the user.",
+                    );
+                  }
+                  throw new Error(
+                    "The loading search review resolved unexpectedly.",
+                  );
+                }
+                pendingSelection = waitForSummaryReviewWithDeadline(
+                  liveReview.resolution,
+                  reviewController,
+                  options.review_timeout_ms,
+                  signal,
+                );
+              } else {
+                try {
+                  liveReview.update({
+                    stage: "select-evidence",
+                    is_loading: true,
+                    title: "Select web search evidence",
+                    draft_text: "",
+                    summary_model: null,
+                    draft_metadata: null,
+                    query_draft: "",
+                    query_notice: "Generating the initial summary…",
+                    sections,
+                    selected_section_ids: selectedSectionIds,
+                  });
+                } catch {
+                  const resolution = await liveReview.resolution;
+                  if (resolution.decision === "cancel") {
+                    return createReviewErrorResult(
+                      queries.length,
+                      provider,
+                      workflow,
+                      "Search summary review was cancelled by the user.",
+                    );
+                  }
+                  throw new Error(
+                    "The loading summary review resolved unexpectedly.",
+                  );
+                }
+                const generationController = new AbortController();
+                const generationSignal = signal
+                  ? AbortSignal.any([signal, generationController.signal])
+                  : generationController.signal;
+                const generation = synthesizeResults(
+                  selectedResults,
+                  context.complete_model,
+                  options.summary_timeout_ms,
+                  options.maximum_output_bytes,
+                  generationSignal,
+                  summaryModel,
+                );
+                void generation.catch(() => undefined);
+                const generationOutcome = await Promise.race([
+                  generation.then((result) => ({
+                    kind: "generation" as const,
+                    result,
+                  })),
+                  liveReview.resolution.then((resolution) => ({
+                    kind: "resolution" as const,
+                    resolution,
+                  })),
+                ]);
+                if (generationOutcome.kind === "resolution") {
+                  generationController.abort();
+                  try {
+                    await generation;
+                  } catch (error) {
+                    if (signal?.aborted) throw error;
+                  }
+                  if (generationOutcome.resolution.decision === "cancel") {
+                    return createReviewErrorResult(
+                      queries.length,
+                      provider,
+                      workflow,
+                      "Search summary review was cancelled by the user.",
+                    );
+                  }
+                  throw new Error(
+                    "A loading summary review may only be cancelled.",
+                  );
+                }
+                synthesis = generationOutcome.result;
+                try {
+                  liveReview.update({
+                    stage: "review-summary",
+                    is_loading: false,
+                    title: "Review web search summary",
+                    draft_text: synthesis.text,
+                    summary_model: summaryModel,
+                    draft_metadata: createDraftMetadata(synthesis),
+                    query_draft: "",
+                    query_notice: null,
+                    sections,
+                    selected_section_ids: selectedSectionIds,
+                  });
+                } catch {
+                  const resolution = await liveReview.resolution;
+                  if (resolution.decision === "cancel") {
+                    return createReviewErrorResult(
+                      queries.length,
+                      provider,
+                      workflow,
+                      "Search summary review was cancelled by the user.",
+                    );
+                  }
+                  throw new Error(
+                    "The summary review resolved before its draft was ready.",
+                  );
+                }
+                pendingDraftReview = waitForSummaryReviewWithDeadline(
+                  liveReview.resolution,
+                  reviewController,
+                  options.review_timeout_ms,
+                  signal,
+                );
+                reviewed = true;
+              }
             }
           } else {
             queryResults = await executeQueries(
@@ -395,178 +520,179 @@ export function createWebSearchAgentPlugin(
             selectionLoop:
             while (approvedText === undefined) {
               const sections = createReviewSections(reviewResults);
-              const selection: SummaryReviewResolution | null =
-                pendingSelection
-                ? await pendingSelection
-                : await requestSummaryReviewWithDeadline(
-                  requestSummaryReview!,
-                  {
-                    stage: "select-evidence",
-                    is_loading: false,
-                    title: "Select web search evidence",
-                    draft_text: "",
-                    summary_model: summaryModel,
-                    draft_metadata: null,
-                    query_draft: queryDraft,
-                    query_notice: queryNotice,
-                    sections,
-                    selected_section_ids: selectedSectionIds,
-                  },
-                  options.review_timeout_ms,
-                  signal,
-                );
-              pendingSelection = null;
-              if (selection === null) {
-                const selectableSectionIds = reviewResults.flatMap(
-                  (result, index) =>
-                    result.response ? [String(index)] : [],
-                );
-                const timeoutSelectionIds = selectedSectionIds.length > 0
-                  ? selectedSectionIds
-                  : selectableSectionIds;
-                selectedSectionIds = timeoutSelectionIds;
-                selectedResults = timeoutSelectionIds.length > 0
-                  ? selectQueryResults(
-                    reviewResults,
-                    timeoutSelectionIds,
-                  )
-                  : reviewResults;
-                synthesis = createReviewTimeoutSynthesis(
-                  selectedResults,
-                  options.maximum_output_bytes,
-                );
-                approvedText = synthesis.text;
-                reviewed = true;
-                break;
-              }
-              if (selection.decision === "cancel") {
-                return createReviewErrorResult(
-                  queries.length,
-                  provider,
-                  workflow,
-                  "Search review was cancelled by the user.",
-                );
-              }
-              selectedSectionIds = selection.selected_section_ids;
-              summaryModel = selection.summary_model;
-              if (selection.decision === "rewrite-query") {
-                queryDraft = normalizeSearchQuery(selection.query_text);
-                try {
-                  queryDraft = await rewriteSearchQuery(
-                    queryDraft,
-                    context.complete_model,
-                    options.summary_timeout_ms,
+              if (!pendingDraftReview) {
+                const selection: SummaryReviewResolution | null =
+                  pendingSelection
+                  ? await pendingSelection
+                  : await requestSummaryReviewWithDeadline(
+                    requestSummaryReview!,
+                    {
+                      stage: "select-evidence",
+                      is_loading: false,
+                      title: "Select web search evidence",
+                      draft_text: "",
+                      summary_model: summaryModel,
+                      draft_metadata: null,
+                      query_draft: queryDraft,
+                      query_notice: queryNotice,
+                      sections,
+                      selected_section_ids: selectedSectionIds,
+                    },
+                    options.review_timeout_ms,
                     signal,
-                    summaryModel,
                   );
-                  queryNotice = "Query improved. Review it before searching.";
-                } catch (error) {
-                  if (signal?.aborted || isAbortError(error)) throw error;
-                  queryNotice =
-                    "The query could not be improved. You can edit or search it as written.";
+                pendingSelection = null;
+                if (selection === null) {
+                  const selectableSectionIds = reviewResults.flatMap(
+                    (result, index) =>
+                      result.response ? [String(index)] : [],
+                  );
+                  const timeoutSelectionIds = selectedSectionIds.length > 0
+                    ? selectedSectionIds
+                    : selectableSectionIds;
+                  selectedSectionIds = timeoutSelectionIds;
+                  selectedResults = timeoutSelectionIds.length > 0
+                    ? selectQueryResults(
+                      reviewResults,
+                      timeoutSelectionIds,
+                    )
+                    : reviewResults;
+                  synthesis = createReviewTimeoutSynthesis(
+                    selectedResults,
+                    options.maximum_output_bytes,
+                  );
+                  approvedText = synthesis.text;
+                  reviewed = true;
+                  break;
                 }
-                continue;
-              }
-              if (selection.decision === "add-search") {
-                const addedQuery = normalizeSearchQuery(
-                  selection.query_text,
-                );
-                queryDraft = addedQuery;
-                if (queries.includes(addedQuery)) {
-                  queryNotice = "That query has already been searched.";
+                if (selection.decision === "cancel") {
+                  return createReviewErrorResult(
+                    queries.length,
+                    provider,
+                    workflow,
+                    "Search review was cancelled by the user.",
+                  );
+                }
+                selectedSectionIds = selection.selected_section_ids;
+                summaryModel = selection.summary_model;
+                if (selection.decision === "rewrite-query") {
+                  queryDraft = normalizeSearchQuery(selection.query_text);
+                  try {
+                    queryDraft = await rewriteSearchQuery(
+                      queryDraft,
+                      context.complete_model,
+                      options.summary_timeout_ms,
+                      signal,
+                      summaryModel,
+                    );
+                    queryNotice =
+                      "Query improved. Review it before searching.";
+                  } catch (error) {
+                    if (signal?.aborted || isAbortError(error)) throw error;
+                    queryNotice =
+                      "The query could not be improved. You can edit or search it as written.";
+                  }
+                  continue;
+                }
+                if (selection.decision === "add-search") {
+                  const addedQuery = normalizeSearchQuery(
+                    selection.query_text,
+                  );
+                  queryDraft = addedQuery;
+                  if (queries.includes(addedQuery)) {
+                    queryNotice = "That query has already been searched.";
+                    continue;
+                  }
+                  if (
+                    queryResults.length >= MAX_WEB_SEARCH_REVIEW_QUERIES ||
+                    reviewResults.length >= MAX_WEB_SEARCH_REVIEW_SECTIONS
+                  ) {
+                    queryNotice =
+                      `A review can contain at most ${MAX_WEB_SEARCH_REVIEW_SECTIONS} evidence cards.`;
+                    continue;
+                  }
+                  const [addedResult] = await executeQueries(
+                    executor,
+                    [addedQuery],
+                    searchOptions,
+                    signal,
+                  );
+                  const previousReviewResultCount = reviewResults.length;
+                  const addedReviewResultCount =
+                    createReviewResults([addedResult]).length;
+                  queries.push(addedQuery);
+                  queryResults.push(addedResult);
+                  reviewResults = createReviewResults(queryResults);
+                  const addedSectionIds = reviewResults.flatMap(
+                    (result, index) =>
+                      index >= previousReviewResultCount && result.response
+                        ? [String(index)]
+                        : [],
+                  );
+                  selectedSectionIds = [
+                    ...selectedSectionIds,
+                    ...addedSectionIds,
+                  ];
+                  queryDraft = "";
+                  queryNotice = reviewResults.length -
+                        previousReviewResultCount < addedReviewResultCount
+                    ? `Search added; evidence was limited to ${MAX_WEB_SEARCH_REVIEW_SECTIONS} cards.`
+                    : addedResult.error
+                    ? "The search was added but returned an error."
+                    : "Search added and selected.";
+                  reviewed = true;
                   continue;
                 }
                 if (
-                  queryResults.length >= MAX_WEB_SEARCH_REVIEW_QUERIES ||
-                  reviewResults.length >= MAX_WEB_SEARCH_REVIEW_SECTIONS
+                  selection.decision !== "summarize" &&
+                  selection.decision !== "raw"
                 ) {
-                  queryNotice =
-                    `A review can contain at most ${MAX_WEB_SEARCH_REVIEW_SECTIONS} evidence cards.`;
-                  continue;
+                  throw new Error(
+                    `Invalid evidence selection decision: ${selection.decision}`,
+                  );
                 }
-                const [addedResult] = await executeQueries(
-                  executor,
-                  [addedQuery],
-                  searchOptions,
-                  signal,
+                selectedResults = selectQueryResults(
+                  reviewResults,
+                  selectedSectionIds,
                 );
-                const previousReviewResultCount = reviewResults.length;
-                const addedReviewResultCount =
-                  createReviewResults([addedResult]).length;
-                queries.push(addedQuery);
-                queryResults.push(addedResult);
-                reviewResults = createReviewResults(queryResults);
-                const addedSectionIds = reviewResults.flatMap(
-                  (result, index) =>
-                    index >= previousReviewResultCount && result.response
-                      ? [String(index)]
-                      : [],
-                );
-                selectedSectionIds = [
-                  ...selectedSectionIds,
-                  ...addedSectionIds,
-                ];
-                queryDraft = "";
-                queryNotice = reviewResults.length -
-                      previousReviewResultCount < addedReviewResultCount
-                  ? `Search added; evidence was limited to ${MAX_WEB_SEARCH_REVIEW_SECTIONS} cards.`
-                  : addedResult.error
-                  ? "The search was added but returned an error."
-                  : "Search added and selected.";
                 reviewed = true;
-                continue;
-              }
-              if (
-                selection.decision !== "summarize" &&
-                selection.decision !== "raw"
-              ) {
-                throw new Error(
-                  `Invalid evidence selection decision: ${selection.decision}`,
-                );
-              }
-              selectedResults = selectQueryResults(
-                reviewResults,
-                selectedSectionIds,
-              );
-              reviewed = true;
-              if (selection.decision === "raw") {
-                approvedText = formatRawSearchResults(selectedResults);
-                break;
-              }
+                if (selection.decision === "raw") {
+                  approvedText = formatRawSearchResults(selectedResults);
+                  break;
+                }
 
-              synthesis = await synthesizeResults(
-                selectedResults,
-                context.complete_model,
-                options.summary_timeout_ms,
-                options.maximum_output_bytes,
-                signal,
-                summaryModel,
-              );
-              while (true) {
-                const resolution = await requestSummaryReviewWithDeadline(
-                  requestSummaryReview!,
-                  {
-                    stage: "review-summary",
-                    is_loading: false,
-                    title: "Review web search summary",
-                    draft_text: synthesis.text,
-                    summary_model: summaryModel,
-                    draft_metadata: {
-                      model: synthesis.model_selection,
-                      duration_ms: synthesis.duration_ms,
-                      token_estimate: synthesis.token_estimate,
-                      fallback_used: synthesis.fallback_used,
-                      fallback_reason:
-                        synthesis.fallback_reason ?? null,
-                    },
-                    query_draft: "",
-                    query_notice: null,
-                    sections,
-                    selected_section_ids: selectedSectionIds,
-                  },
-                  options.review_timeout_ms,
+                synthesis = await synthesizeResults(
+                  selectedResults,
+                  context.complete_model,
+                  options.summary_timeout_ms,
+                  options.maximum_output_bytes,
                   signal,
+                  summaryModel,
                 );
+              }
+              let nextDraftResolution = pendingDraftReview;
+              pendingDraftReview = null;
+              while (true) {
+                const resolution = nextDraftResolution
+                  ? await nextDraftResolution
+                  : await requestSummaryReviewWithDeadline(
+                    requestSummaryReview!,
+                    {
+                      stage: "review-summary",
+                      is_loading: false,
+                      title: "Review web search summary",
+                      draft_text: synthesis!.text,
+                      summary_model: summaryModel,
+                      draft_metadata: createDraftMetadata(synthesis!),
+                      query_draft: "",
+                      query_notice: null,
+                      sections,
+                      selected_section_ids: selectedSectionIds,
+                    },
+                    options.review_timeout_ms,
+                    signal,
+                  );
+                nextDraftResolution = null;
                 if (resolution === null) {
                   synthesis = createReviewTimeoutSynthesis(
                     selectedResults,
@@ -621,7 +747,7 @@ export function createWebSearchAgentPlugin(
                 );
                 approvedText = resolution.approved_text;
                 edited =
-                  approvedText.trim() !== synthesis.text.trim();
+                  approvedText.trim() !== synthesis!.text.trim();
                 break selectionLoop;
               }
             }
@@ -1090,6 +1216,18 @@ function createReviewTimeoutSynthesis(
     startedAt,
     "summary-review-timeout",
   );
+}
+
+function createDraftMetadata(
+  synthesis: Awaited<ReturnType<typeof synthesizeResults>>,
+) {
+  return {
+    model: synthesis.model_selection,
+    duration_ms: synthesis.duration_ms,
+    token_estimate: synthesis.token_estimate,
+    fallback_used: synthesis.fallback_used,
+    fallback_reason: synthesis.fallback_reason ?? null,
+  };
 }
 
 class EmptyModelCompletionError extends Error {

@@ -183,12 +183,12 @@ retries once with the active model under the same deadline before producing a
 deterministic source-linked summary. The summary-review workflow opens one
 updateable interaction before retrieval; completed query/provider results
 stream into that interaction while submission controls remain unavailable.
-After retrieval, the same interaction becomes selectable so the viewer can
-choose evidence or send it raw. Only the selected evidence reaches summary
-generation. A second ephemeral interaction reports
-the actual model, duration, token estimate, and fallback reason, and allows
-editing, Markdown preview, regeneration with feedback, changing models,
-returning to selection, approval, or cancellation. During evidence selection,
+After retrieval, the plugin automatically generates an initial draft from all
+successful cards and updates the same interaction into summary review. It
+reports the actual model, duration, token estimate, and fallback reason, and
+allows editing, Markdown preview, regeneration with feedback, changing models,
+returning to evidence selection, approval, or cancellation. Only selected
+evidence reaches later regeneration. During evidence selection,
 the viewer can improve a bounded query with the selected summary model or add
 another bounded search; neither query drafts nor results persist after the
 tool call. These internal model calls use the same model transport and

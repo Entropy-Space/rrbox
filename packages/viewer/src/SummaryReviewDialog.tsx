@@ -55,7 +55,10 @@ function ActiveSummaryReviewDialog({
 }) {
   const dialogRef = useRef<HTMLDialogElement | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
-  const [approvedText, setApprovedText] = useState(review.draft_text);
+  const [approvedTextOverride, setApprovedText] = useState<string | null>(
+    null,
+  );
+  const approvedText = approvedTextOverride ?? review.draft_text;
   const [feedbackText, setFeedbackText] = useState("");
   const [queryText, setQueryText] = useState(review.query_draft);
   const [isPreviewing, setIsPreviewing] = useState(false);

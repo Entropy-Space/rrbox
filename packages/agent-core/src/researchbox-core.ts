@@ -2,8 +2,8 @@ import type { Model } from "@earendil-works/pi-ai";
 import type { ModelTransport } from "@researchbox/model-transport";
 import {
   PROJECT_STORE_SCHEMA_VERSION,
+  ProjectStoreConflictError,
   SESSION_DOCUMENT_FORMAT_VERSION,
-  cloneProjectStoreState,
   type ProjectRecord,
   type ProjectStoreChange,
   type ProjectStore,
@@ -88,6 +88,8 @@ type WorkspaceChangeQuarantineSummary = {
 type WorkspaceChangeReconciliation = WorkspaceChangeQuarantineSummary & {
   state_changed: boolean;
 };
+
+const STARTUP_REPAIR_SAVE_ATTEMPTS = 5;
 
 export class ResearchBoxCore {
   private readonly projectStore: ProjectStore;
@@ -413,48 +415,42 @@ export class ResearchBoxCore {
   }
 
   private async initialize(): Promise<void> {
-    const loaded = await this.projectStore.load();
+    let loaded = await this.projectStore.load();
+    if (!loaded) {
+      loaded = await this.initializeEmptyProjectStore();
+    }
     await reconcileOrphanedWorkspaces(
       this.workspaceBackend,
-      loaded?.projects.map((project) => project.project_id) ?? [],
+      loaded.projects.map((project) => project.project_id),
     );
-    if (loaded) {
-      this.state = loaded;
-      this.initializeLocalSelection(loaded);
-      const workspaceChangeReconciliation =
-        await reconcileWorkspaceChanges(
-          loaded,
-          this.workspaceBackend,
-        );
-      this.workspaceChangeQuarantine =
-        workspaceChangeQuarantineFromReconciliation(
-          workspaceChangeReconciliation,
-        );
-      const repairedTranscripts = repairInvalidTranscripts(loaded);
-      const repairedRuns = repairInterruptedSessions(loaded);
-      if (
-        workspaceChangeReconciliation.state_changed ||
-        repairedTranscripts ||
-        repairedRuns
-      ) {
-        await this.persistCurrentState();
-      }
-    } else {
-      const state = createInitialState(this.defaultModelSelection);
-      const projectId = state.active_project_id;
-      await this.workspaceBackend.create(projectId);
-      state.state_revision = 1;
-      try {
-        await this.projectStore.save(state, null);
-      } catch (error) {
-        await this.workspaceBackend.delete(projectId).catch(() => undefined);
-        throw error;
-      }
-      this.state = state;
-      this.initializeLocalSelection(state);
-    }
+    const repaired = await repairPersistedStateOnStartup(
+      loaded,
+      this.projectStore,
+      this.workspaceBackend,
+    );
+    this.state = repaired.state;
+    this.initializeLocalSelection(repaired.state);
+    this.workspaceChangeQuarantine =
+      workspaceChangeQuarantineFromReconciliation(
+        repaired.workspace_change_reconciliation,
+      );
     this.ensurePersistedModelsRegistered();
     await this.activateSelection();
+  }
+
+  private async initializeEmptyProjectStore(): Promise<ProjectStoreState> {
+    const state = createInitialState(this.defaultModelSelection);
+    const projectId = state.active_project_id;
+    await this.workspaceBackend.create(projectId);
+    state.state_revision = 1;
+    try {
+      await this.projectStore.save(state, null);
+      return state;
+    } catch (error) {
+      const canonical = await this.rollbackWorkspaceCreation(projectId);
+      if (canonical) return canonical;
+      throw error;
+    }
   }
 
   private async handleMutation(
@@ -772,9 +768,7 @@ export class ResearchBoxCore {
         },
       );
     } catch (error) {
-      await this.workspaceBackend
-        .delete(project.project_id)
-        .catch(() => undefined);
+      await this.rollbackWorkspaceCreation(project.project_id);
       throw error;
     }
     this.workspaces.set(
@@ -783,6 +777,28 @@ export class ResearchBoxCore {
     );
     await this.activateSelection();
     await this.emitStateSnapshot(requestId, initialWorkspaceState);
+  }
+
+  private async rollbackWorkspaceCreation(
+    projectId: string,
+  ): Promise<ProjectStoreState | null> {
+    try {
+      const persisted = await this.projectStore.load();
+      if (
+        persisted?.projects.some(
+          (project) => project.project_id === projectId,
+        )
+      ) {
+        return persisted;
+      }
+      await this.workspaceBackend.delete(projectId).catch(() => undefined);
+      return persisted;
+    } catch {
+      // A failed read can mean a durable native commit is still replaying.
+      // Preserve the workspace so startup recovery can decide from canonical
+      // project state instead of deleting data from an indeterminate commit.
+      return null;
+    }
   }
 
   private async updateProject(
@@ -795,10 +811,11 @@ export class ResearchBoxCore {
     if (!project || !normalizedName) return;
     if (!this.ensureManagementIdle(requestId)) return;
     await this.stopActiveRun();
+    const now = new Date().toISOString();
     await this.commitMutation((draft) => {
       const draftProject = findProject(draft, projectId);
       draftProject.name = normalizedName;
-      draftProject.updated_at = new Date().toISOString();
+      draftProject.updated_at = now;
       return draft;
     });
     await this.emitStateSnapshot(requestId);
@@ -853,11 +870,19 @@ export class ResearchBoxCore {
       });
     } catch (error) {
       if (replacementProjectId) {
-        await this.workspaceBackend
-          .delete(replacementProjectId)
-          .catch(() => undefined);
+        await this.rollbackWorkspaceCreation(replacementProjectId);
       }
       throw error;
+    }
+    if (
+      replacementProjectId !== null &&
+      !this.requireState().projects.some(
+        (project) => project.project_id === replacementProjectId,
+      )
+    ) {
+      await this.workspaceBackend
+        .delete(replacementProjectId)
+        .catch(() => undefined);
     }
     if (activeChanged) await this.activateSelection();
     await this.emitStateSnapshot(requestId);
@@ -1054,11 +1079,12 @@ export class ResearchBoxCore {
     if (!normalizedTitle) return;
     if (!this.ensureManagementIdle(requestId)) return;
     await this.stopActiveRun();
+    const now = new Date().toISOString();
     await this.commitMutation((draft) => {
       const session = findSession(draft, sessionId);
       session.title = normalizedTitle;
       session.title_is_custom = true;
-      session.updated_at = new Date().toISOString();
+      session.updated_at = now;
       findProject(draft, projectId).updated_at = session.updated_at;
       return draft;
     });
@@ -1075,6 +1101,7 @@ export class ResearchBoxCore {
     await this.stopActiveRun();
     const state = this.requireState();
     const activeChanged = state.active_session_id === sessionId;
+    const now = new Date().toISOString();
     await this.commitMutation((draft) => {
       draft.sessions = draft.sessions.filter(
         (session) => session.session_id !== sessionId,
@@ -1091,7 +1118,7 @@ export class ResearchBoxCore {
       if (project.last_session_id === sessionId) {
         project.last_session_id = replacement?.session_id ?? null;
       }
-      project.updated_at = new Date().toISOString();
+      project.updated_at = now;
       return draft;
     });
     if (activeChanged) await this.activateSelection();
@@ -1303,17 +1330,6 @@ export class ResearchBoxCore {
       return draft;
     });
     this.installCommittedState(commit.state, requestedSelection);
-  }
-
-  private async persistCurrentState(): Promise<void> {
-    const state = this.requireState();
-    const snapshot = cloneProjectStoreState(state);
-    await this.commitMutation((draft) => {
-      draft.projects = snapshot.projects;
-      draft.sessions = snapshot.sessions;
-      draft.documents = snapshot.documents;
-      return draft;
-    });
   }
 
   private async commitMutation(
@@ -2325,6 +2341,70 @@ async function reconcileWorkspaceChanges(
   };
 }
 
+type StartupStateRepairResult = {
+  state: ProjectStoreState;
+  workspace_change_reconciliation: WorkspaceChangeReconciliation;
+};
+
+async function repairPersistedStateOnStartup(
+  initialState: ProjectStoreState,
+  projectStore: ProjectStore,
+  workspaceBackend: WorkspaceBackend,
+): Promise<StartupStateRepairResult> {
+  let state = initialState;
+
+  for (
+    let attempt = 0;
+    attempt < STARTUP_REPAIR_SAVE_ATTEMPTS;
+    attempt += 1
+  ) {
+    const workspaceChangeReconciliation =
+      await reconcileWorkspaceChanges(state, workspaceBackend);
+    const repairedTranscripts = repairInvalidTranscripts(state);
+    const repairedRuns = repairInterruptedSessions(state);
+    const stateChanged =
+      workspaceChangeReconciliation.state_changed ||
+      repairedTranscripts ||
+      repairedRuns;
+
+    if (!stateChanged) {
+      return {
+        state,
+        workspace_change_reconciliation:
+          workspaceChangeReconciliation,
+      };
+    }
+
+    const expectedRevision = state.state_revision;
+    state.state_revision = expectedRevision + 1;
+    try {
+      await projectStore.save(state, expectedRevision);
+      return {
+        state,
+        workspace_change_reconciliation:
+          workspaceChangeReconciliation,
+      };
+    } catch (error) {
+      if (
+        !(error instanceof ProjectStoreConflictError) ||
+        attempt === STARTUP_REPAIR_SAVE_ATTEMPTS - 1
+      ) {
+        throw error;
+      }
+    }
+
+    const reloaded = await projectStore.load();
+    if (!reloaded) {
+      throw new Error(
+        "The project store disappeared during startup repair.",
+      );
+    }
+    state = reloaded;
+  }
+
+  throw new Error("Startup repair exhausted its save attempts.");
+}
+
 type WorkspaceChangeJournalSnapshot = WorkspaceChangeQuarantineSummary & {
   changes_by_project: Map<string, WorkspaceChangeRecord[]>;
 };
@@ -2439,6 +2519,11 @@ async function inspectWorkspaceChange(
       initial.change,
       initial.workspace_revision,
     );
+    if (initial.change.change_id !== changeId) {
+      throw new Error(
+        "The workspace returned a different change receipt.",
+      );
+    }
 
     const pathState = await workspace.getPathState(initial.change.path);
 
@@ -2448,6 +2533,11 @@ async function inspectWorkspaceChange(
       confirmed.change,
       confirmed.workspace_revision,
     );
+    if (confirmed.change.change_id !== changeId) {
+      throw new Error(
+        "The workspace returned a different change receipt.",
+      );
+    }
     if (
       !sameWorkspaceChangeReceipt(initial.change, confirmed.change) ||
       (initial.change.reverted_at_workspace_revision !== null &&

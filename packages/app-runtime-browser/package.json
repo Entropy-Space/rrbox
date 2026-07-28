@@ -8,14 +8,17 @@
     "./core-worker": "./src/researchbox-core-worker.ts",
     "./mock-model": "./src/mock-model.ts",
     "./runtime": "./src/browser-runtime.ts",
+    "./seed-files": "./src/seed-files.ts",
     "./workspace-transfer-limits": "./src/workspace-transfer-limits.ts"
   },
   "dependencies": {
     "@researchbox/agent-core": "workspace:*",
     "@researchbox/model-transport": "workspace:*",
+    "@researchbox/project-store": "workspace:*",
     "@researchbox/protocol": "workspace:*",
     "@researchbox/runtime-browser": "workspace:*",
     "@researchbox/storage-browser": "workspace:*",
+    "@researchbox/vfs": "workspace:*",
     "@researchbox/workspace-archive": "workspace:*"
   }
 }

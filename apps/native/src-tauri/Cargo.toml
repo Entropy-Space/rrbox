@@ -4,13 +4,32 @@ version = "0.1.0"
 description = "ResearchBox native application shell"
 authors = ["ResearchBox contributors"]
 edition = "2024"
+default-run = "researchbox-native"
+
+[features]
+storage-test-harness = []
 
 [lib]
 name = "researchbox_native"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[[bin]]
+name = "native-storage-harness"
+path = "src/bin/native-storage-harness.rs"
+required-features = ["storage-test-harness"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+fs2 = "0.4"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tauri = { version = "2", features = [] }
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"

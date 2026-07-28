@@ -25,6 +25,7 @@ type Subscriber = {
 
 export type WorkerCoreTransportOptions = {
   disposeTimeoutMs?: number;
+  onClosed?(): void;
 };
 
 const DEFAULT_DISPOSE_TIMEOUT_MS = 2_000;
@@ -32,6 +33,7 @@ const DEFAULT_DISPOSE_TIMEOUT_MS = 2_000;
 export class WorkerCoreTransport implements CoreTransport {
   private readonly worker: CoreWorker;
   private readonly disposeTimeoutMs: number;
+  private readonly onClosed: (() => void) | undefined;
   private readonly subscribers = new Set<Subscriber>();
   private state: "open" | "closing" | "closed" = "open";
   private disposeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -43,6 +45,7 @@ export class WorkerCoreTransport implements CoreTransport {
     this.worker = worker;
     this.disposeTimeoutMs =
       options.disposeTimeoutMs ?? DEFAULT_DISPOSE_TIMEOUT_MS;
+    this.onClosed = options.onClosed;
     this.worker.addEventListener("message", this.handleMessage);
     this.worker.addEventListener("error", this.handleWorkerError);
     this.worker.addEventListener("messageerror", this.handleMessageError);
@@ -121,6 +124,7 @@ export class WorkerCoreTransport implements CoreTransport {
     }
     if (this.state === "closed") return;
     this.notifyFailure("transport_error");
+    this.finishClosing();
   };
 
   private readonly handleMessageError = (): void => {
@@ -130,6 +134,7 @@ export class WorkerCoreTransport implements CoreTransport {
     }
     if (this.state === "closed") return;
     this.notifyFailure("invalid_event");
+    this.finishClosing();
   };
 
   private readonly finishClosing = (): void => {
@@ -144,6 +149,11 @@ export class WorkerCoreTransport implements CoreTransport {
     this.worker.removeEventListener("messageerror", this.handleMessageError);
     this.worker.terminate();
     this.subscribers.clear();
+    try {
+      this.onClosed?.();
+    } catch {
+      // Resource cleanup callbacks must not make transport closure unsafe.
+    }
   };
 
   private notifyFailure(failure: CoreTransportFailure): void {

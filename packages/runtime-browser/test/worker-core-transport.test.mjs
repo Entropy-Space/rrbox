@@ -58,6 +58,49 @@ test("maps worker failures without coupling subscribers to browser events", () =
   detached.emitError();
 
   assert.deepEqual(failures, ["transport_error"]);
+  assert.equal(detached.terminateCount(), 1);
+  assert.throws(
+    () => transport.send(createCommand("bootstrap", {})),
+    /transport is closed/,
+  );
+});
+
+test("fatal worker events close transport-owned resources", () => {
+  for (const current of [
+    {
+      emit(detached) {
+        detached.emitError();
+      },
+      failure: "transport_error",
+    },
+    {
+      emit(detached) {
+        detached.emitMessageError();
+      },
+      failure: "invalid_event",
+    },
+  ]) {
+    const detached = createDetachedWorker();
+    const failures = [];
+    let closeNotifications = 0;
+    const transport = new WorkerCoreTransport(detached.worker, {
+      onClosed() {
+        closeNotifications += 1;
+      },
+    });
+    transport.subscribe(
+      () => undefined,
+      (failure) => failures.push(failure),
+    );
+
+    current.emit(detached);
+    current.emit(detached);
+    transport.close();
+
+    assert.deepEqual(failures, [current.failure]);
+    assert.equal(detached.terminateCount(), 1);
+    assert.equal(closeNotifications, 1);
+  }
 });
 
 test("waits for graceful disposal acknowledgement before terminating", () => {
@@ -98,6 +141,24 @@ test("forces termination when graceful disposal does not acknowledge", async () 
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(detached.terminateCount(), 1);
   assert.deepEqual(detached.commands, [createCoreWorkerDisposeRequest()]);
+});
+
+test("notifies resource owners after the worker is closed", () => {
+  const detached = createDetachedWorker();
+  let closeNotifications = 0;
+  const transport = new WorkerCoreTransport(detached.worker, {
+    onClosed() {
+      closeNotifications += 1;
+    },
+  });
+
+  transport.close();
+  assert.equal(closeNotifications, 0);
+  detached.emitMessage(createCoreWorkerDisposedAck());
+  detached.emitMessage(createCoreWorkerDisposedAck());
+
+  assert.equal(closeNotifications, 1);
+  assert.equal(detached.terminateCount(), 1);
 });
 
 function coreLifecycleEvent(eventId) {

@@ -49,6 +49,48 @@ test("accepts the deprecated workspace provider composition option", async () =>
   assert.equal(latestState(events).active_session_id, null);
 });
 
+test("concurrent first bootstraps converge before orphan reconciliation", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const createdProjectIds = [];
+  const createWorkspace = provider.create.bind(provider);
+  provider.create = async (projectId, options) => {
+    createdProjectIds.push(projectId);
+    return createWorkspace(projectId, options);
+  };
+  const firstEvents = [];
+  const secondEvents = [];
+  const firstCore = createCore(store, provider, firstEvents);
+  const secondCore = createCore(store, provider, secondEvents);
+
+  await Promise.all([
+    firstCore.handle(createCommand("bootstrap", {})),
+    secondCore.handle(createCommand("bootstrap", {})),
+  ]);
+
+  const canonical = await store.load();
+  assert.ok(canonical);
+  assert.equal(canonical.projects.length, 1);
+  assert.equal(createdProjectIds.length, 2);
+  assert.equal(
+    latestState(firstEvents).active_project_id,
+    canonical.active_project_id,
+  );
+  assert.equal(
+    latestState(secondEvents).active_project_id,
+    canonical.active_project_id,
+  );
+  await provider.open(canonical.active_project_id);
+  const orphanedProjectId = createdProjectIds.find(
+    (projectId) => projectId !== canonical.active_project_id,
+  );
+  assert.ok(orphanedProjectId);
+  await assert.rejects(
+    provider.open(orphanedProjectId),
+    (error) => error?.code === "not_found",
+  );
+});
+
 test("reconciles crash-orphaned workspaces before opening persisted projects", async () => {
   const store = new MemoryProjectStore();
   const provider = createWorkspaceProvider();
@@ -1841,6 +1883,56 @@ test("reads coherent workspace change details from an inactive project", async (
   }
 });
 
+test("change inspection rejects a receipt for another requested change", async () => {
+  const filesystem = new MemoryFileSystem({
+    "/notes.txt": "before",
+  });
+  const provider = new MemoryWorkspaceBackend(() => filesystem);
+  const store = new MemoryProjectStore();
+  const events = [];
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+  const projectId = latestState(events).active_project_id;
+  const workspace = await provider.open(projectId);
+  const write = await workspace.write("/notes.txt", "after", {
+    change: createWorkspaceChangeMetadata("inspection-change"),
+  });
+  const receipt = write.result.change;
+  assert.ok(receipt);
+
+  const getChange = filesystem.getChange.bind(filesystem);
+  filesystem.getChange = async (changeId) => {
+    const result = await getChange(changeId);
+    return {
+      ...result,
+      change:
+        result.change === null
+          ? null
+          : {
+              ...result.change,
+              change_id: "different-change",
+            },
+    };
+  };
+
+  const command = createCommand("workspace_change_read", {
+    project_id: projectId,
+    change_id: receipt.change_id,
+  });
+  await core.handle(command);
+
+  assert.equal(events.at(-1).type, "error");
+  assert.equal(events.at(-1).request_id, command.request_id);
+  assert.equal(
+    events.at(-1).payload.code,
+    "workspace_change_read_failed",
+  );
+  assert.match(
+    events.at(-1).payload.message,
+    /different change receipt/,
+  );
+});
+
 test("reverts a created file and treats repeated reverts as success", async () => {
   const store = new MemoryProjectStore();
   const provider = createWorkspaceProvider();
@@ -3096,6 +3188,64 @@ test("projects keep isolated filesystems without requiring a session", async () 
   assert.equal(replacement.sessions.length, 0);
 });
 
+test("project deletion cleans an unused replacement after a mutation rebase", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  const deletedProjectId = initial.active_project_id;
+  const persistedInitial = await store.load();
+  const concurrentProject = {
+    ...structuredClone(persistedInitial.projects[0]),
+    project_id: "concurrent-project",
+    name: "Concurrent project",
+    created_at: "2026-07-28T00:00:00.000Z",
+    updated_at: "2026-07-28T00:00:00.000Z",
+    last_session_id: null,
+  };
+  await provider.create(concurrentProject.project_id);
+
+  const createWorkspace = provider.create.bind(provider);
+  let replacementProjectId = null;
+  provider.create = async (projectId, options) => {
+    replacementProjectId = projectId;
+    return createWorkspace(projectId, options);
+  };
+  const mutate = store.mutate.bind(store);
+  let rebased = false;
+  store.mutate = async (mutation) => {
+    if (!rebased) {
+      rebased = true;
+      const stale = await store.load();
+      mutation(stale);
+      await mutate((draft) => {
+        draft.projects.push(concurrentProject);
+        return draft;
+      });
+    }
+    return mutate(mutation);
+  };
+
+  await core.handle(
+    createCommand("project_delete", {
+      project_id: deletedProjectId,
+    }),
+  );
+
+  assert.ok(replacementProjectId);
+  assert.deepEqual(
+    (await store.load()).projects.map((project) => project.project_id),
+    [concurrentProject.project_id],
+  );
+  await assert.rejects(
+    provider.open(replacementProjectId),
+    (error) => error?.code === "not_found",
+  );
+  await provider.open(concurrentProject.project_id);
+});
+
 test("project selection remains local across cores sharing one store", async () => {
   const store = new MemoryProjectStore();
   const provider = createWorkspaceProvider();
@@ -3605,6 +3755,63 @@ test("rolls back an imported workspace when project persistence fails", async ()
   );
 });
 
+test("preserves a workspace when a reported save failure already committed", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+
+  const create = provider.create.bind(provider);
+  const remove = provider.delete.bind(provider);
+  let importedProjectId = null;
+  let deletedProjectId = null;
+  provider.create = async (projectId, options) => {
+    if (options?.initial_files !== undefined) {
+      importedProjectId = projectId;
+    }
+    return create(projectId, options);
+  };
+  provider.delete = async (projectId) => {
+    deletedProjectId = projectId;
+    return remove(projectId);
+  };
+  const mutate = store.mutate.bind(store);
+  let loseCommitResponse = true;
+  store.mutate = async (mutation) => {
+    const commit = await mutate(mutation);
+    if (loseCommitResponse && commit.state.projects.length > 1) {
+      loseCommitResponse = false;
+      throw new Error("Commit response was lost");
+    }
+    return commit;
+  };
+
+  await assert.rejects(
+    core.handle(
+      createCommand("project_import", {
+        name: "Durably committed",
+        files: [{ path: "/kept.txt", content: "keep me" }],
+      }),
+    ),
+    /Commit response was lost/,
+  );
+
+  assert.ok(importedProjectId);
+  assert.equal(deletedProjectId, null);
+  assert.equal(
+    (await store.load()).projects.some(
+      (project) => project.project_id === importedProjectId,
+    ),
+    true,
+  );
+  assert.equal(
+    (await (await provider.open(importedProjectId)).read("/kept.txt"))
+      .content,
+    "keep me",
+  );
+});
+
 test("leaves project state unchanged when imported workspace creation fails", async () => {
   const store = new MemoryProjectStore();
   const provider = createWorkspaceProvider();
@@ -4009,6 +4216,61 @@ test("reload repairs an incomplete persisted tool transcript by block identity",
   assert.equal(repaired.summary, "Result unavailable after reload");
   assert.match(repaired.content, /operation may have completed/i);
   assert.equal(latestState(reloadedEvents).active_session_id, sessionId);
+});
+
+test("startup repair retains a concurrent change after a save conflict", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const core = createCore(store, provider, events);
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await core.handle(
+    createCommand("prompt", {
+      project_id: initial.active_project_id,
+      session_id: null,
+      text: "Create an interrupted response",
+    }),
+  );
+
+  const interrupted = await store.load();
+  const assistant = interrupted.documents[0].timeline.at(-1);
+  assert.equal(assistant.type, "assistant_message");
+  assistant.status = "streaming";
+  delete assistant.stop_reason;
+  const expectedRevision = interrupted.state_revision;
+  interrupted.state_revision += 1;
+  await store.save(interrupted, expectedRevision);
+  await core.dispose();
+
+  const save = store.save.bind(store);
+  let repairSaveAttempts = 0;
+  store.save = async (state, expected_revision) => {
+    repairSaveAttempts += 1;
+    if (repairSaveAttempts === 1) {
+      await store.mutate((draft) => {
+        draft.projects[0].name = "Renamed concurrently";
+        return draft;
+      });
+    }
+    await save(state, expected_revision);
+  };
+
+  const reloadedEvents = [];
+  const reloaded = createCore(store, provider, reloadedEvents);
+  await reloaded.handle(createCommand("bootstrap", {}));
+
+  assert.equal(repairSaveAttempts, 2);
+  const repaired = await store.load();
+  assert.equal(repaired.projects[0].name, "Renamed concurrently");
+  const repairedAssistant = repaired.documents[0].timeline.at(-1);
+  assert.equal(repairedAssistant.type, "assistant_message");
+  assert.equal(repairedAssistant.status, "aborted");
+  assert.equal(repairedAssistant.stop_reason, "aborted");
+  assert.equal(
+    latestState(reloadedEvents).projects[0].name,
+    "Renamed concurrently",
+  );
 });
 
 function createCore(

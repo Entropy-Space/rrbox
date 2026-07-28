@@ -20,6 +20,7 @@ test("keeps the proposed workspace surfaces present", async () => {
     "packages/project-store",
     "packages/runtime-browser",
     "packages/storage-browser",
+    "packages/storage-native",
     "packages/vfs",
     "packages/workspace-archive",
   ];
@@ -97,6 +98,10 @@ test("shares browser app runtime composition between web and native", async () =
     nativeManifest.dependencies["@researchbox/app-runtime-browser"],
     "workspace:*",
   );
+  assert.equal(
+    nativeManifest.dependencies["@researchbox/storage-native"],
+    "workspace:*",
+  );
 });
 
 test("keeps framework dependencies out of portable packages", async () => {
@@ -106,6 +111,7 @@ test("keeps framework dependencies out of portable packages", async () => {
     "model-transport",
     "runtime-browser",
     "project-store",
+    "storage-native",
     "vfs",
     "workspace-archive",
   ];

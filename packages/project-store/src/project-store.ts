@@ -13,11 +13,23 @@ export interface ProjectStore {
     state: ProjectStoreState,
     expected_revision: number | null,
   ): Promise<void>;
+  /**
+   * Applies one synchronous mutation to the latest committed state.
+   *
+   * Durable implementations may re-run the callback after an optimistic
+   * conflict. Mutations must therefore be deterministic and side-effect-free
+   * outside the provided draft.
+   */
   mutate(mutation: ProjectStoreMutation): Promise<ProjectStoreCommit>;
   saveInputDraft(update: InputDraftUpdate): Promise<ProjectStoreCommit>;
   subscribe(listener: ProjectStoreChangeListener): () => void;
 }
 
+/**
+ * A synchronous, retry-safe state transformation.
+ *
+ * Return the exact provided draft to commit it, or `null` for a no-op.
+ */
 export type ProjectStoreMutation = (
   draft: ProjectStoreState,
 ) => ProjectStoreState | null;

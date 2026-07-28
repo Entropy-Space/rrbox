@@ -25,6 +25,8 @@ macOS, iOS, and Android.
 - Project-isolated IndexedDB virtual filesystems with `list_files`, bounded
   literal `search_files`, `read_file`, `write_file`, exact-match
   `replace_text`, and reversible `remove_file` tools
+- App-private native persistence through a Rust-owned catalog and one
+  transactional SQLite database per project
 - Atomic file-change receipts with line statistics, live workspace refresh, and
   reload recovery when a mutation commits before its transcript checkpoint
 - Exact before/after change review with a bounded unified diff and a confirmed,
@@ -51,6 +53,7 @@ packages/
   app-runtime-browser/ Shared browser/WebView core composition and locking
   runtime-browser/     Core and LLM Web Worker hosts and transports
   storage-browser/     IndexedDB and OPFS project/workspace adapters
+  storage-native/      Typed native-storage RPC client and adapters
   mock-provider/       Framework-neutral mock model request handler
   vfs/                 Workspace capabilities, errors, and adapters
   vfs-testkit/         Shared backend conformance suite
@@ -59,10 +62,11 @@ packages/
 ```
 
 Applications are composition roots. Reusable packages do not import Next.js,
-Vinext, Tauri, or application files. The native root mounts the shared viewer
-through the same Worker transport and browser-backed core as the web app.
-Typed Tauri filesystem and provider adapters are the next native milestone. See
-[ARCHITECTURE.md](./ARCHITECTURE.md) for the dependency rules.
+Vinext, Tauri, or application files. Both roots mount the shared viewer through
+the same Worker transport and core composition. The browser injects
+IndexedDB/OPFS storage; the native root injects a typed MessagePort/Tauri/Rust
+storage boundary. See [ARCHITECTURE.md](./ARCHITECTURE.md) for the dependency
+rules.
 
 ## Requirements
 
@@ -101,12 +105,17 @@ Run the macOS desktop app:
 pnpm dev:native
 ```
 
-The current native runtime stores projects in IndexedDB and OPFS belonging to
-the Tauri WebView origin. That data is separate from `http://localhost:3000`
-and is not migrated automatically. Development and packaged native builds may
-also use different WebView origins, so this storage is not yet a stable native
-application data boundary. The native model picker currently offers only the
-in-process mock provider.
+The native runtime stores its catalog and project data below Tauri's
+application-data directory. The catalog keeps project ordering, selection,
+lifecycle state, and opaque project-directory mappings. Each project owns a
+separate SQLite database containing its sessions, drafts, workspace content,
+revisions, tombstones, and change receipts. A synced staging journal makes a
+global project-state save replayable before its new revision becomes visible.
+
+Existing experimental IndexedDB/OPFS data from an older native build is left
+untouched but is not migrated automatically yet. It also remains separate from
+the browser app at `http://localhost:3000`. The native model picker currently
+offers only the in-process mock provider.
 
 Tauri's generated Android and iOS projects are intentionally not checked in
 yet. Initialize them from `apps/native` only on a machine with the relevant
@@ -125,8 +134,8 @@ pnpm lint
 pnpm test
 ```
 
-`pnpm test` builds both application frontends, checks the Rust host, and runs
-the shared browser/package test suites.
+`pnpm test` builds both application frontends, checks and tests the Rust host,
+and runs the shared browser/package test suites.
 
 ## Deployment policy
 
@@ -135,23 +144,37 @@ deployment target. Never publish ResearchBox to `chatgpt.site`.
 
 ## Storage
 
-The browser storage package, used by both the web app and the current native
-WebView runtime, stores project metadata, drafts, normalized session timelines,
-transactional file manifests, undo-ready change receipts, and workspace
-revisions in one versioned IndexedDB database. When the current origin can
-successfully create and close an OPFS writable stream, immutable
+The browser storage package stores project metadata, drafts, normalized session
+timelines, transactional file manifests, undo-ready change receipts, and
+workspace revisions in one versioned IndexedDB database. When the current
+origin can successfully create and close an OPFS writable stream, immutable
 content-addressed UTF-8 file objects live in OPFS; otherwise new workspaces keep
 their content inline in IndexedDB. A new chat remains project-scoped draft state
 until its first prompt; its selected model, staged user timeline entry, session,
 and cleared project draft commit atomically before model transport starts.
 Existing chats retain their own model selection.
 
-Storage is origin-local. The browser origin and Tauri WebView origin do not
-share IndexedDB or OPFS, and ResearchBox currently performs no migration
-between them. A native development server and a packaged application can also
-have distinct WebView origins. Native application storage and provider
-networking will replace these WebView-specific edges through typed Tauri IPC
-without changing the viewer/core protocol.
+Browser storage remains origin-local. Native storage is instead application
+private and independent of the WebView origin, so development and packaged
+native builds resolve the same host-managed store. ResearchBox currently
+performs no automatic browser-to-native migration. Native provider networking
+remains a later typed Tauri boundary and does not require changing the
+viewer/core protocol.
+
+The native core still runs in a dedicated Web Worker. It sends versioned,
+snake_case storage requests over a private `MessagePort`; a main-thread broker
+invokes one Tauri command, and a Rust service owns validation, recovery,
+locking, and SQLite transactions. The service uses a small catalog plus opaque
+per-project directories. A durable staging payload and catalog commit marker
+make interrupted global saves replayable without allowing transcript payloads
+to inflate the catalog database. Workspace mutations update content, path
+generation, optional receipt, receipt clock, and revision in one project-local
+transaction.
+
+Native usage reporting distinguishes logical project bytes, SQLite database
+bytes, total on-disk bytes, and workspace/conversation/history/overhead
+categories. The typed API is implemented; viewer presentation and quota policy
+remain separate product work.
 
 An OPFS mutation closes its immutable object before one IndexedDB transaction
 publishes the new manifest pointer, optional receipt, monotonic receipt clock,
@@ -188,14 +211,14 @@ remains in use as the gate so an already-open tab from an older bundle cannot
 race the refined locking scheme.
 
 The memory, inline IndexedDB, and hybrid OPFS workspace backends run the same
-conformance suite. Native-folder and iOS backends can implement the same
-structural workspace capabilities. ZIP is a portable import/export codec rather
+conformance suite. The native backend implements the same structural workspace
+contract over SQLite, while ZIP remains a portable import/export codec rather
 than a live filesystem backend. Workspace paths are case-sensitive Unicode
-logical paths; physical OPFS names are opaque hashes, and native adapters may
-encode names to preserve collisions that the host filesystem cannot represent
-directly. Every workspace operation returns a durable content revision from the
-same atomic read or mutation; revisions include unjournaled writes and removals
-and therefore are not derived from change-receipt count. Recreating a deleted
+logical paths; physical OPFS names are opaque hashes and native logical names
+are database keys, so host filename normalization cannot collapse them. Every
+workspace operation returns a durable content revision from the same atomic
+read or mutation; revisions include unjournaled writes and removals and
+therefore are not derived from change-receipt count. Recreating a deleted
 project id continues its sequence through a durable tombstone instead of
 resetting cached content to an apparently older revision.
 

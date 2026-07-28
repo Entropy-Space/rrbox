@@ -13,6 +13,8 @@ import {
   IndexedDbProjectStore,
   ResearchBoxDatabase,
 } from "@researchbox/storage-browser";
+import type { ProjectStore } from "@researchbox/project-store";
+import type { WorkspaceBackend } from "@researchbox/vfs";
 import {
   startBrowserRuntime,
   type BrowserRuntimeHandle,
@@ -29,7 +31,14 @@ export type ResearchBoxCoreWorkerOptions = {
   host: WorkerHost;
   lock_manager: CommandLockManager;
   create_model_worker(): Worker;
+  create_storage_services?(): ResearchBoxStorageServices;
   providers: ModelProviderDefinition[];
+};
+
+export type ResearchBoxStorageServices = {
+  projectStore: ProjectStore;
+  workspaceBackend: WorkspaceBackend;
+  close(): void | Promise<void>;
 };
 
 export function startResearchBoxCoreWorker(
@@ -39,14 +48,11 @@ export function startResearchBoxCoreWorker(
     host: options.host,
     lockManager: options.lock_manager,
     createServices() {
+      const storageServices =
+        options.create_storage_services?.() ??
+        createBrowserStorageServices();
       const modelWorker = options.create_model_worker();
       const modelGateway = new WorkerModelTransport(modelWorker);
-      const database = new ResearchBoxDatabase();
-      const projectStore = new IndexedDbProjectStore(database);
-      const workspaceBackend = new BrowserWorkspaceBackend(
-        database,
-        researchBoxSeedFiles,
-      );
       const providerCatalog = new ProviderCatalogService({
         model: researchBoxMockModel,
         providers: options.providers,
@@ -64,14 +70,16 @@ export function startResearchBoxCoreWorker(
       return {
         providerCatalog,
         modelTransport: modelGateway,
-        projectStore,
-        workspaceBackend,
-        close() {
+        projectStore: storageServices.projectStore,
+        workspaceBackend: storageServices.workspaceBackend,
+        async close() {
           unsubscribeTransportFailure();
-          projectStore.close();
-          database.close();
-          providerCatalog.close();
-          modelGateway.close();
+          try {
+            await storageServices.close();
+          } finally {
+            providerCatalog.close();
+            modelGateway.close();
+          }
         },
       };
     },
@@ -90,6 +98,22 @@ export function startResearchBoxCoreWorker(
   });
   attachCoreWorkerLifecycle(options.host, () => runtime.dispose());
   return runtime;
+}
+
+function createBrowserStorageServices(): ResearchBoxStorageServices {
+  const database = new ResearchBoxDatabase();
+  const projectStore = new IndexedDbProjectStore(database);
+  return {
+    projectStore,
+    workspaceBackend: new BrowserWorkspaceBackend(
+      database,
+      researchBoxSeedFiles,
+    ),
+    close() {
+      projectStore.close();
+      database.close();
+    },
+  };
 }
 
 export function createResearchBoxProviderDefinitions(options: {

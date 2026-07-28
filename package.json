@@ -14,7 +14,8 @@
     "build:native": "pnpm --filter @researchbox/native build",
     "check:native": "cargo check --manifest-path apps/native/src-tauri/Cargo.toml",
     "start": "pnpm --filter @researchbox/web start",
-    "test": "pnpm run typecheck && pnpm run build && pnpm run check:native && node --experimental-strip-types --test apps/*/test/*.test.mjs packages/*/test/*.test.mjs",
+    "test": "pnpm run typecheck && pnpm run build && pnpm run check:native && pnpm run test:native-rust && node --experimental-strip-types --test apps/*/test/*.test.mjs packages/*/test/*.test.mjs",
+    "test:native-rust": "cargo test --manifest-path apps/native/src-tauri/Cargo.toml",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint apps packages --ignore-pattern dist --ignore-pattern .next"
   },

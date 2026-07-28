@@ -38,26 +38,37 @@ apps/native (Tauri 2)
   │    └─ packages/client + packages/protocol
   ├─ WorkerCoreTransport
   │    └─ workers/core.worker.ts
-  │         └─ packages/app-runtime-browser
-  │              ├─ packages/storage-browser → WebView IndexedDB/OPFS
-  │              ├─ packages/agent-core
-  │              └─ WorkerModelTransport → workers/llm.worker.ts
-  │                   └─ in-process packages/mock-provider handler
+  │         ├─ packages/app-runtime-browser
+  │         │    ├─ packages/agent-core
+  │         │    └─ WorkerModelTransport → workers/llm.worker.ts
+  │         │         └─ in-process packages/mock-provider handler
+  │         └─ packages/storage-native
+  │              └─ typed MessagePort RPC
+  │                   └─ WebView broker → Tauri invoke
   └─ Rust host
-       └─ window lifecycle and packaging; no product commands yet
+       └─ NativeStorageService
+            ├─ catalog.sqlite3
+            └─ projects/<opaque-storage-id>/project.sqlite3
 ```
 
-Both application roots mount the same viewer and browser core composition. The
-web root enables the mock and local OpenAI-compatible providers; the native
-root currently enables only the in-process mock provider.
+Both application roots mount the same viewer and core composition. The web root
+injects IndexedDB/OPFS storage and enables the mock and local
+OpenAI-compatible providers. The native root injects the native storage
+adapters and currently enables only the in-process mock provider.
 
-Native projects currently live in IndexedDB and OPFS belonging to the Tauri
-WebView origin. They neither share nor automatically migrate data from the web
-app's `localhost` origin, and native development and packaged builds may use
-different origins from one another. The next native boundary is typed Tauri
-IPC for application-managed filesystem persistence and provider networking.
-Those adapters can replace the WebView-specific edges without changing
-`CoreTransport` or the viewer/core JSON protocol.
+Native projects live below Tauri's application-data directory, independently
+of the WebView origin. Existing experimental WebView IndexedDB/OPFS data is
+left untouched but is not migrated automatically. Typed Tauri provider
+networking remains the next native host boundary. Neither storage injection nor
+future provider injection changes `CoreTransport` or the viewer/core JSON
+protocol.
+
+Tauri `invoke` belongs to the WebView host rather than the dedicated core
+Worker. Native composition therefore transfers a private `MessagePort` before
+admitting core commands. The Worker-side RPC client validates and correlates
+responses; the main-thread broker validates requests and invokes one versioned
+Rust command. Closing `WorkerCoreTransport` drains the core, terminates the
+Worker, and closes the broker port.
 
 The current single-WebView native composition uses Web Locks when WKWebView
 provides them and otherwise preserves command ordering with a process-local
@@ -113,21 +124,27 @@ against same-origin code. Server-held credentials must remain on the server.
 5. `packages/viewer` depends only on React, UI primitives, the client contract,
    and the protocol. It does not construct workers.
 6. `packages/app-runtime-browser` composes the browser/WebView core lifecycle,
-   command locking, seed data, provider definitions, and browser storage. It
-   imports no application root or framework.
+   command locking, seed data, provider definitions, and a replaceable storage
+   service factory. Its default factory uses browser storage. It imports no
+   application root or framework.
 7. `packages/agent-core` contains a project/session manager above an optional
    active Pi session runtime and depends only on abstract model, project-store,
    and VFS contracts.
 8. `packages/runtime-browser` hosts compatible core and LLM handlers plus the
    Web Worker transport; it does not construct ResearchBox, select providers,
    or import Pi.
-9. `packages/storage-browser` owns concrete IndexedDB and OPFS adapters. The
-   browser app runtime imports it; the portable core does not.
-10. `packages/model-transport`, `packages/protocol`, `packages/project-store`,
-   `packages/vfs`, and `packages/workspace-archive` have no application or
-   framework dependencies. The archive codec depends on VFS reader and seed
-   types, not on a concrete backend.
-11. Applications compose packages; shared packages never import an application
+9. `packages/storage-browser` owns concrete IndexedDB and OPFS adapters.
+   `packages/storage-native` owns the typed native RPC client plus
+   `ProjectStore` and `WorkspaceBackend` façades. Neither is imported by the
+   portable core.
+10. The native application owns Tauri `invoke` and the WebView-side
+    `MessagePort` broker. The shared native storage package has no Tauri
+    dependency.
+11. `packages/model-transport`, `packages/protocol`, `packages/project-store`,
+    `packages/vfs`, and `packages/workspace-archive` have no application or
+    framework dependencies. The archive codec depends on VFS reader and seed
+    types, not on a concrete backend.
+12. Applications compose packages; shared packages never import an application
     or platform host.
 
 ## Serialization
@@ -196,6 +213,43 @@ results are separate entries linked by internal block identifiers. That timeline
 is the viewer state and maps back into the currently supported text-only user
 and tool-result Pi surface. Projects persist their virtual new-chat draft and
 model selection; durable sessions persist their own model selection.
+
+Native persistence implements the same `ProjectStore` snapshot and workspace
+contracts across one catalog and one database per project. The catalog owns the
+global revision, active selection, project ordering, lifecycle markers, and
+stable logical-ID-to-opaque-directory mapping. Project databases own their
+project record, sessions, documents, drafts, workspace files, path generations,
+receipts, and workspace lifecycle metadata.
+
+A global project-state save cannot use one SQLite transaction across those
+files. Before changing a project database, the Rust service writes and
+synchronizes a staging payload, then commits a small catalog marker containing
+the commit identifier and frozen project mapping. Applying each project
+fragment is idempotent. Only after every fragment succeeds does a catalog
+transaction publish the new global revision and remove the marker. Startup,
+load, and save replay a surviving marker before exposing state; orphan staging
+payloads are collectible. Keeping the large payload outside
+`catalog.sqlite3` prevents transient conversation data from permanently
+inflating catalog pages and preserves meaningful per-project disk accounting.
+
+Core project mutations remain synchronous TypeScript transformations. The
+native adapter applies them to a loaded snapshot and saves with exact revision
+CAS. A conflict reloads canonical state and may re-run the transformation up to
+a fixed bound, so the portable `ProjectStoreMutation` contract requires
+deterministic, side-effect-free callbacks. No-op mutations neither save nor
+publish a revision. Immediate cross-window invalidation events are not yet
+implemented; the current native product has one WebView.
+
+The Rust service combines a process mutex for catalog state, project-local
+SQLite transactions, and an advisory storage lock. The advisory lock prevents
+a second application process from observing or replaying a cross-database
+commit halfway through. Project removal deliberately retains its opaque
+mapping and workspace lifecycle row until `WorkspaceBackend.delete` reserves
+the next workspace revision and clears heavy rows. This matches the core's
+project-first/workspace-second deletion order and preserves stale-handle and
+identifier-reuse semantics. If a save response is indeterminate, the core
+reloads canonical project state before deciding whether a provisional
+workspace is safe to remove.
 
 `search_files` is a read-only, case-sensitive literal search over a coherent
 workspace snapshot. It accepts either a file or directory scope and returns
@@ -279,7 +333,8 @@ well as a stop between project deletion and workspace cleanup.
 - memory: implemented deterministic test backend
 - IndexedDB: implemented durable metadata, journal, and fallback content backend
 - OPFS: implemented immutable content backend with resumable IndexedDB migration
-- native application storage: planned typed Tauri backend for desktop and mobile
+- native application storage: implemented Rust/SQLite backend behind typed
+  MessagePort and Tauri RPC for desktop and mobile
 - ZIP: implemented deterministic content-transfer codec, not a live backend
 
 The current workspace format contains UTF-8 text files and infers directories
@@ -291,6 +346,15 @@ namespace exactly; their on-disk representation is not a public contract.
 Deleted workspace markers retain only the next project-scoped revision so
 reusing an identifier cannot move the viewer's cache backwards; file content
 and change receipts are still removed.
+
+Native project usage reports three deliberately different measures:
+`logical_bytes` for user payload accounting, SQLite `database_bytes`, and total
+project-directory `disk_bytes`. A category breakdown separates workspace,
+conversation, history, and database overhead bytes. SQLite free pages and WAL
+growth mean physical size need not decrease immediately after logical deletion;
+future quotas should therefore use logical bytes rather than transient disk
+allocation. The typed usage query is not yet exposed through the viewer/core
+protocol.
 
 Browser storage version 9 gives each active workspace an explicit
 `indexeddb` or `opfs` content owner. Migration never performs filesystem I/O in

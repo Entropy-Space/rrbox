@@ -14,6 +14,7 @@
     "@researchbox/client": "workspace:*",
     "@researchbox/mock-provider": "workspace:*",
     "@researchbox/model-transport": "workspace:*",
+    "@researchbox/provider-native": "workspace:*",
     "@researchbox/runtime-browser": "workspace:*",
     "@researchbox/storage-native": "workspace:*",
     "@researchbox/viewer": "workspace:*",

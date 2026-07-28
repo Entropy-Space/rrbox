@@ -2479,8 +2479,11 @@ dependencies = [
 name = "researchbox-native"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "fs2",
+ "futures-util",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2488,6 +2491,8 @@ dependencies = [
  "tauri-build",
  "tempfile",
  "thiserror 2.0.19",
+ "tokio",
+ "tokio-util",
  "uuid",
 ]
 
@@ -3401,7 +3406,19 @@ dependencies = [
  "mio",
  "pin-project-lite",
  "socket2",
+ "tokio-macros",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tokio-macros"
+version = "2.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6328af13490e73a9b4694030fafd93f8c8c6a9dede33e821c3fc63eddf8042ba"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -3413,6 +3430,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

@@ -13,6 +13,7 @@ test("mounts the shared viewer through the native worker transport", async () =>
     tauriSource,
     coreWorkerSource,
     llmWorkerSource,
+    nativeLlmSource,
   ] = await Promise.all([
     readFile(new URL("App.tsx", sourceRoot), "utf8"),
     readFile(new URL("pages/ResearchBoxPage.tsx", sourceRoot), "utf8"),
@@ -24,6 +25,7 @@ test("mounts the shared viewer through the native worker transport", async () =>
     readFile(new URL("lib/tauri.ts", sourceRoot), "utf8"),
     readFile(new URL("workers/core.worker.ts", sourceRoot), "utf8"),
     readFile(new URL("workers/llm.worker.ts", sourceRoot), "utf8"),
+    readFile(new URL("runtime/native-llm.ts", sourceRoot), "utf8"),
   ]);
 
   assert.match(appSource, /@researchbox\/viewer\/styles\.css/);
@@ -34,6 +36,8 @@ test("mounts the shared viewer through the native worker transport", async () =>
   assert.match(transportSource, /new WorkerCoreTransport/);
   assert.match(transportSource, /new MessageChannel/);
   assert.match(transportSource, /createNativeStoragePortBroker/);
+  assert.match(transportSource, /createNativeProviderPortBroker/);
+  assert.match(transportSource, /provider_port:\s*providerChannel\.port2/);
   assert.match(
     transportSource,
     /new URL\("\.\.\/workers\/core\.worker\.ts", import\.meta\.url\)/,
@@ -48,13 +52,26 @@ test("mounts the shared viewer through the native worker transport", async () =>
     coreWorkerSource,
     /workerNavigator\.locks \?\? new InMemoryCommandLockManager\(\)/,
   );
-  assert.match(coreWorkerSource, /include_local_openai:\s*false/);
+  assert.match(coreWorkerSource, /include_local_openai:\s*true/);
+  assert.match(coreWorkerSource, /native_llm_initialize/);
+  assert.match(coreWorkerSource, /initialization\.provider_port/);
   assert.match(
     coreWorkerSource,
     /new URL\("\.\/llm\.worker\.ts", import\.meta\.url\)/,
   );
-  assert.match(llmWorkerSource, /attachNativeMockLlmWorker/);
+  assert.match(llmWorkerSource, /attachNativeLlmWorker/);
+  assert.match(
+    llmWorkerSource,
+    /parseNativeLlmWorkerInitializeMessage/,
+  );
+  assert.match(
+    nativeLlmSource,
+    /NativeOpenAiCompatibleModelTransport/,
+  );
+  assert.match(nativeLlmSource, /nativeMockModel/);
   assert.match(brokerSource, /parseNativeStorageRequest/);
   assert.match(brokerSource, /invokeNativeStorageRequest/);
   assert.match(tauriSource, /invoke<unknown>\(NATIVE_STORAGE_COMMAND/);
+  assert.match(tauriSource, /NATIVE_PROVIDER_FETCH_COMMAND/);
+  assert.match(tauriSource, /NATIVE_PROVIDER_CANCEL_COMMAND/);
 });

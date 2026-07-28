@@ -14,7 +14,11 @@ import {
   NativeStorageRpcClient,
   NativeWorkspaceBackend,
 } from "@researchbox/storage-native";
-import { parseNativeCoreWorkerInitializeMessage } from "../lib/types.ts";
+import {
+  NATIVE_LLM_WORKER_PROTOCOL_VERSION,
+  parseNativeCoreWorkerInitializeMessage,
+  type NativeLlmWorkerInitializeMessage,
+} from "../lib/types.ts";
 
 const host = self as unknown as WorkerHost;
 const workerNavigator = navigator as WorkerNavigator & {
@@ -39,7 +43,7 @@ host.onmessage = (event) => {
     host,
     lock_manager: lockManager,
     providers: createResearchBoxProviderDefinitions({
-      include_local_openai: false,
+      include_local_openai: true,
     }),
     create_storage_services() {
       return {
@@ -54,10 +58,28 @@ host.onmessage = (event) => {
       };
     },
     create_model_worker() {
-      return new Worker(new URL("./llm.worker.ts", import.meta.url), {
-        type: "module",
-        name: "researchbox-llm",
-      });
+      const worker = new Worker(
+        new URL("./llm.worker.ts", import.meta.url),
+        {
+          type: "module",
+          name: "researchbox-llm",
+        },
+      );
+      const llmInitialization: NativeLlmWorkerInitializeMessage = {
+        protocol_version: NATIVE_LLM_WORKER_PROTOCOL_VERSION,
+        kind: "native_llm_initialize",
+        provider_port: initialization.provider_port,
+      };
+      try {
+        worker.postMessage(llmInitialization, [
+          initialization.provider_port,
+        ]);
+      } catch (error) {
+        worker.terminate();
+        initialization.provider_port.close();
+        throw error;
+      }
+      return worker;
     },
   });
 };

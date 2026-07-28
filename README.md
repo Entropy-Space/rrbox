@@ -15,9 +15,8 @@ macOS, iOS, and Android.
 - Keyboard-accessible search across saved chats in every project
 - Real `@earendil-works/pi-agent-core` loop inside a Web Worker
 - Dedicated LLM Web Worker for multiplexed model requests and cancellation
-- Chat-scoped provider/model picker; the browser includes a built-in mock and
-  dynamic OpenAI-compatible discovery at `localhost:4141`, while Tauri
-  currently exposes the mock only
+- Chat-scoped provider/model picker with a built-in mock and dynamic
+  OpenAI-compatible discovery at `localhost:4141` in both browser and Tauri
 - Versioned, runtime-validated JSON commands and events
 - Streaming mock-model service with a real tool-result continuation loop
 - One canonical, ordered timeline that preserves reasoning, assistant text,
@@ -54,6 +53,7 @@ packages/
   runtime-browser/     Core and LLM Web Worker hosts and transports
   storage-browser/     IndexedDB and OPFS project/workspace adapters
   storage-native/      Typed native-storage RPC client and adapters
+  provider-native/     Typed native-provider HTTP streaming RPC client
   mock-provider/       Framework-neutral mock model request handler
   vfs/                 Workspace capabilities, errors, and adapters
   vfs-testkit/         Shared backend conformance suite
@@ -88,7 +88,9 @@ The OpenAI-compatible provider expects `GET /v1/models` and streaming
 exposes only those two calls through same-origin routes because the browser
 cannot assume the gateway enables CORS. The mock provider remains available
 when the local gateway is stopped. Set `RESEARCHBOX_LOCAL_OPENAI_BASE_URL` to
-override the local base URL during development.
+override the web proxy's local base URL during development. The native bridge
+remains fixed to loopback until configurable endpoint and credential policy is
+defined.
 
 ### Native app
 
@@ -114,8 +116,10 @@ global project-state save replayable before its new revision becomes visible.
 
 Existing experimental IndexedDB/OPFS data from an older native build is left
 untouched but is not migrated automatically yet. It also remains separate from
-the browser app at `http://localhost:3000`. The native model picker currently
-offers only the in-process mock provider.
+the browser app at `http://localhost:3000`. The native model picker offers the
+in-process mock and the fixed OpenAI-compatible endpoint at
+`http://127.0.0.1:4141/v1`; Rust owns its bounded HTTP streaming and
+cancellation.
 
 Tauri's generated Android and iOS projects are intentionally not checked in
 yet. Initialize them from `apps/native` only on a machine with the relevant
@@ -158,8 +162,8 @@ Browser storage remains origin-local. Native storage is instead application
 private and independent of the WebView origin, so development and packaged
 native builds resolve the same host-managed store. ResearchBox currently
 performs no automatic browser-to-native migration. Native provider networking
-remains a later typed Tauri boundary and does not require changing the
-viewer/core protocol.
+uses a separate typed Tauri boundary and does not change the viewer/core or
+canonical model-event protocols.
 
 The native core still runs in a dedicated Web Worker. It sends versioned,
 snake_case storage requests over a private `MessagePort`; a main-thread broker

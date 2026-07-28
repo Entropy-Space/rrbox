@@ -44,6 +44,9 @@ importers:
       '@researchbox/model-transport':
         specifier: workspace:*
         version: link:../../packages/model-transport
+      '@researchbox/provider-native':
+        specifier: workspace:*
+        version: link:../../packages/provider-native
       '@researchbox/runtime-browser':
         specifier: workspace:*
         version: link:../../packages/runtime-browser
@@ -215,6 +218,12 @@ importers:
         version: link:../protocol
 
   packages/protocol: {}
+
+  packages/provider-native:
+    dependencies:
+      '@researchbox/model-transport':
+        specifier: workspace:*
+        version: link:../model-transport
 
   packages/runtime-browser:
     dependencies:

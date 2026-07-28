@@ -1,5 +1,8 @@
 import type { CoreTransportFactory } from "@researchbox/client";
 import { WorkerCoreTransport } from "@researchbox/runtime-browser";
+import {
+  createNativeProviderPortBroker,
+} from "./native-provider-broker.ts";
 import { createNativeStoragePortBroker } from "./native-storage-broker.ts";
 import {
   NATIVE_CORE_WORKER_PROTOCOL_VERSION,
@@ -15,25 +18,35 @@ export const createNativeCoreTransport: CoreTransportFactory = () => {
     },
   );
   const storageChannel = new MessageChannel();
+  const providerChannel = new MessageChannel();
   const storageBroker = createNativeStoragePortBroker(
     storageChannel.port1,
+  );
+  const providerBroker = createNativeProviderPortBroker(
+    providerChannel.port1,
   );
   const workerTransport = new WorkerCoreTransport(worker, {
     onClosed() {
       storageBroker.close();
+      providerBroker.close();
     },
   });
   const initialization: NativeCoreWorkerInitializeMessage = {
     protocol_version: NATIVE_CORE_WORKER_PROTOCOL_VERSION,
     kind: "native_core_initialize",
     storage_port: storageChannel.port2,
+    provider_port: providerChannel.port2,
   };
 
   try {
-    worker.postMessage(initialization, [storageChannel.port2]);
+    worker.postMessage(initialization, [
+      storageChannel.port2,
+      providerChannel.port2,
+    ]);
   } catch (error) {
     workerTransport.close();
     storageBroker.close();
+    providerBroker.close();
     throw error;
   }
 

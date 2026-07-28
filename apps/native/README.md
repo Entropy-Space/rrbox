@@ -37,8 +37,20 @@ not displayed in the viewer yet.
 
 Existing experimental native IndexedDB/OPFS data remains untouched but is not
 migrated automatically. Browser data at `http://localhost:3000` is separate.
-Only the in-process mock provider is enabled; native provider networking is the
-next platform boundary.
+
+The native model worker exposes both the in-process mock provider and an
+OpenAI-compatible provider at `http://127.0.0.1:4141/v1`. The WebView cannot
+open arbitrary native URLs: a typed `MessagePort` broker permits only
+`GET /models` and `POST /chat/completions`, and Rust owns the HTTP connection,
+timeouts, response limits, streaming, and cancellation. The existing
+TypeScript OpenAI transport remains the only SSE and tool-call parser. If the
+local provider is unavailable, only that catalog entry becomes unavailable;
+the mock provider remains usable.
+
+On macOS, `127.0.0.1` refers to the same Mac running ResearchBox. On iOS and
+Android it refers to the device or emulator, not the development Mac. A
+configurable, authenticated LAN provider endpoint is intentionally deferred
+until its network and credential policy is designed.
 
 Run the native app during development from the repository root:
 

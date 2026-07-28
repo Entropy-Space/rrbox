@@ -43,7 +43,7 @@ export function attachNativeMockLlmWorker(
 }
 
 export function createInProcessFetch(
-  requestHandler: InProcessRequestHandler,
+  requestHandler: InProcessRequestHandler = handleMockModelRequest,
 ): typeof fetch {
   return async (input, init) => {
     const request = new Request(input, init);

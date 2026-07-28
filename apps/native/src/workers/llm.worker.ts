@@ -1,8 +1,18 @@
 /// <reference lib="webworker" />
 
 import type { LlmWorkerHost } from "@researchbox/runtime-browser";
-import { attachNativeMockLlmWorker } from "../runtime/native-mock-llm.ts";
+import {
+  parseNativeLlmWorkerInitializeMessage,
+} from "../lib/types.ts";
+import { attachNativeLlmWorker } from "../runtime/native-llm.ts";
 
-attachNativeMockLlmWorker(self as unknown as LlmWorkerHost);
+const host = self as unknown as LlmWorkerHost;
+
+host.onmessage = (event) => {
+  const initialization = parseNativeLlmWorkerInitializeMessage(
+    event.data,
+  );
+  attachNativeLlmWorker(host, initialization.provider_port);
+};
 
 export {};

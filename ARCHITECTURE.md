@@ -41,26 +41,32 @@ apps/native (Tauri 2)
   │         ├─ packages/app-runtime-browser
   │         │    ├─ packages/agent-core
   │         │    └─ WorkerModelTransport → workers/llm.worker.ts
-  │         │         └─ in-process packages/mock-provider handler
+  │         │         ├─ in-process packages/mock-provider handler
+  │         │         └─ packages/provider-native OpenAI transport
+  │         │              └─ typed MessagePort RPC
+  │         │                   └─ WebView broker → Tauri Channel
   │         └─ packages/storage-native
   │              └─ typed MessagePort RPC
   │                   └─ WebView broker → Tauri invoke
   └─ Rust host
-       └─ NativeStorageService
-            ├─ catalog.sqlite3
-            └─ projects/<opaque-storage-id>/project.sqlite3
+       ├─ NativeStorageService
+       │    ├─ catalog.sqlite3
+       │    └─ projects/<opaque-storage-id>/project.sqlite3
+       └─ ProviderService
+            └─ fixed HTTP routes → 127.0.0.1:4141/v1
 ```
 
 Both application roots mount the same viewer and core composition. The web root
 injects IndexedDB/OPFS storage and enables the mock and local
 OpenAI-compatible providers. The native root injects the native storage
-adapters and currently enables only the in-process mock provider.
+adapters and enables the same provider choices through a distinct native
+network boundary.
 
 Native projects live below Tauri's application-data directory, independently
 of the WebView origin. Existing experimental WebView IndexedDB/OPFS data is
 left untouched but is not migrated automatically. Typed Tauri provider
-networking remains the next native host boundary. Neither storage injection nor
-future provider injection changes `CoreTransport` or the viewer/core JSON
+networking uses a second private `MessagePort` and Tauri Channel. Neither
+storage nor provider injection changes `CoreTransport` or the viewer/core JSON
 protocol.
 
 Tauri `invoke` belongs to the WebView host rather than the dedicated core
@@ -134,9 +140,10 @@ against same-origin code. Server-held credentials must remain on the server.
    Web Worker transport; it does not construct ResearchBox, select providers,
    or import Pi.
 9. `packages/storage-browser` owns concrete IndexedDB and OPFS adapters.
-   `packages/storage-native` owns the typed native RPC client plus
-   `ProjectStore` and `WorkspaceBackend` façades. Neither is imported by the
-   portable core.
+   `packages/storage-native` owns the typed native storage RPC client plus
+   `ProjectStore` and `WorkspaceBackend` façades.
+   `packages/provider-native` owns the typed native provider RPC client and
+   constrained fetch adapter. None is imported by the portable core.
 10. The native application owns Tauri `invoke` and the WebView-side
     `MessagePort` broker. The shared native storage package has no Tauri
     dependency.
@@ -184,10 +191,15 @@ stored yet. A future fully browser-only composition can replace the bridge with
 a CORS-capable local gateway or an in-browser/Wasm provider adapter without
 changing the core/viewer protocol.
 
-The native LLM worker currently exposes only the deterministic mock provider.
-It calls the framework-neutral mock request handler in-process, so it needs no
-HTTP server or provider credentials. Typed Tauri provider networking is the
-next native provider boundary.
+The native LLM worker also keeps the deterministic mock handler in-process.
+For `local-openai`, it sends fixed-route fetch operations over a transferred
+`MessagePort`; the WebView broker invokes Rust and relays ordered status,
+filtered headers, raw body chunks, and terminal events over a Tauri Channel.
+Rust permits only `GET /models` and `POST /chat/completions` at the fixed
+loopback base, disables redirects and ambient proxies, bounds bodies and
+timeouts, and owns cancellation. The existing TypeScript
+`OpenAiCompatibleModelTransport` remains the sole JSON/SSE/tool-call parser, so
+browser and native provider output normalize identically.
 
 ## Project and session persistence
 

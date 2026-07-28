@@ -916,6 +916,7 @@ function ToolCallCard({
   isRunActive: boolean;
   onReviewWorkspaceChange: WorkspaceChangeReviewHandler;
 }) {
+  const [isExpanded, setIsExpanded] = useState(false);
   const status = result
     ? result.is_error
       ? "error"
@@ -941,62 +942,102 @@ function ToolCallCard({
     <div
       className="tool-card"
       aria-busy={status === "running"}
+      data-expanded={isExpanded}
     >
-      <span className="visually-hidden" role="status" aria-live="polite">
-        {statusLabel}: {label}
-      </span>
-      <span className={`tool-icon ${status}`} aria-hidden="true">
-        {status === "running" ? (
-          <LoaderCircle size={15} className="spin" />
-        ) : status === "complete" ? (
-          <Check size={14} />
-        ) : (
-          <X size={14} />
-        )}
-      </span>
-      <span className="tool-copy">
-        <strong>{label}</strong>
-        {!block.label && path && <small>{path}</small>}
-        {resultCopy.summary && <small>{resultCopy.summary}</small>}
-        {resultCopy.error_detail && (
-          <small className="tool-error-detail">
-            {resultCopy.error_detail}
-          </small>
-        )}
-        {!result && !isRunActive && (
-          <small>The tool did not return a result.</small>
-        )}
-        {fileChange && (
-          <span className="tool-file-change">
-            <code title={fileChange.path}>
-              {fileChange.path}
-            </code>
-            <span
-              className="tool-change-stats"
-              aria-label={`${fileChange.additions} additions and ${fileChange.deletions} deletions`}
-            >
-              <span className="tool-additions">
-                +{fileChange.additions}
+      <button
+        type="button"
+        className="tool-card-summary"
+        aria-expanded={isExpanded}
+        onClick={() => setIsExpanded((expanded) => !expanded)}
+      >
+        <span className="visually-hidden" role="status" aria-live="polite">
+          {statusLabel}: {label}
+        </span>
+        <span className={`tool-icon ${status}`} aria-hidden="true">
+          {status === "running" ? (
+            <LoaderCircle size={15} className="spin" />
+          ) : status === "complete" ? (
+            <Check size={14} />
+          ) : (
+            <X size={14} />
+          )}
+        </span>
+        <span className="tool-copy">
+          <strong>{label}</strong>
+          {!block.label && path && <small>{path}</small>}
+          {resultCopy.summary && <small>{resultCopy.summary}</small>}
+          {resultCopy.error_detail && (
+            <small className="tool-error-detail">
+              {resultCopy.error_detail}
+            </small>
+          )}
+          {!result && !isRunActive && (
+            <small>The tool did not return a result.</small>
+          )}
+        </span>
+        <ChevronRight
+          size={14}
+          className="tool-card-chevron"
+          aria-hidden="true"
+        />
+      </button>
+      {isExpanded && (
+        <div className="tool-card-details">
+          <ToolCallPayload
+            label="Input"
+            content={JSON.stringify(block.arguments, null, 2) ?? "{}"}
+          />
+          <ToolCallPayload
+            label="Output"
+            content={
+              result
+                ? result.content || "(No output)"
+                : isRunActive
+                  ? "Waiting for tool output…"
+                  : "No result returned."
+            }
+          />
+          {fileChange && (
+            <div className="tool-file-change">
+              <code title={fileChange.path}>{fileChange.path}</code>
+              <span
+                className="tool-change-stats"
+                aria-label={`${fileChange.additions} additions and ${fileChange.deletions} deletions`}
+              >
+                <span className="tool-additions">+{fileChange.additions}</span>
+                <span className="tool-deletions">−{fileChange.deletions}</span>
               </span>
-              <span className="tool-deletions">
-                −{fileChange.deletions}
-              </span>
-            </span>
-            <button
-              className="tool-review-change"
-              type="button"
-              aria-controls="researchbox-workspace"
-              onClick={(event) =>
-                onReviewWorkspaceChange(fileChange, event.currentTarget)
-              }
-            >
-              <FileDiff size={13} aria-hidden="true" />
-              <span>Review change</span>
-            </button>
-          </span>
-        )}
-      </span>
+              <button
+                className="tool-review-change"
+                type="button"
+                aria-controls="researchbox-workspace"
+                onClick={(event) =>
+                  onReviewWorkspaceChange(fileChange, event.currentTarget)
+                }
+              >
+                <FileDiff size={13} aria-hidden="true" />
+                <span>Review change</span>
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
+  );
+}
+
+function ToolCallPayload({
+  label,
+  content,
+}: {
+  label: string;
+  content: string;
+}) {
+  return (
+    <section className="tool-call-payload" aria-label={`${label} payload`}>
+      <h4>{label}</h4>
+      <pre>{content}</pre>
+    </section>
   );
 }
 

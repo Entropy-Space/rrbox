@@ -1780,15 +1780,43 @@
 }
 
 .tool-card {
-  display: flex;
   width: fit-content;
   max-width: 100%;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 11px 8px 8px;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #fcfcfc;
+}
+
+.tool-card-summary {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 9px 8px 8px;
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.tool-card-summary:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: -2px;
+}
+
+.tool-card-chevron {
+  flex: 0 0 auto;
+  margin-left: 2px;
+  color: var(--muted);
+  transition: transform 150ms ease;
+}
+
+.tool-card[data-expanded="true"] .tool-card-chevron {
+  transform: rotate(90deg);
 }
 
 .tool-icon {
@@ -1812,9 +1840,10 @@
   color: var(--danger);
 }
 
-.tool-card > span:last-child {
+.tool-copy {
   display: flex;
   min-width: 0;
+  flex: 1;
   flex-direction: column;
 }
 
@@ -1845,12 +1874,49 @@
   color: var(--danger);
 }
 
+.tool-card-details {
+  width: 560px;
+  max-width: 100%;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+  background: white;
+}
+
+.tool-call-payload + .tool-call-payload {
+  margin-top: 10px;
+}
+
+.tool-call-payload h4 {
+  margin: 0 0 5px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tool-call-payload pre {
+  max-height: 260px;
+  overflow: auto;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  margin: 0;
+  background: var(--soft);
+  color: var(--text);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 10px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .tool-file-change {
   display: flex;
   max-width: 520px;
   align-items: center;
   gap: 10px;
-  margin-top: 5px;
+  margin-top: 10px;
   color: var(--muted-strong);
   font-size: 10px;
 }

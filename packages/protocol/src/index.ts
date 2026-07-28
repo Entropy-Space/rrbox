@@ -1,4 +1,41 @@
-export const PROTOCOL_VERSION = 11 as const;
+export const PROTOCOL_VERSION = 12 as const;
+
+export const SUMMARY_REVIEW_MAX_SECTIONS = 20;
+export const SUMMARY_REVIEW_MAX_TEXT_LENGTH = 256 * 1024;
+
+export type SummaryReviewSource = {
+  title: string;
+  url: string;
+};
+
+export type SummaryReviewSection = {
+  section_id: string;
+  title: string;
+  body: string;
+  sources: SummaryReviewSource[];
+};
+
+export type SummaryReviewRequest = {
+  interaction_id: string;
+  stage: "select-evidence" | "review-summary";
+  title: string;
+  draft_text: string;
+  sections: SummaryReviewSection[];
+  selected_section_ids: string[];
+};
+
+export type SummaryReviewResolution = {
+  decision:
+    | "summarize"
+    | "raw"
+    | "regenerate"
+    | "back"
+    | "approve"
+    | "cancel";
+  approved_text: string;
+  selected_section_ids: string[];
+  feedback_text: string;
+};
 
 export type FileEntry = {
   name: string;
@@ -259,6 +296,13 @@ export type ViewerCommand =
       "abort",
       { project_id: string; session_id: string }
     >
+  | CommandEnvelope<
+      "summary_review_resolve",
+      SessionScope & {
+        interaction_id: string;
+        resolution: SummaryReviewResolution;
+      }
+    >
   | CommandEnvelope<"workspace_export", { project_id: string }>
   | CommandEnvelope<
       "workspace_export_cancel",
@@ -310,6 +354,17 @@ export type CoreEvent =
   | EventEnvelope<"ready", { state: CoreStateSnapshot }>
   | EventEnvelope<"state_snapshot", { state: CoreStateSnapshot }>
   | EventEnvelope<"run_state", SessionScope & { is_running: boolean }>
+  | CorrelatedEventEnvelope<
+      "summary_review_requested",
+      SessionScope & SummaryReviewRequest
+    >
+  | CorrelatedEventEnvelope<
+      "summary_review_resolved",
+      SessionScope & {
+        interaction_id: string;
+        decision: SummaryReviewResolution["decision"];
+      }
+    >
   | EventEnvelope<
       "timeline_entry_appended",
       SessionScope & { entry: TimelineEntry }
@@ -529,6 +584,22 @@ export function parseViewerCommand(value: unknown): ViewerCommand {
         project_id: requireString(payload, "project_id"),
         session_id: requireString(payload, "session_id"),
       });
+    case "summary_review_resolve":
+      assertExactKeys(
+        payload,
+        [
+          "project_id",
+          "session_id",
+          "interaction_id",
+          "resolution",
+        ],
+        "summary_review_resolve payload",
+      );
+      return commandEnvelope("summary_review_resolve", requestId, {
+        ...parseSessionScope(payload),
+        interaction_id: requireString(payload, "interaction_id"),
+        resolution: parseSummaryReviewResolution(payload.resolution),
+      });
     case "workspace_export":
       assertExactKeys(
         payload,
@@ -710,6 +781,34 @@ export function parseCoreEvent(value: unknown): CoreEvent {
         },
         requestId,
       );
+    case "summary_review_requested":
+      return eventEnvelope(
+        "summary_review_requested",
+        eventId,
+        {
+          ...parseSessionScope(payload),
+          ...parseSummaryReviewRequest(payload),
+        },
+        requireEventRequestId(requestId, "summary_review_requested"),
+      );
+    case "summary_review_resolved": {
+      assertExactKeys(
+        payload,
+        ["project_id", "session_id", "interaction_id", "decision"],
+        "summary_review_resolved payload",
+      );
+      const decision = parseSummaryReviewDecision(payload.decision);
+      return eventEnvelope(
+        "summary_review_resolved",
+        eventId,
+        {
+          ...parseSessionScope(payload),
+          interaction_id: requireString(payload, "interaction_id"),
+          decision,
+        },
+        requireEventRequestId(requestId, "summary_review_resolved"),
+      );
+    }
     case "timeline_entry_appended":
       return eventEnvelope(
         "timeline_entry_appended",
@@ -962,7 +1061,8 @@ function requiresErrorRequestId(code: string): boolean {
     code === "workspace_change_not_found" ||
     code === "workspace_change_conflict" ||
     code === "workspace_change_read_failed" ||
-    code === "workspace_change_revert_failed"
+    code === "workspace_change_revert_failed" ||
+    code === "summary_review_not_found"
   );
 }
 
@@ -974,12 +1074,229 @@ function requireEventRequestId(
     | "input_draft_saved"
     | "workspace_export_snapshot"
     | "workspace_change_snapshot"
-    | "workspace_change_reverted",
+    | "workspace_change_reverted"
+    | "summary_review_requested"
+    | "summary_review_resolved",
 ): string {
   if (requestId === undefined) {
     throw new Error(`${eventType} events require request_id.`);
   }
   return requestId;
+}
+
+function parseSummaryReviewRequest(
+  value: Record<string, unknown>,
+): SummaryReviewRequest {
+  assertExactKeys(
+    value,
+    [
+      "project_id",
+      "session_id",
+      "interaction_id",
+      "stage",
+      "title",
+      "draft_text",
+      "sections",
+      "selected_section_ids",
+    ],
+    "summary_review_requested payload",
+  );
+  const sections = requireArray(value, "sections");
+  if (
+    sections.length === 0 ||
+    sections.length > SUMMARY_REVIEW_MAX_SECTIONS
+  ) {
+    throw new Error("Summary review sections are out of bounds.");
+  }
+  const parsedSections = sections.map(parseSummaryReviewSection);
+  const sectionIds = new Set(
+    parsedSections.map((section) => section.section_id),
+  );
+  if (sectionIds.size !== parsedSections.length) {
+    throw new Error("Summary review section ids must be unique.");
+  }
+  const stage = parseSummaryReviewStage(value.stage);
+  const draftText = requireBoundedString(
+    value,
+    "draft_text",
+    SUMMARY_REVIEW_MAX_TEXT_LENGTH,
+    stage === "select-evidence",
+  );
+  const selectedSectionIds = parseSummaryReviewSectionIds(
+    value,
+    "selected_section_ids",
+  );
+  if (
+    selectedSectionIds.length === 0 ||
+    selectedSectionIds.some((sectionId) => !sectionIds.has(sectionId))
+  ) {
+    throw new Error(
+      "Summary review selected section ids must reference available sections.",
+    );
+  }
+  return {
+    interaction_id: requireString(value, "interaction_id"),
+    stage,
+    title: requireBoundedString(value, "title", 200),
+    draft_text: draftText,
+    sections: parsedSections,
+    selected_section_ids: selectedSectionIds,
+  };
+}
+
+function parseSummaryReviewSection(
+  value: unknown,
+): SummaryReviewSection {
+  if (!isRecord(value)) {
+    throw new Error("Summary review section must be an object.");
+  }
+  assertExactKeys(
+    value,
+    ["section_id", "title", "body", "sources"],
+    "summary review section",
+  );
+  const sources = requireArray(value, "sources");
+  if (sources.length > 20) {
+    throw new Error("Summary review sources are out of bounds.");
+  }
+  return {
+    section_id: requireString(value, "section_id"),
+    title: requireBoundedString(value, "title", 500),
+    body: requireBoundedString(
+      value,
+      "body",
+      SUMMARY_REVIEW_MAX_TEXT_LENGTH,
+      true,
+    ),
+    sources: sources.map((source): SummaryReviewSource => {
+      if (!isRecord(source)) {
+        throw new Error("Summary review source must be an object.");
+      }
+      assertExactKeys(
+        source,
+        ["title", "url"],
+        "summary review source",
+      );
+      const url = requireBoundedString(source, "url", 2_048);
+      let parsedUrl: URL;
+      try {
+        parsedUrl = new URL(url);
+      } catch {
+        throw new Error("Summary review source URL is invalid.");
+      }
+      if (
+        parsedUrl.protocol !== "https:" &&
+        parsedUrl.protocol !== "http:"
+      ) {
+        throw new Error("Summary review source URL must use HTTP(S).");
+      }
+      return {
+        title: requireBoundedString(source, "title", 500),
+        url,
+      };
+    }),
+  };
+}
+
+function parseSummaryReviewResolution(
+  value: unknown,
+): SummaryReviewResolution {
+  if (!isRecord(value)) {
+    throw new Error("Summary review resolution must be an object.");
+  }
+  assertExactKeys(
+    value,
+    [
+      "decision",
+      "approved_text",
+      "selected_section_ids",
+      "feedback_text",
+    ],
+    "summary review resolution",
+  );
+  const decision = parseSummaryReviewDecision(value.decision);
+  const approvedText = requireBoundedString(
+    value,
+    "approved_text",
+    SUMMARY_REVIEW_MAX_TEXT_LENGTH,
+    decision !== "approve",
+  );
+  const selectedSectionIds = parseSummaryReviewSectionIds(
+    value,
+    "selected_section_ids",
+  );
+  const feedbackText = requireBoundedString(
+    value,
+    "feedback_text",
+    8 * 1024,
+    true,
+  );
+  if (
+    decision !== "cancel" &&
+    decision !== "back" &&
+    selectedSectionIds.length === 0
+  ) {
+    throw new Error(
+      "Summary review decisions require selected sections.",
+    );
+  }
+  if (decision === "approve" && approvedText.trim().length === 0) {
+    throw new Error("Approved summary reviews require text.");
+  }
+  return {
+    decision,
+    approved_text: approvedText,
+    selected_section_ids: selectedSectionIds,
+    feedback_text: feedbackText,
+  };
+}
+
+function parseSummaryReviewDecision(
+  value: unknown,
+): SummaryReviewResolution["decision"] {
+  if (
+    value !== "summarize" &&
+    value !== "raw" &&
+    value !== "regenerate" &&
+    value !== "back" &&
+    value !== "approve" &&
+    value !== "cancel"
+  ) {
+    throw new Error("Invalid summary review decision.");
+  }
+  return value;
+}
+
+function parseSummaryReviewStage(
+  value: unknown,
+): SummaryReviewRequest["stage"] {
+  if (value !== "select-evidence" && value !== "review-summary") {
+    throw new Error("Invalid summary review stage.");
+  }
+  return value;
+}
+
+function parseSummaryReviewSectionIds(
+  value: Record<string, unknown>,
+  key: string,
+): string[] {
+  const sectionIds = requireArray(value, key).map((item) => {
+    if (typeof item !== "string" || item.length === 0) {
+      throw new Error(
+        "Summary review selected section ids must be strings.",
+      );
+    }
+    return item;
+  });
+  if (
+    sectionIds.length > SUMMARY_REVIEW_MAX_SECTIONS ||
+    new Set(sectionIds).size !== sectionIds.length
+  ) {
+    throw new Error(
+      "Summary review selected section ids are invalid.",
+    );
+  }
+  return sectionIds;
 }
 
 export function parseWorkspaceTransferFiles(
@@ -1876,6 +2193,21 @@ function requireString(
     (!allowEmpty && candidate.length === 0)
   ) {
     throw new Error(`${field} must be a non-empty string.`);
+  }
+  return candidate;
+}
+
+function requireBoundedString(
+  value: Record<string, unknown>,
+  field: string,
+  maximumLength: number,
+  allowEmpty = false,
+): string {
+  const candidate = requireString(value, field, allowEmpty);
+  if (candidate.length > maximumLength) {
+    throw new Error(
+      `${field} must not exceed ${maximumLength} characters.`,
+    );
   }
   return candidate;
 }

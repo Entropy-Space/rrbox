@@ -92,7 +92,7 @@ packages/viewer → browser workspace adapter → browser/archive.worker.ts
 The viewer depends on `CoreTransport`, not on `Worker`. Both applications
 construct `WorkerCoreTransport`, which validates all incoming protocol values,
 isolates subscribers, and owns worker teardown. The viewer and core worker
-exchange only protocol-v11 JSON values. Transport shutdown uses a separate
+exchange only protocol-v12 JSON values. Transport shutdown uses a separate
 versioned control envelope: it asks the worker to abort and drain the core,
 waits for disposal acknowledgement, and force-terminates after a bounded
 timeout if cleanup cannot finish. A
@@ -171,12 +171,17 @@ application composition enables it.
 
 The tool supports a single query or a bounded batch of varied queries, domain
 and recency filters, larger inline excerpts, explicit provider selection, and
-raw or automatic-summary workflows. Search results are normalized into
-provider-independent answers and source records before rendering. Automatic
-summary calls the active session model through a constrained completion hook;
-it uses an independent deadline and falls back to a deterministic source-linked
-summary if the model is unavailable. These internal model calls use the same
-model transport and cancellation boundary as the active agent.
+raw, automatic-summary, or summary-review workflows. Search results are
+normalized into provider-independent answers and source records before
+rendering. Automatic summary calls the active session model through a
+constrained completion hook; it uses an independent deadline and falls back to
+a deterministic source-linked summary if the model is unavailable. The
+summary-review workflow first pauses the tool so the viewer can select evidence
+or send it raw. Only the selected evidence reaches summary generation. A second
+ephemeral interaction allows editing, Markdown preview, regeneration with
+feedback, returning to selection, approval, or cancellation. These internal
+model calls use the same model transport and cancellation boundary as the
+active agent.
 
 Each provider validates query and result bounds before networking, combines
 caller cancellation with a configured timeout, bounds its response before
@@ -186,10 +191,12 @@ tool retain no search results, credentials, or session state.
 
 The fork intentionally excludes upstream URL fetching, arbitrary/local paths,
 browser cookies, API-key configuration, curator servers, persistent result
-storage, repository cloning, and media extraction. Additional providers and
-ordered fallback can be added behind the routing interface without changing
-the tool contract. Adding content fetching later requires a separate SSRF and
-redirect policy; it must not be smuggled through the search tool.
+storage, repository cloning, and media extraction. Its curator is an in-viewer,
+session-bound protocol interaction rather than an HTTP server and retains no
+review state after the active tool call. Additional providers and ordered
+fallback can be added behind the routing interface without changing the tool
+contract. Adding content fetching later requires a separate SSRF and redirect
+policy; it must not be smuggled through the search tool.
 
 ## Python plugin boundary
 

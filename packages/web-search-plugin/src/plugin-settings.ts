@@ -10,7 +10,7 @@ export const MAX_WEB_SEARCH_RESULTS = 20;
 export const DEFAULT_WEB_SEARCH_MAX_OUTPUT_BYTES = 64 * 1024;
 export const MAX_WEB_SEARCH_OUTPUT_BYTES = 256 * 1024;
 export const DEFAULT_WEB_SEARCH_PROVIDER = "auto" as const;
-export const DEFAULT_WEB_SEARCH_WORKFLOW = "auto-summary" as const;
+export const DEFAULT_WEB_SEARCH_WORKFLOW = "summary-review" as const;
 export const DEFAULT_WEB_SEARCH_SUMMARY_TIMEOUT_MS = 30_000;
 export const MAX_WEB_SEARCH_SUMMARY_TIMEOUT_MS = 60_000;
 
@@ -41,6 +41,10 @@ export const webSearchPluginCatalogEntry = {
         "Synthesize results with the active model or return raw evidence.",
       default_value: DEFAULT_WEB_SEARCH_WORKFLOW,
       options: [
+        {
+          value: "summary-review",
+          display_name: "Review summary",
+        },
         {
           value: "auto-summary",
           display_name: "Automatic summary",
@@ -204,11 +208,17 @@ function parseProvider(value: unknown): WebSearchProviderId {
 }
 
 function resolveWorkflow(value: unknown): WebSearchWorkflow {
-  return value === "none" ? value : DEFAULT_WEB_SEARCH_WORKFLOW;
+  return value === "none" || value === "auto-summary"
+    ? value
+    : DEFAULT_WEB_SEARCH_WORKFLOW;
 }
 
 function parseWorkflow(value: unknown): WebSearchWorkflow {
-  if (value !== "none" && value !== "auto-summary") {
+  if (
+    value !== "none" &&
+    value !== "auto-summary" &&
+    value !== "summary-review"
+  ) {
     throw new Error("Invalid web search workflow.");
   }
   return value;

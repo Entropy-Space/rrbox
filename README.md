@@ -114,14 +114,17 @@ agent's tool list updates immediately.
 
 Web search is also opt-in from **Plugins**. The cleaned integration exposes
 only `web_search`; it does not include upstream page fetching, local paths,
-browser-cookie access, curator UI, session storage, cloning, or video/PDF
+browser-cookie access, curator servers, session storage, cloning, or video/PDF
 pipelines. It accepts one focused query or up to four varied queries, optional
-domain and recency filters, and raw or automatic-summary workflows. Automatic
-summary uses the chat's active model and falls back to a deterministic,
-source-linked digest on timeout or model failure. Retrieval is routed through
-a provider interface; Exa MCP is currently the only built-in, zero-config
-provider. Searches have explicit result, response-size, synthesis, and timeout
-bounds and retain no state. See
+domain and recency filters, and raw, automatic-summary, or reviewed-summary
+workflows. Reviewed summary first asks which query results to keep, generates
+from only that evidence, then allows editing, Markdown preview, regeneration
+with feedback, approval, or returning to selection. The review exists only
+while the tool call is active. Automatic summary uses the chat's active model
+and falls back to a deterministic, source-linked digest on timeout or model
+failure. Retrieval is routed through a provider interface; Exa MCP is currently
+the only built-in, zero-config provider. Searches have explicit result,
+response-size, synthesis, and timeout bounds and retain no state. See
 `packages/web-search-plugin/THIRD_PARTY_NOTICES.md` for the MIT-licensed
 upstream attribution.
 

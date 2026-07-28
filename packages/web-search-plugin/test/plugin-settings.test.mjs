@@ -9,7 +9,7 @@ test("resolves disabled, bounded web search defaults", () => {
   assert.deepEqual(resolveWebSearchPluginRuntimeConfiguration(undefined), {
     enabled: false,
     provider: "auto",
-    workflow: "auto-summary",
+    workflow: "summary-review",
     timeout_ms: 20_000,
     summary_timeout_ms: 30_000,
     maximum_results: 5,

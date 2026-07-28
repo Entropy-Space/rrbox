@@ -10,7 +10,10 @@ export const MAX_WEB_SEARCH_QUERIES = 4;
 export const MAX_WEB_SEARCH_DOMAIN_FILTERS = 20;
 
 export type WebSearchRecency = "day" | "week" | "month" | "year";
-export type WebSearchWorkflow = "none" | "auto-summary";
+export type WebSearchWorkflow =
+  | "none"
+  | "auto-summary"
+  | "summary-review";
 export type WebSearchProviderId = "auto" | "exa";
 
 export type WebSearchRequest = {
@@ -55,6 +58,7 @@ export type WebSearchPluginOptions = {
 type WebSearchToolDetails = {
   summary: string;
   query_count: number;
+  selected_query_count: number;
   successful_queries: number;
   total_results: number;
   provider: WebSearchProviderId;
@@ -63,6 +67,8 @@ type WebSearchToolDetails = {
     model: string | null;
     fallback_used: boolean;
     fallback_reason?: string;
+    reviewed: boolean;
+    edited: boolean;
   };
 };
 
@@ -130,9 +136,10 @@ export function createWebSearchAgentPlugin(
         workflow: Type.Optional(Type.Union([
           Type.Literal("none"),
           Type.Literal("auto-summary"),
+          Type.Literal("summary-review"),
         ], {
           description:
-            "none returns provider results; auto-summary synthesizes them with the active model.",
+            "none returns provider results; auto-summary synthesizes immediately; summary-review pauses for user approval.",
         })),
       });
       const webSearch: AgentTool<
@@ -169,20 +176,143 @@ export function createWebSearchAgentPlugin(
             },
             signal,
           );
-          const synthesis = workflow === "auto-summary"
-            ? await synthesizeResults(
+          let selectedResults = queryResults;
+          let synthesis: Awaited<ReturnType<typeof synthesizeResults>> | null =
+            null;
+          let reviewed = false;
+          let edited = false;
+          let selectedSectionIds = queryResults.map(
+            (_result, index) => String(index),
+          );
+          let approvedText: string | undefined;
+          if (workflow === "summary-review") {
+            if (!context.request_summary_review) {
+              return createReviewErrorResult(
+                queries.length,
+                provider,
+                workflow,
+                "Summary review is unavailable in this application.",
+              );
+            }
+            const sections = createReviewSections(queryResults);
+            selectionLoop:
+            while (true) {
+              const selection = await context.request_summary_review(
+                {
+                  stage: "select-evidence",
+                  title: "Select web search evidence",
+                  draft_text: "",
+                  sections,
+                  selected_section_ids: selectedSectionIds,
+                },
+                signal,
+              );
+              if (selection.decision === "cancel") {
+                return createReviewErrorResult(
+                  queries.length,
+                  provider,
+                  workflow,
+                  "Search review was cancelled by the user.",
+                );
+              }
+              if (
+                selection.decision !== "summarize" &&
+                selection.decision !== "raw"
+              ) {
+                throw new Error(
+                  `Invalid evidence selection decision: ${selection.decision}`,
+                );
+              }
+              selectedSectionIds = selection.selected_section_ids;
+              selectedResults = selectQueryResults(
                 queryResults,
+                selectedSectionIds,
+              );
+              reviewed = true;
+              if (selection.decision === "raw") {
+                approvedText = formatRawSearchResults(selectedResults);
+                break;
+              }
+
+              synthesis = await synthesizeResults(
+                selectedResults,
                 context.complete_model,
                 options.summary_timeout_ms,
                 options.maximum_output_bytes,
                 signal,
-              )
-            : null;
-          const successful = queryResults.filter(
+              );
+              while (true) {
+                const resolution = await context.request_summary_review(
+                  {
+                    stage: "review-summary",
+                    title: "Review web search summary",
+                    draft_text: synthesis.text,
+                    sections,
+                    selected_section_ids: selectedSectionIds,
+                  },
+                  signal,
+                );
+                if (resolution.decision === "cancel") {
+                  return createReviewErrorResult(
+                    queries.length,
+                    provider,
+                    workflow,
+                    "Search summary review was cancelled by the user.",
+                  );
+                }
+                if (resolution.decision === "back") {
+                  if (resolution.selected_section_ids.length > 0) {
+                    selectedSectionIds = resolution.selected_section_ids;
+                  }
+                  continue selectionLoop;
+                }
+                if (resolution.decision === "regenerate") {
+                  selectedSectionIds = resolution.selected_section_ids;
+                  selectedResults = selectQueryResults(
+                    queryResults,
+                    selectedSectionIds,
+                  );
+                  synthesis = await synthesizeResults(
+                    selectedResults,
+                    context.complete_model,
+                    options.summary_timeout_ms,
+                    options.maximum_output_bytes,
+                    signal,
+                    resolution.feedback_text,
+                  );
+                  continue;
+                }
+                if (resolution.decision !== "approve") {
+                  throw new Error(
+                    `Invalid summary review decision: ${resolution.decision}`,
+                  );
+                }
+                selectedSectionIds = resolution.selected_section_ids;
+                selectedResults = selectQueryResults(
+                  queryResults,
+                  selectedSectionIds,
+                );
+                approvedText = resolution.approved_text;
+                edited =
+                  approvedText.trim() !== synthesis.text.trim();
+                break selectionLoop;
+              }
+            }
+          } else if (workflow === "auto-summary") {
+            synthesis = await synthesizeResults(
+              queryResults,
+              context.complete_model,
+              options.summary_timeout_ms,
+              options.maximum_output_bytes,
+              signal,
+            );
+            approvedText = synthesis.text;
+          }
+          const successful = selectedResults.filter(
             (result) => result.response !== undefined,
           );
           const output = truncateUtf8(
-            synthesis?.text ?? formatRawSearchResults(queryResults),
+            approvedText ?? formatRawSearchResults(selectedResults),
             options.maximum_output_bytes,
           );
           return {
@@ -192,6 +322,7 @@ export function createWebSearchAgentPlugin(
                 ? `Searched web for “${summarizeQuery(queries[0])}”`
                 : `Searched web with ${queries.length} queries`,
               query_count: queries.length,
+              selected_query_count: selectedResults.length,
               successful_queries: successful.length,
               total_results: successful.reduce(
                 (total, result) =>
@@ -211,6 +342,8 @@ export function createWebSearchAgentPlugin(
                               synthesis.fallback_reason,
                           }
                         : {}),
+                      reviewed,
+                      edited,
                     },
                   }
                 : {}),
@@ -220,6 +353,57 @@ export function createWebSearchAgentPlugin(
       };
       return [webSearch];
     },
+  };
+}
+
+function createReviewSections(results: QueryResult[]) {
+  return results.map((result, index) => ({
+    section_id: String(index),
+    title: result.query,
+    body: result.error ??
+      result.response?.answer ??
+      "No answer text returned.",
+    sources: (result.response?.sources ?? []).map((source) => ({
+      title: source.title,
+      url: source.url,
+    })),
+  }));
+}
+
+function selectQueryResults(
+  results: QueryResult[],
+  selectedSectionIds: string[],
+): QueryResult[] {
+  const selectedIndices = new Set(
+    selectedSectionIds.map((sectionId) => Number(sectionId)),
+  );
+  const selected = results.filter(
+    (_result, index) => selectedIndices.has(index),
+  );
+  if (selected.length === 0) {
+    throw new Error("At least one search result must be selected.");
+  }
+  return selected;
+}
+
+function createReviewErrorResult(
+  queryCount: number,
+  provider: WebSearchProviderId,
+  workflow: WebSearchWorkflow,
+  message: string,
+) {
+  return {
+    content: [{ type: "text" as const, text: message }],
+    details: {
+      summary: message,
+      query_count: queryCount,
+      selected_query_count: 0,
+      successful_queries: 0,
+      total_results: 0,
+      provider,
+      workflow,
+    },
+    isError: true,
   };
 }
 
@@ -313,6 +497,7 @@ async function synthesizeResults(
   timeoutMs: number,
   maximumOutputBytes: number,
   signal?: AbortSignal,
+  feedback?: string,
 ): Promise<{
   text: string;
   model: string | null;
@@ -358,7 +543,7 @@ async function synthesizeResults(
     : null;
   try {
     const completionPromise = completeModel(
-      buildSummaryPrompt(results, maximumOutputBytes),
+      buildSummaryPrompt(results, maximumOutputBytes, feedback),
       completionSignal,
     );
     void completionPromise.catch(() => undefined);
@@ -404,6 +589,7 @@ async function synthesizeResults(
 function buildSummaryPrompt(
   results: QueryResult[],
   maximumEvidenceBytes: number,
+  feedback?: string,
 ): string {
   const evidence = truncateUtf8(
     results.flatMap((result, index) => [
@@ -415,7 +601,7 @@ function buildSummaryPrompt(
     ]).join("\n"),
     maximumEvidenceBytes,
   );
-  return [
+  const prompt = [
     "Write the final web search summary for a research assistant.",
     "Use only the search evidence below.",
     "Be concise and factual. Include key findings and caveats.",
@@ -428,7 +614,17 @@ function buildSummaryPrompt(
     "<search_results>",
     evidence,
     "</search_results>",
-  ].join("\n");
+  ];
+  if (feedback?.trim()) {
+    prompt.push(
+      "",
+      "<user_feedback>",
+      feedback.trim(),
+      "</user_feedback>",
+      "Revise the summary to incorporate this feedback without violating the evidence constraints.",
+    );
+  }
+  return prompt.join("\n");
 }
 
 function formatResponseForSummary(response: WebSearchResponse): string {

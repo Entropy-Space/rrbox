@@ -8,7 +8,7 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v11 command", () => {
+test("round-trips every protocol-v12 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("bootstrap", {
@@ -62,6 +62,17 @@ test("round-trips every protocol-v11 command", () => {
       text: "follow-up",
     }),
     createCommand("abort", { project_id: "p1", session_id: "s1" }),
+    createCommand("summary_review_resolve", {
+      project_id: "p1",
+      session_id: "s1",
+      interaction_id: "review-1",
+      resolution: {
+        decision: "approve",
+        approved_text: "Approved summary",
+        selected_section_ids: ["0"],
+        feedback_text: "",
+      },
+    }),
     createCommand("workspace_export", { project_id: "p1" }),
     createCommand("workspace_export_cancel", {
       target_request_id: "export-request",
@@ -351,6 +362,36 @@ test("round-trips every normalized timeline core event", () => {
       "request-state",
     ),
     coreEvent("run_state", { ...scope, is_running: true }),
+    coreEvent(
+      "summary_review_requested",
+      {
+        ...scope,
+        interaction_id: "review-1",
+        stage: "review-summary",
+        title: "Review web search summary",
+        draft_text: "Draft summary",
+        sections: [{
+          section_id: "0",
+          title: "Query",
+          body: "Evidence",
+          sources: [{
+            title: "Example",
+            url: "https://example.com/",
+          }],
+        }],
+        selected_section_ids: ["0"],
+      },
+      "request-review",
+    ),
+    coreEvent(
+      "summary_review_resolved",
+      {
+        ...scope,
+        interaction_id: "review-1",
+        decision: "approve",
+      },
+      "request-review",
+    ),
     coreEvent("timeline_entry_appended", {
       ...scope,
       entry: timeline[0],
@@ -577,7 +618,7 @@ test("project new-chat draft visibility is optional and strictly boolean", () =>
   );
 });
 
-test("requires request correlation for filesystem, draft, and workspace change results", () => {
+test("requires request correlation for commands and interactive results", () => {
   for (const event of [
     coreEvent("files_snapshot", {
       project_id: "project-1",
@@ -617,6 +658,27 @@ test("requires request correlation for filesystem, draft, and workspace change r
       reverted_at_workspace_revision: 1,
       revert_outcome: "applied",
     }),
+    coreEvent("summary_review_requested", {
+      project_id: "project-1",
+      session_id: "session-1",
+      interaction_id: "review-1",
+      stage: "select-evidence",
+      title: "Select evidence",
+      draft_text: "",
+      sections: [{
+        section_id: "0",
+        title: "Query",
+        body: "Evidence",
+        sources: [],
+      }],
+      selected_section_ids: ["0"],
+    }),
+    coreEvent("summary_review_resolved", {
+      project_id: "project-1",
+      session_id: "session-1",
+      interaction_id: "review-1",
+      decision: "summarize",
+    }),
   ]) {
     assert.throws(() => parseCoreEvent(event), /require request_id/);
   }
@@ -627,6 +689,7 @@ test("requires request correlation for filesystem, draft, and workspace change r
     "workspace_change_conflict",
     "workspace_change_read_failed",
     "workspace_change_revert_failed",
+    "summary_review_not_found",
   ]) {
     assert.throws(
       () =>

@@ -16,6 +16,8 @@ import {
   type AssistantBlock,
   type AssistantMessageEntry,
   type CoreEvent,
+  type SummaryReviewRequest,
+  type SummaryReviewResolution,
   type ToolCallBlock,
   type UserMessageEntry,
   type WorkspaceChangeSummary,
@@ -79,6 +81,14 @@ type ActiveRun = {
   unresolved_tool_blocks: Map<string, string>;
 };
 
+type PendingSummaryReview = {
+  request: SummaryReviewRequest;
+  signal?: AbortSignal;
+  on_abort?: () => void;
+  resolve(resolution: SummaryReviewResolution): void;
+  reject(error: Error): void;
+};
+
 export type StagedPrompt = {
   user_entry: UserMessageEntry;
   run_id: string;
@@ -95,6 +105,7 @@ export class SessionRuntime {
   private readonly unsubscribe: () => void;
   private activeRun: ActiveRun | null = null;
   private runPromise: Promise<void> | null = null;
+  private pendingSummaryReview: PendingSummaryReview | null = null;
 
   constructor(options: SessionRuntimeOptions) {
     this.project_id = options.project_id;
@@ -121,6 +132,8 @@ export class SessionRuntime {
                 prompt,
                 signal,
               ),
+            request_summary_review: (request, signal) =>
+              this.requestSummaryReview(request, signal),
           },
           this.createTools(),
         ),
@@ -177,6 +190,9 @@ export class SessionRuntime {
 
   abort(): void {
     if (this.activeRun) this.activeRun.abort_requested = true;
+    this.rejectSummaryReview(
+      new DOMException("Summary review was cancelled.", "AbortError"),
+    );
     this.agent.abort();
   }
 
@@ -195,6 +211,30 @@ export class SessionRuntime {
       throw new Error("Cannot dispose a running session.");
     }
     this.unsubscribe();
+  }
+
+  resolveSummaryReview(
+    interactionId: string,
+    resolution: SummaryReviewResolution,
+  ): void {
+    const pending = this.pendingSummaryReview;
+    if (!pending || pending.request.interaction_id !== interactionId) {
+      throw new Error("The summary review is no longer pending.");
+    }
+    const availableIds = new Set(
+      pending.request.sections.map((section) => section.section_id),
+    );
+    if (
+      resolution.selected_section_ids.some(
+        (sectionId) => !availableIds.has(sectionId),
+      )
+    ) {
+      throw new Error(
+        "The summary review selected an unavailable section.",
+      );
+    }
+    this.clearPendingSummaryReview();
+    pending.resolve(structuredClone(resolution));
   }
 
   private async executePrompt(text: string, requestId: string): Promise<void> {
@@ -230,6 +270,83 @@ export class SessionRuntime {
     );
     this.emit("run_state", { is_running: true }, requestId);
     await this.completePrompt(requestId);
+  }
+
+  private requestSummaryReview(
+    request: Omit<SummaryReviewRequest, "interaction_id">,
+    signal?: AbortSignal,
+  ): Promise<SummaryReviewResolution> {
+    if (this.pendingSummaryReview) {
+      return Promise.reject(
+        new Error("Another summary review is already pending."),
+      );
+    }
+    if (!this.activeRun) {
+      return Promise.reject(
+        new Error("Summary review requires an active agent run."),
+      );
+    }
+    if (signal?.aborted) {
+      return Promise.reject(
+        new DOMException("Summary review was cancelled.", "AbortError"),
+      );
+    }
+    const review: SummaryReviewRequest = {
+      interaction_id: crypto.randomUUID(),
+      stage: request.stage,
+      title: request.title,
+      draft_text: request.draft_text,
+      sections: structuredClone(request.sections),
+      selected_section_ids: [...request.selected_section_ids],
+    };
+    const promise = new Promise<SummaryReviewResolution>(
+      (resolve, reject) => {
+        const pending: PendingSummaryReview = {
+          request: review,
+          signal,
+          resolve,
+          reject,
+        };
+        if (signal) {
+          pending.on_abort = () => {
+            if (this.pendingSummaryReview !== pending) return;
+            this.clearPendingSummaryReview();
+            reject(
+              new DOMException(
+                "Summary review was cancelled.",
+                "AbortError",
+              ),
+            );
+          };
+          signal.addEventListener("abort", pending.on_abort, {
+            once: true,
+          });
+        }
+        this.pendingSummaryReview = pending;
+      },
+    );
+    this.emit(
+      "summary_review_requested",
+      structuredClone(review),
+      this.activeRun.request_id,
+    );
+    return promise;
+  }
+
+  private rejectSummaryReview(error: Error): void {
+    const pending = this.pendingSummaryReview;
+    if (!pending) return;
+    this.clearPendingSummaryReview();
+    pending.reject(error);
+  }
+
+  private clearPendingSummaryReview(): void {
+    const pending = this.pendingSummaryReview;
+    if (!pending) return;
+    if (pending.signal && pending.on_abort) {
+      pending.signal.removeEventListener("abort", pending.on_abort);
+    }
+    this.pendingSummaryReview = null;
   }
 
   private async completePrompt(requestId: string): Promise<void> {

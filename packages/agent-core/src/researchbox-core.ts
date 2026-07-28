@@ -233,6 +233,9 @@ export class ResearchBoxCore {
       case "abort":
         await this.abort(command);
         return;
+      case "summary_review_resolve":
+        this.resolveSummaryReview(command);
+        return;
       case "prompt":
         await this.prompt(command);
         return;
@@ -693,6 +696,54 @@ export class ResearchBoxCore {
       )
     ) {
       this.requireRuntime().abort();
+    }
+  }
+
+  private resolveSummaryReview(
+    command: Extract<
+      ViewerCommand,
+      { type: "summary_review_resolve" }
+    >,
+  ): void {
+    const runtime = this.runtime;
+    if (
+      runtime?.project_id !== command.payload.project_id ||
+      runtime.session_id !== command.payload.session_id
+    ) {
+      this.emitError(
+        "summary_review_not_found",
+        "The summary review is no longer active.",
+        command.request_id,
+        command.payload.project_id,
+        command.payload.session_id,
+      );
+      return;
+    }
+    try {
+      runtime.resolveSummaryReview(
+        command.payload.interaction_id,
+        command.payload.resolution,
+      );
+      this.emit(
+        "summary_review_resolved",
+        {
+          project_id: command.payload.project_id,
+          session_id: command.payload.session_id,
+          interaction_id: command.payload.interaction_id,
+          decision: command.payload.resolution.decision,
+        },
+        command.request_id,
+      );
+    } catch (error) {
+      this.emitError(
+        "summary_review_not_found",
+        error instanceof Error
+          ? error.message
+          : "The summary review could not be resolved.",
+        command.request_id,
+        command.payload.project_id,
+        command.payload.session_id,
+      );
     }
   }
 

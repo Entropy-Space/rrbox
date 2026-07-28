@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Type } from "@earendil-works/pi-ai";
 import { MemoryProjectStore } from "@researchbox/project-store";
 import { createCommand } from "@researchbox/protocol";
 import {
@@ -29,6 +30,112 @@ const localModel = {
   provider: "local-openai",
   baseUrl: "",
 };
+
+test("summary review pauses a tool until the viewer approves it", async () => {
+  const events = [];
+  const core = createCore(
+    new MemoryProjectStore(),
+    createWorkspaceProvider(),
+    events,
+    {
+      async *stream(request) {
+        const hasReviewResult = request.messages.some(
+          (message) =>
+            message.role === "tool" &&
+            message.tool_name === "review_test",
+        );
+        if (!hasReviewResult) {
+          yield* toolCallEvents({
+            tool_call_id: "review-call",
+            tool_name: "review_test",
+            arguments: {},
+          });
+          yield { type: "done", stop_reason: "tool_use" };
+          return;
+        }
+        yield* textEvents("Used the approved summary.");
+        yield { type: "done", stop_reason: "stop" };
+      },
+    },
+    {
+      plugins: [{
+        id: "review-test",
+        createTools(context) {
+          return [{
+            name: "review_test",
+            label: "Review",
+            description: "Exercise summary review.",
+            parameters: Type.Object({}),
+            async execute(_callId, _params, signal) {
+              const resolution = await context.request_summary_review({
+                stage: "review-summary",
+                title: "Review summary",
+                draft_text: "Draft summary",
+                sections: [{
+                  section_id: "0",
+                  title: "Query",
+                  body: "Evidence",
+                  sources: [{
+                    title: "Source",
+                    url: "https://example.com/",
+                  }],
+                }],
+                selected_section_ids: ["0"],
+              }, signal);
+              return {
+                content: [{
+                  type: "text",
+                  text: resolution.approved_text,
+                }],
+                details: { summary: "Reviewed" },
+              };
+            },
+          }];
+        },
+      }],
+    },
+  );
+
+  await core.handle(createCommand("bootstrap", {}));
+  const state = latestState(events);
+  const prompt = core.handle(createCommand("prompt", {
+    project_id: state.active_project_id,
+    session_id: null,
+    text: "Review this search.",
+  }));
+  await waitForCondition(
+    () => events.some((event) => event.type === "summary_review_requested"),
+  );
+  const review = events.findLast(
+    (event) => event.type === "summary_review_requested",
+  );
+  assert.equal(review.payload.draft_text, "Draft summary");
+
+  await core.handle(createCommand("summary_review_resolve", {
+    project_id: review.payload.project_id,
+    session_id: review.payload.session_id,
+    interaction_id: review.payload.interaction_id,
+    resolution: {
+      decision: "approve",
+      approved_text: "Approved summary",
+      selected_section_ids: ["0"],
+      feedback_text: "",
+    },
+  }));
+  await prompt;
+
+  assert.equal(
+    events.filter((event) => event.type === "summary_review_resolved").length,
+    1,
+  );
+  const finalState = latestState(events);
+  const result = finalState.timeline.find(
+    (entry) =>
+      entry.type === "tool_result" &&
+      entry.tool_name === "review_test",
+  );
+  assert.equal(result.content, "Approved summary");
+});
 
 test("accepts the deprecated workspace provider composition option", async () => {
   const events = [];

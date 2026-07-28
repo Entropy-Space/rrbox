@@ -15,6 +15,8 @@ import {
   type ProjectSummary,
   type ProviderSummary,
   type SessionSummary,
+  type SummaryReviewRequest,
+  type SummaryReviewResolution,
   type TimelineEntry,
   type ViewerCommand,
   type WorkspaceRecoveryNotice,
@@ -32,6 +34,13 @@ import {
 } from "./workspace-transfer.ts";
 
 const SESSION_SELECTION_STORAGE_KEY = "researchbox:session-selection:v1";
+
+export type SummaryReviewView = SummaryReviewRequest & {
+  project_id: string;
+  session_id: string;
+  is_submitting: boolean;
+  error_message: string | null;
+};
 
 export type AgentSessionState = {
   state_revision: number;
@@ -200,9 +209,15 @@ export function useAgentSession(
   const [refreshingProviderIds, setRefreshingProviderIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const [summaryReview, setSummaryReview] =
+    useState<SummaryReviewView | null>(null);
   const transportRef = useRef<CoreTransport | null>(null);
   const pendingManagementRequestRef = useRef<string | null>(null);
   const pendingProviderRefreshRequestRef = useRef(new Map<string, string>());
+  const pendingSummaryReviewResolutionRef = useRef<{
+    request_id: string;
+    interaction_id: string;
+  } | null>(null);
   const workspaceTransferRequestsRef =
     useRef<WorkspaceTransferRequests | null>(null);
   if (workspaceTransferRequestsRef.current === null) {
@@ -372,6 +387,8 @@ export function useAgentSession(
       dispatch({ type: "transport_failed", message });
       pendingManagementRequestRef.current = null;
       pendingProviderRefreshRequestRef.current.clear();
+      pendingSummaryReviewResolutionRef.current = null;
+      setSummaryReview(null);
       workspaceTransferRequestsRef.current?.rejectAll(new Error(message));
       workspaceChangeRequestsRef.current?.rejectAll(new Error(message));
       setRefreshingProviderIds(new Set());
@@ -382,6 +399,46 @@ export function useAgentSession(
       (event) => {
         try {
           setTransportError(null);
+          if (event.type === "summary_review_requested") {
+            setSummaryReview({
+              ...structuredClone(event.payload),
+              is_submitting: false,
+              error_message: null,
+            });
+          } else if (event.type === "summary_review_resolved") {
+            pendingSummaryReviewResolutionRef.current = null;
+            setSummaryReview((current) =>
+              current?.interaction_id === event.payload.interaction_id
+                ? null
+                : current
+            );
+          } else if (
+            event.type === "run_state" &&
+            !event.payload.is_running
+          ) {
+            pendingSummaryReviewResolutionRef.current = null;
+            setSummaryReview((current) =>
+              current?.project_id === event.payload.project_id &&
+                current.session_id === event.payload.session_id
+                ? null
+                : current
+            );
+          } else if (
+            event.type === "error" &&
+            event.request_id ===
+              pendingSummaryReviewResolutionRef.current?.request_id
+          ) {
+            pendingSummaryReviewResolutionRef.current = null;
+            setSummaryReview((current) =>
+              current
+                ? {
+                    ...current,
+                    is_submitting: false,
+                    error_message: event.payload.message,
+                  }
+                : current
+            );
+          }
           const handledWorkspaceTransfer =
             workspaceTransferRequestsRef.current?.accept(event) ?? false;
           const handledWorkspaceChange =
@@ -462,6 +519,8 @@ export function useAgentSession(
       );
       closeTransport();
       if (transportRef.current === transport) transportRef.current = null;
+      pendingSummaryReviewResolutionRef.current = null;
+      setSummaryReview(null);
     };
   }, [createTransport, transport_lifecycle_key]);
 
@@ -754,6 +813,49 @@ export function useAgentSession(
     );
   }, [coreState.active_project_id, coreState.active_session_id, sendCommand]);
 
+  const resolveSummaryReview = useCallback(
+    (resolution: SummaryReviewResolution): void => {
+      const review = summaryReview;
+      if (!review || review.is_submitting) return;
+      const command = createCommand("summary_review_resolve", {
+        project_id: review.project_id,
+        session_id: review.session_id,
+        interaction_id: review.interaction_id,
+        resolution,
+      });
+      const transport = transportRef.current;
+      if (!transport) {
+        setSummaryReview({
+          ...review,
+          error_message: "The browser core is not ready.",
+        });
+        return;
+      }
+      pendingSummaryReviewResolutionRef.current = {
+        request_id: command.request_id,
+        interaction_id: review.interaction_id,
+      };
+      setSummaryReview({
+        ...review,
+        is_submitting: true,
+        error_message: null,
+      });
+      try {
+        transport.send(command);
+      } catch (error) {
+        pendingSummaryReviewResolutionRef.current = null;
+        setSummaryReview({
+          ...review,
+          is_submitting: false,
+          error_message: error instanceof Error
+            ? error.message
+            : "The summary review could not be submitted.",
+        });
+      }
+    },
+    [summaryReview],
+  );
+
   const openFile = useCallback(
     (entry: FileEntry) => {
       if (!coreState.active_project_id) return;
@@ -803,6 +905,8 @@ export function useAgentSession(
     isInputDraftPending,
     isActiveModelReady,
     refreshingProviderIds,
+    summaryReview,
+    resolveSummaryReview,
     submitPrompt,
     updateInputDraft,
     createProject,
@@ -1237,6 +1341,8 @@ export function coreReducer(
     }
     case "workspace_export_snapshot":
     case "workspace_change_snapshot":
+    case "summary_review_requested":
+    case "summary_review_resolved":
       return state;
     case "workspace_change_reverted":
       if (

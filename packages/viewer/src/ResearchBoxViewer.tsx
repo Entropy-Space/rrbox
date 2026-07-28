@@ -55,6 +55,7 @@ import { MarkdownContent } from "./MarkdownContent.tsx";
 import { isStreamingAssistantText } from "./markdown.ts";
 import { ModelSelector } from "./ModelSelector.tsx";
 import { PluginsPage } from "./PluginsPage.tsx";
+import { SummaryReviewDialog } from "./SummaryReviewDialog.tsx";
 import {
   loadPluginSettings,
   savePluginSettings,
@@ -131,6 +132,8 @@ export function ResearchBoxViewer({
     isInputDraftPending,
     isActiveModelReady,
     refreshingProviderIds,
+    summaryReview,
+    resolveSummaryReview,
     submitPrompt,
     updateInputDraft,
     createProject,
@@ -463,6 +466,11 @@ export function ResearchBoxViewer({
         onSelectSession={selectChatSearchResult}
       />
 
+      <SummaryReviewDialog
+        review={summaryReview}
+        onResolve={resolveSummaryReview}
+      />
+
       {activePage === "plugins" && (
         <PluginsPage
           plugins={plugins}
@@ -483,7 +491,7 @@ export function ResearchBoxViewer({
       <section
         className="chat-surface"
         hidden={activePage !== "chat"}
-        inert={modalNavigationOpen ? true : undefined}
+        inert={modalNavigationOpen || summaryReview ? true : undefined}
       >
         <header className="topbar">
           <div className="topbar-leading">

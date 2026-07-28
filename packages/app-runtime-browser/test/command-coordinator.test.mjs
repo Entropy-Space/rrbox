@@ -121,7 +121,7 @@ test("same-session prompts serialize without blocking other sessions", async () 
   assert.deepEqual(started, ["first", "other_session", "second"]);
 });
 
-test("project deletion waits for project runs but abort remains lock-free", async () => {
+test("project deletion waits while run controls remain lock-free", async () => {
   const lockManager = new TestLockManager();
   const coordinator = new BrowserCommandCoordinator(lockManager);
   const promptGate = deferred();
@@ -149,11 +149,28 @@ test("project deletion waits for project runs but abort remains lock-free", asyn
       started.push("abort");
     },
   );
+  const review = coordinator.run(
+    createCommand("summary_review_resolve", {
+      project_id: "project-1",
+      session_id: "session-1",
+      interaction_id: "review-1",
+      resolution: {
+        decision: "approve",
+        approved_text: "Approved",
+        selected_section_ids: ["0"],
+        feedback_text: "",
+      },
+    }),
+    async () => {
+      started.push("review");
+    },
+  );
 
   await waitForCondition(
     () =>
       started.includes("prompt") &&
       started.includes("abort") &&
+      started.includes("review") &&
       lockManager.requests.some(
         (request) =>
           request.name === projectCommandLock("project-1") &&
@@ -163,7 +180,7 @@ test("project deletion waits for project runs but abort remains lock-free", asyn
   assert.equal(started.includes("delete"), false);
 
   promptGate.resolve();
-  await Promise.all([prompt, deletion, abort]);
+  await Promise.all([prompt, deletion, abort, review]);
   assert.equal(started.includes("delete"), true);
   assert.equal(started.indexOf("delete") > started.indexOf("prompt"), true);
 });

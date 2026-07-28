@@ -12,10 +12,20 @@ import {
   type NativeStorageRequest,
   type NativeStorageResponse,
 } from "@researchbox/storage-native";
+import {
+  parsePythonCancelResponse,
+  parsePythonExecuteResponse,
+  type PythonCancelRequest,
+  type PythonCancelResponse,
+  type PythonExecuteRequest,
+  type PythonExecuteResponse,
+} from "@researchbox/python-plugin/protocol";
 
 const NATIVE_STORAGE_COMMAND = "native_storage_request";
 const NATIVE_PROVIDER_FETCH_COMMAND = "native_provider_fetch";
 const NATIVE_PROVIDER_CANCEL_COMMAND = "native_provider_cancel";
+const NATIVE_PYTHON_EXECUTE_COMMAND = "native_python_execute";
+const NATIVE_PYTHON_CANCEL_COMMAND = "native_python_cancel";
 
 export async function invokeNativeStorageRequest(
   request: NativeStorageRequest,
@@ -59,6 +69,31 @@ export async function invokeNativeProviderCancel(
 export const nativeProviderCommands = {
   fetch: invokeNativeProviderFetch,
   cancel: invokeNativeProviderCancel,
+};
+
+export async function invokeNativePythonExecute(
+  request: PythonExecuteRequest,
+): Promise<PythonExecuteResponse> {
+  const response = parsePythonExecuteResponse(
+    await invoke<unknown>(NATIVE_PYTHON_EXECUTE_COMMAND, { request }),
+  );
+  assertMatchingRequestId(response.request_id, request.request_id);
+  return response;
+}
+
+export async function invokeNativePythonCancel(
+  request: PythonCancelRequest,
+): Promise<PythonCancelResponse> {
+  const response = parsePythonCancelResponse(
+    await invoke<unknown>(NATIVE_PYTHON_CANCEL_COMMAND, { request }),
+  );
+  assertMatchingRequestId(response.request_id, request.request_id);
+  return response;
+}
+
+export const nativePythonCommands = {
+  execute: invokeNativePythonExecute,
+  cancel: invokeNativePythonCancel,
 };
 
 function assertMatchingRequestId(

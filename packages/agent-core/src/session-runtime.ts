@@ -26,6 +26,10 @@ import type {
 } from "@researchbox/vfs";
 import { createModelStreamFn } from "./pi-stream.ts";
 import {
+  createAgentPluginTools,
+  type AgentPlugin,
+} from "./agent-plugin.ts";
+import {
   createStreamingAssistantEntry,
   createToolResultEntry,
   finalizeAssistantEntry,
@@ -45,6 +49,7 @@ export type SessionRuntimeOptions = {
   model_transport: ModelTransport;
   model: Model<string>;
   system_prompt: string;
+  plugins?: readonly AgentPlugin[];
   event_sink: CoreEventSink;
   checkpoint: (
     phase: "staged" | "tool_started" | "tool_finished" | "finished",
@@ -103,7 +108,14 @@ export class SessionRuntime {
         systemPrompt: options.system_prompt,
         model: options.model,
         thinkingLevel: options.model.reasoning ? "medium" : "off",
-        tools: this.createTools(),
+        tools: createAgentPluginTools(
+          options.plugins ?? [],
+          {
+            project_id: options.project_id,
+            session_id: options.session_id,
+          },
+          this.createTools(),
+        ),
         messages: timelineToAgentMessages(options.document.timeline),
       },
       sessionId: options.session_id,
@@ -1319,6 +1331,8 @@ function toolLabel(toolName: string, args: unknown): string {
       return `Editing ${path}`;
     case "remove_file":
       return `Removing ${path}`;
+    case "run_python":
+      return "Running Python";
     default:
       return `Listing ${path}`;
   }

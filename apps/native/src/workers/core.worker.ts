@@ -19,6 +19,10 @@ import {
   parseNativeCoreWorkerInitializeMessage,
   type NativeLlmWorkerInitializeMessage,
 } from "../lib/types.ts";
+import { createPythonAgentPlugin } from "@researchbox/python-plugin";
+import {
+  NativePythonRpcClient,
+} from "@researchbox/python-plugin/native";
 
 const host = self as unknown as WorkerHost;
 const workerNavigator = navigator as WorkerNavigator & {
@@ -38,6 +42,9 @@ host.onmessage = (event) => {
     initialization.storage_port,
   );
   const projectStore = new NativeProjectStore(storageClient);
+  const pythonClient = new NativePythonRpcClient(
+    initialization.python_port,
+  );
 
   startResearchBoxCoreWorker({
     host,
@@ -45,6 +52,10 @@ host.onmessage = (event) => {
     providers: createResearchBoxProviderDefinitions({
       include_local_openai: true,
     }),
+    plugins: [createPythonAgentPlugin(pythonClient)],
+    close_plugins() {
+      pythonClient.close();
+    },
     create_storage_services() {
       return {
         projectStore,

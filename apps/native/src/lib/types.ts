@@ -8,8 +8,14 @@ import type {
   NativeProviderFetchRequest,
   NativeProviderFetchResponse,
 } from "@researchbox/provider-native";
+import type {
+  PythonCancelRequest,
+  PythonCancelResponse,
+  PythonExecuteRequest,
+  PythonExecuteResponse,
+} from "@researchbox/python-plugin/protocol";
 
-export const NATIVE_CORE_WORKER_PROTOCOL_VERSION = 2 as const;
+export const NATIVE_CORE_WORKER_PROTOCOL_VERSION = 3 as const;
 export const NATIVE_LLM_WORKER_PROTOCOL_VERSION = 1 as const;
 
 export type NativeCoreWorkerInitializeMessage = {
@@ -17,6 +23,7 @@ export type NativeCoreWorkerInitializeMessage = {
   kind: "native_core_initialize";
   storage_port: MessagePort;
   provider_port: MessagePort;
+  python_port: MessagePort;
 };
 
 export type NativeLlmWorkerInitializeMessage = {
@@ -39,6 +46,15 @@ export type NativeProviderCommands = {
   ): Promise<NativeProviderCancelResponse>;
 };
 
+export type NativePythonCommands = {
+  execute(
+    request: PythonExecuteRequest,
+  ): Promise<PythonExecuteResponse>;
+  cancel(
+    request: PythonCancelRequest,
+  ): Promise<PythonCancelResponse>;
+};
+
 export function parseNativeCoreWorkerInitializeMessage(
   value: unknown,
 ): NativeCoreWorkerInitializeMessage {
@@ -47,6 +63,7 @@ export function parseNativeCoreWorkerInitializeMessage(
     "kind",
     "storage_port",
     "provider_port",
+    "python_port",
   ])) {
     throw new Error("Invalid native core worker initialization.");
   }
@@ -54,7 +71,8 @@ export function parseNativeCoreWorkerInitializeMessage(
     value.protocol_version !== NATIVE_CORE_WORKER_PROTOCOL_VERSION ||
     value.kind !== "native_core_initialize" ||
     !isMessagePort(value.storage_port) ||
-    !isMessagePort(value.provider_port)
+    !isMessagePort(value.provider_port) ||
+    !isMessagePort(value.python_port)
   ) {
     throw new Error("Invalid native core worker initialization.");
   }

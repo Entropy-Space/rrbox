@@ -14,6 +14,7 @@ test("mounts the shared viewer through the native worker transport", async () =>
     coreWorkerSource,
     llmWorkerSource,
     nativeLlmSource,
+    pythonBrokerSource,
   ] = await Promise.all([
     readFile(new URL("App.tsx", sourceRoot), "utf8"),
     readFile(new URL("pages/ResearchBoxPage.tsx", sourceRoot), "utf8"),
@@ -26,6 +27,10 @@ test("mounts the shared viewer through the native worker transport", async () =>
     readFile(new URL("workers/core.worker.ts", sourceRoot), "utf8"),
     readFile(new URL("workers/llm.worker.ts", sourceRoot), "utf8"),
     readFile(new URL("runtime/native-llm.ts", sourceRoot), "utf8"),
+    readFile(
+      new URL("lib/native-python-broker.ts", sourceRoot),
+      "utf8",
+    ),
   ]);
 
   assert.match(appSource, /@researchbox\/viewer\/styles\.css/);
@@ -37,7 +42,9 @@ test("mounts the shared viewer through the native worker transport", async () =>
   assert.match(transportSource, /new MessageChannel/);
   assert.match(transportSource, /createNativeStoragePortBroker/);
   assert.match(transportSource, /createNativeProviderPortBroker/);
+  assert.match(transportSource, /createNativePythonPortBroker/);
   assert.match(transportSource, /provider_port:\s*providerChannel\.port2/);
+  assert.match(transportSource, /python_port:\s*pythonChannel\.port2/);
   assert.match(
     transportSource,
     /new URL\("\.\.\/workers\/core\.worker\.ts", import\.meta\.url\)/,
@@ -55,6 +62,8 @@ test("mounts the shared viewer through the native worker transport", async () =>
   assert.match(coreWorkerSource, /include_local_openai:\s*true/);
   assert.match(coreWorkerSource, /native_llm_initialize/);
   assert.match(coreWorkerSource, /initialization\.provider_port/);
+  assert.match(coreWorkerSource, /NativePythonRpcClient/);
+  assert.match(coreWorkerSource, /createPythonAgentPlugin/);
   assert.match(
     coreWorkerSource,
     /new URL\("\.\/llm\.worker\.ts", import\.meta\.url\)/,
@@ -74,4 +83,8 @@ test("mounts the shared viewer through the native worker transport", async () =>
   assert.match(tauriSource, /invoke<unknown>\(NATIVE_STORAGE_COMMAND/);
   assert.match(tauriSource, /NATIVE_PROVIDER_FETCH_COMMAND/);
   assert.match(tauriSource, /NATIVE_PROVIDER_CANCEL_COMMAND/);
+  assert.match(tauriSource, /NATIVE_PYTHON_EXECUTE_COMMAND/);
+  assert.match(tauriSource, /NATIVE_PYTHON_CANCEL_COMMAND/);
+  assert.match(pythonBrokerSource, /parsePythonRequest/);
+  assert.match(pythonBrokerSource, /nativePythonCommands/);
 });

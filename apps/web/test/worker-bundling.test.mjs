@@ -5,30 +5,39 @@ import test from "node:test";
 const assetsUrl = new URL("../dist/client/assets/", import.meta.url);
 const MAX_FOCUSED_WORKER_BYTES = 256 * 1024;
 
-test("emits and links separate core, LLM, and archive worker bundles", async () => {
+test("emits and links separate core, LLM, Python, and archive worker bundles", async () => {
   const assets = await readdir(assetsUrl);
   const appAsset = findOnly(assets, /^ResearchBoxApp-.*\.js$/);
   const coreAsset = findOnly(assets, /^core\.worker-.*\.js$/);
   const llmAsset = findOnly(assets, /^llm\.worker-.*\.js$/);
+  const pythonAsset = findOnly(assets, /^python\.worker-.*\.js$/);
+  const pythonWasmAsset = findOnly(assets, /^researchbox_python_plugin_bg-.*\.wasm$/);
   const archiveAsset = findOnly(assets, /^archive\.worker-.*\.js$/);
-  const [appSource, coreSource, llmSource, archiveSource] = await Promise.all([
+  const [appSource, coreSource, llmSource, pythonSource, archiveSource] = await Promise.all([
     readFile(new URL(appAsset, assetsUrl), "utf8"),
     readFile(new URL(coreAsset, assetsUrl), "utf8"),
     readFile(new URL(llmAsset, assetsUrl), "utf8"),
+    readFile(new URL(pythonAsset, assetsUrl), "utf8"),
     readFile(new URL(archiveAsset, assetsUrl), "utf8"),
   ]);
 
   assert.match(appSource, new RegExp(escapeRegExp(coreAsset)));
   assert.match(appSource, new RegExp(escapeRegExp(archiveAsset)));
+  assert.doesNotMatch(appSource, new RegExp(escapeRegExp(pythonAsset)));
+  assert.doesNotMatch(appSource, new RegExp(escapeRegExp(pythonWasmAsset)));
   assert.doesNotMatch(appSource, /researchbox-workspace\.json/);
   assert.match(coreSource, new RegExp(escapeRegExp(llmAsset)));
+  assert.match(coreSource, new RegExp(escapeRegExp(pythonAsset)));
   assert.match(coreSource, /researchbox-llm/);
+  assert.match(pythonSource, new RegExp(escapeRegExp(pythonWasmAsset)));
   assert.doesNotMatch(coreSource, /Model endpoint returned/);
+  assert.doesNotMatch(coreSource, new RegExp(escapeRegExp(pythonWasmAsset)));
   assert.doesNotMatch(coreSource, /researchbox-workspace\.json/);
   assert.match(llmSource, /Model endpoint returned/);
   assert.match(archiveSource, /researchbox-workspace\.json/);
   assert.match(archiveSource, /workspace_archive_encoded/);
   assertFocusedWorkerSize("LLM", llmSource);
+  assertFocusedWorkerSize("Python", pythonSource);
   assertFocusedWorkerSize("archive", archiveSource);
 });
 

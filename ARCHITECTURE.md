@@ -153,6 +153,32 @@ against same-origin code. Server-held credentials must remain on the server.
     types, not on a concrete backend.
 12. Applications compose packages; shared packages never import an application
     or platform host.
+13. Optional agent plugins are injected into `packages/agent-core`. The core
+    owns their session-bound tool definitions, while application composition
+    owns executor resources and teardown.
+
+## Python plugin boundary
+
+`packages/python-plugin` defines the `run_python` tool, a strict versioned
+execution protocol, the shared RustPython execution core, and browser/native
+executor adapters. The plugin is absent unless an application passes it to the
+core worker composition.
+
+Each call is stateless and starts a fresh RustPython interpreter. The Python
+surface has no ResearchBox workspace bridge or request API in this version.
+Stdout, stderr, exceptions, execution time, source size, and combined output
+are bounded at the execution boundary.
+
+The browser executor creates a dedicated Worker only for the first Python
+call. That Worker lazily instantiates the RustPython Wasm module and may be
+reused, but not its interpreter state. Aborting or timing out execution
+terminates the Worker; a later call creates a clean replacement.
+
+The native core Worker sends Python operations over a private `MessagePort`.
+The WebView broker invokes typed Tauri commands, and `PythonService` owns the
+blocking RustPython task registry. RustPython's user-signal channel interrupts
+active bytecode on cancellation or timeout. Closing the core transport closes
+the broker and requests cancellation for every active native operation.
 
 ## Serialization
 

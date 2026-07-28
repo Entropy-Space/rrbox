@@ -15,6 +15,7 @@
     "@researchbox/mock-provider": "workspace:*",
     "@researchbox/model-transport": "workspace:*",
     "@researchbox/provider-native": "workspace:*",
+    "@researchbox/python-plugin": "workspace:*",
     "@researchbox/runtime-browser": "workspace:*",
     "@researchbox/storage-native": "workspace:*",
     "@researchbox/viewer": "workspace:*",

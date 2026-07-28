@@ -1,6 +1,7 @@
 import {
   ProviderCatalogService,
   ResearchBoxCore,
+  type AgentPlugin,
   type ModelProviderDefinition,
 } from "@researchbox/agent-core";
 import {
@@ -32,6 +33,8 @@ export type ResearchBoxCoreWorkerOptions = {
   lock_manager: CommandLockManager;
   create_model_worker(): Worker;
   create_storage_services?(): ResearchBoxStorageServices;
+  plugins?: readonly AgentPlugin[];
+  close_plugins?(): void | Promise<void>;
   providers: ModelProviderDefinition[];
 };
 
@@ -73,12 +76,16 @@ export function startResearchBoxCoreWorker(
         projectStore: storageServices.projectStore,
         workspaceBackend: storageServices.workspaceBackend,
         async close() {
-          unsubscribeTransportFailure();
           try {
-            await storageServices.close();
+            await options.close_plugins?.();
           } finally {
-            providerCatalog.close();
-            modelGateway.close();
+            unsubscribeTransportFailure();
+            try {
+              await storageServices.close();
+            } finally {
+              providerCatalog.close();
+              modelGateway.close();
+            }
           }
         },
       };
@@ -91,6 +98,7 @@ export function startResearchBoxCoreWorker(
         providerCatalog: services.providerCatalog,
         model: researchBoxMockModel,
         systemPrompt: researchBoxSystemPrompt,
+        plugins: options.plugins,
         eventSink,
         workspaceTransferOptions: BROWSER_WORKSPACE_ARCHIVE_OPTIONS,
       });

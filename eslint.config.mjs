@@ -22,6 +22,7 @@ const eslintConfig = defineConfig([
     "**/.vinext/**",
     "**/dist/**",
     "**/out/**",
+    "packages/python-plugin/pkg/**",
     "**/next-env.d.ts",
   ]),
 ]);

@@ -24,6 +24,8 @@ macOS, iOS, and Android.
 - Project-isolated IndexedDB virtual filesystems with `list_files`, bounded
   literal `search_files`, `read_file`, `write_file`, exact-match
   `replace_text`, and reversible `remove_file` tools
+- Opt-in, stateless `run_python` tool backed by RustPython: browsers lazily
+  start an isolated Wasm Worker, while native lifecycle stays in Rust
 - App-private native persistence through a Rust-owned catalog and one
   transactional SQLite database per project
 - Atomic file-change receipts with line statistics, live workspace refresh, and
@@ -59,6 +61,7 @@ packages/
   vfs-testkit/         Shared backend conformance suite
   workspace-archive/   Deterministic workspace ZIP capture and codec
   project-store/       Project/session records and persistence contract
+  python-plugin/       Opt-in Python tool, protocol, Rust core, and Wasm
 ```
 
 Applications are composition roots. Reusable packages do not import Next.js,
@@ -72,12 +75,14 @@ rules.
 
 - Node.js 22.19 or newer
 - pnpm 10.30.3
-- Rust 1.85 or newer for native validation and development
+- Rust 1.93 or newer for native validation and RustPython/Wasm development
+- `wasm-pack` 0.13 or newer and the `wasm32-unknown-unknown` Rust target
 
 ## Development
 
 ```bash
 pnpm install
+pnpm run build:python-wasm
 pnpm dev
 ```
 
@@ -91,6 +96,13 @@ when the local gateway is stopped. Set `RESEARCHBOX_LOCAL_OPENAI_BASE_URL` to
 override the web proxy's local base URL during development. The native bridge
 remains fixed to loopback until configurable endpoint and credential policy is
 defined.
+
+Python is composed explicitly by each application rather than built into the
+core. Every `run_python` call starts a fresh interpreter, so globals do not
+persist. Browser code creates the Python Worker and loads RustPython Wasm only
+on first use. Native code crosses a private typed `MessagePort` and Tauri
+command boundary so Rust owns execution, timeout, cancellation, and teardown.
+Network requests and direct workspace access are not exposed to Python yet.
 
 ### Native app
 

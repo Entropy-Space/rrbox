@@ -45,6 +45,10 @@ import {
   stagePrompt,
   type CoreEventSink,
 } from "./session-runtime.ts";
+import {
+  snapshotAgentPlugins,
+  type AgentPlugin,
+} from "./agent-plugin.ts";
 import { emptyAssistantUsage } from "./session-codec.ts";
 import {
   ProviderCatalogService,
@@ -73,6 +77,7 @@ export type ResearchBoxCoreOptions = {
   model: Model<string>;
   providers?: ModelProviderDefinition[];
   systemPrompt: string;
+  plugins?: readonly AgentPlugin[];
   eventSink: CoreEventSink;
   workspaceTransferOptions?: WorkspaceArchiveOptions;
 } & WorkspaceBackendOption;
@@ -98,6 +103,7 @@ export class ResearchBoxCore {
   private readonly providerCatalog: ProviderCatalogService;
   private readonly defaultModelSelection: ModelSelection;
   private readonly systemPrompt: string;
+  private readonly plugins: readonly AgentPlugin[];
   private readonly eventSink: CoreEventSink;
   private readonly workspaceTransferOptions: WorkspaceArchiveOptions | undefined;
   private readonly workspaces = new Map<string, WorkspaceController>();
@@ -152,6 +158,7 @@ export class ResearchBoxCore {
         modelCatalog: options.modelCatalog,
       });
     this.systemPrompt = options.systemPrompt;
+    this.plugins = snapshotAgentPlugins(options.plugins);
     this.eventSink = options.eventSink;
     this.workspaceTransferOptions = snapshotWorkspaceTransferOptions(
       options.workspaceTransferOptions,
@@ -1247,6 +1254,7 @@ export class ResearchBoxCore {
             model_transport: this.modelTransport,
             model: this.requireActiveModel(),
             system_prompt: this.systemPrompt,
+            plugins: this.plugins,
             event_sink: this.eventSink,
             checkpoint: (phase, requestId) =>
               this.enqueueMutation(async () => {

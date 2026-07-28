@@ -3,6 +3,9 @@ import { WorkerCoreTransport } from "@researchbox/runtime-browser";
 import {
   createNativeProviderPortBroker,
 } from "./native-provider-broker.ts";
+import {
+  createNativePythonPortBroker,
+} from "./native-python-broker.ts";
 import { createNativeStoragePortBroker } from "./native-storage-broker.ts";
 import {
   NATIVE_CORE_WORKER_PROTOCOL_VERSION,
@@ -19,16 +22,21 @@ export const createNativeCoreTransport: CoreTransportFactory = () => {
   );
   const storageChannel = new MessageChannel();
   const providerChannel = new MessageChannel();
+  const pythonChannel = new MessageChannel();
   const storageBroker = createNativeStoragePortBroker(
     storageChannel.port1,
   );
   const providerBroker = createNativeProviderPortBroker(
     providerChannel.port1,
   );
+  const pythonBroker = createNativePythonPortBroker(
+    pythonChannel.port1,
+  );
   const workerTransport = new WorkerCoreTransport(worker, {
     onClosed() {
       storageBroker.close();
       providerBroker.close();
+      pythonBroker.close();
     },
   });
   const initialization: NativeCoreWorkerInitializeMessage = {
@@ -36,17 +44,20 @@ export const createNativeCoreTransport: CoreTransportFactory = () => {
     kind: "native_core_initialize",
     storage_port: storageChannel.port2,
     provider_port: providerChannel.port2,
+    python_port: pythonChannel.port2,
   };
 
   try {
     worker.postMessage(initialization, [
       storageChannel.port2,
       providerChannel.port2,
+      pythonChannel.port2,
     ]);
   } catch (error) {
     workerTransport.close();
     storageBroker.close();
     providerBroker.close();
+    pythonBroker.close();
     throw error;
   }
 

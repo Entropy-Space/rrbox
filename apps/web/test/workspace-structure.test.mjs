@@ -18,6 +18,7 @@ test("keeps the proposed workspace surfaces present", async () => {
     "packages/viewer",
     "packages/model-transport",
     "packages/project-store",
+    "packages/python-plugin",
     "packages/runtime-browser",
     "packages/storage-browser",
     "packages/storage-native",
@@ -102,6 +103,14 @@ test("shares browser app runtime composition between web and native", async () =
     nativeManifest.dependencies["@researchbox/storage-native"],
     "workspace:*",
   );
+  assert.equal(
+    webManifest.dependencies["@researchbox/python-plugin"],
+    "workspace:*",
+  );
+  assert.equal(
+    nativeManifest.dependencies["@researchbox/python-plugin"],
+    "workspace:*",
+  );
 });
 
 test("keeps framework dependencies out of portable packages", async () => {
@@ -114,6 +123,7 @@ test("keeps framework dependencies out of portable packages", async () => {
     "storage-native",
     "vfs",
     "workspace-archive",
+    "python-plugin",
   ];
   const forbiddenDependencies = new Set([
     "@tauri-apps/api",

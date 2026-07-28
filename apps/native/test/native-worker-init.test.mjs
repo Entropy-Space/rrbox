@@ -10,14 +10,16 @@ import {
 test("uses distinct strict versions for core and LLM worker initialization", () => {
   const storageChannel = new MessageChannel();
   const providerChannel = new MessageChannel();
+  const pythonChannel = new MessageChannel();
   const coreInitialization = {
     protocol_version: NATIVE_CORE_WORKER_PROTOCOL_VERSION,
     kind: "native_core_initialize",
     storage_port: storageChannel.port1,
     provider_port: providerChannel.port1,
+    python_port: pythonChannel.port1,
   };
 
-  assert.equal(NATIVE_CORE_WORKER_PROTOCOL_VERSION, 2);
+  assert.equal(NATIVE_CORE_WORKER_PROTOCOL_VERSION, 3);
   assert.deepEqual(
     parseNativeCoreWorkerInitializeMessage(coreInitialization),
     coreInitialization,
@@ -54,4 +56,6 @@ test("uses distinct strict versions for core and LLM worker initialization", () 
   storageChannel.port2.close();
   providerChannel.port1.close();
   providerChannel.port2.close();
+  pythonChannel.port1.close();
+  pythonChannel.port2.close();
 });

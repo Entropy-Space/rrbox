@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {
+  WebSearchAggregateError,
+  WebSearchProviderError,
+} from "../src/routing-executor.ts";
 import { createWebSearchAgentPlugin } from "../src/web-search-plugin.ts";
 
 test("searches multiple angles and summarizes with the active model", async () => {
@@ -441,6 +445,282 @@ test("summary-review returns only the user-approved synthesis", async () => {
     reviewed: true,
     edited: true,
   });
+});
+
+test("all-provider review keeps provider evidence independently selectable", async () => {
+  const exaResponse = {
+    query: "example",
+    provider: "exa",
+    answer: "Exa evidence",
+    sources: [{
+      title: "Exa source",
+      url: "https://example.com/exa",
+      snippet: "Exa",
+    }],
+  };
+  const anySearchResponse = {
+    query: "example",
+    provider: "anysearch",
+    answer: "AnySearch evidence",
+    sources: [{
+      title: "AnySearch source",
+      url: "https://example.com/anysearch",
+      snippet: "AnySearch",
+    }],
+  };
+  const plugin = createWebSearchAgentPlugin({
+    async search() {
+      return {
+        query: "example",
+        provider: "all",
+        answer: "Combined provider answer",
+        sources: [
+          ...exaResponse.sources,
+          ...anySearchResponse.sources,
+        ],
+        provider_responses: [exaResponse, anySearchResponse],
+        provider_errors: [],
+      };
+    },
+    close() {},
+  }, {
+    maximum_results: 5,
+    maximum_output_bytes: 64 * 1024,
+    default_provider: "all",
+    default_workflow: "summary-review",
+    summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
+  });
+  let summaryPrompt = "";
+  let reviewCount = 0;
+  const [tool] = plugin.createTools({
+    project_id: "project",
+    session_id: "session",
+    async complete_model(prompt) {
+      summaryPrompt = prompt;
+      return {
+        text: "Selected provider summary",
+        provider_id: "openai",
+        model_id: "test-model",
+      };
+    },
+    async request_summary_review(request) {
+      reviewCount += 1;
+      if (request.stage === "select-evidence") {
+        assert.deepEqual(
+          request.sections.map((section) => ({
+            title: section.title,
+            is_selectable: section.is_selectable,
+          })),
+          [
+            { title: "example · Exa", is_selectable: true },
+            { title: "example · AnySearch", is_selectable: true },
+          ],
+        );
+        assert.deepEqual(request.selected_section_ids, ["0", "1"]);
+        return {
+          decision: "summarize",
+          approved_text: "",
+          selected_section_ids: ["1"],
+          feedback_text: "",
+          summary_model: null,
+          query_text: "",
+        };
+      }
+      return {
+        decision: "approve",
+        approved_text: request.draft_text,
+        selected_section_ids: ["1"],
+        feedback_text: "",
+        summary_model: null,
+        query_text: "",
+      };
+    },
+  });
+
+  const result = await tool.execute(
+    "call",
+    { query: "example", provider: "all" },
+    new AbortController().signal,
+    () => {},
+  );
+
+  assert.equal(reviewCount, 2);
+  assert.doesNotMatch(summaryPrompt, /Exa evidence/u);
+  assert.match(summaryPrompt, /AnySearch evidence/u);
+  assert.equal(result.details.selected_query_count, 1);
+  assert.equal(result.details.successful_queries, 1);
+  assert.equal(result.details.total_results, 1);
+});
+
+test("all-provider review preserves each provider failure", async () => {
+  const plugin = createWebSearchAgentPlugin({
+    async search() {
+      throw new WebSearchAggregateError([
+        new WebSearchProviderError({
+          provider_id: "exa",
+          kind: "quota",
+          message: "Exa quota exhausted.",
+        }),
+        new WebSearchProviderError({
+          provider_id: "anysearch",
+          kind: "network",
+          message: "AnySearch network unavailable.",
+        }),
+      ], "All-provider web search failed.");
+    },
+    close() {},
+  }, {
+    maximum_results: 5,
+    maximum_output_bytes: 64 * 1024,
+    default_provider: "all",
+    default_workflow: "summary-review",
+    summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
+  });
+  const [tool] = plugin.createTools({
+    project_id: "project",
+    session_id: "session",
+    async request_summary_review(request) {
+      assert.deepEqual(
+        request.sections.map((section) => ({
+          title: section.title,
+          body: section.body,
+          is_selectable: section.is_selectable,
+        })),
+        [{
+          title: "example · Exa",
+          body: "Exa quota exhausted.",
+          is_selectable: false,
+        }, {
+          title: "example · AnySearch",
+          body: "AnySearch network unavailable.",
+          is_selectable: false,
+        }],
+      );
+      assert.deepEqual(request.selected_section_ids, []);
+      return {
+        decision: "cancel",
+        approved_text: "",
+        selected_section_ids: [],
+        feedback_text: "",
+        summary_model: null,
+        query_text: "",
+      };
+    },
+  });
+
+  const result = await tool.execute(
+    "call",
+    { query: "example", provider: "all" },
+    new AbortController().signal,
+    () => {},
+  );
+
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /cancelled by the user/u);
+});
+
+test("all-provider review bounds added evidence cards", async () => {
+  let searchCount = 0;
+  const plugin = createWebSearchAgentPlugin({
+    async search(request) {
+      searchCount += 1;
+      const exaUrl = `https://example.com/exa-${searchCount}`;
+      const anySearchUrl =
+        `https://example.com/anysearch-${searchCount}`;
+      return {
+        query: request.query,
+        provider: "all",
+        answer: "Combined",
+        sources: [
+          { title: "Exa", url: exaUrl, snippet: "Exa" },
+          {
+            title: "AnySearch",
+            url: anySearchUrl,
+            snippet: "AnySearch",
+          },
+        ],
+        provider_responses: [{
+          query: request.query,
+          provider: "exa",
+          answer: "Exa evidence",
+          sources: [{
+            title: "Exa",
+            url: exaUrl,
+            snippet: "Exa",
+          }],
+        }, {
+          query: request.query,
+          provider: "anysearch",
+          answer: "AnySearch evidence",
+          sources: [{
+            title: "AnySearch",
+            url: anySearchUrl,
+            snippet: "AnySearch",
+          }],
+        }],
+        provider_errors: [],
+      };
+    },
+    close() {},
+  }, {
+    maximum_results: 5,
+    maximum_output_bytes: 64 * 1024,
+    default_provider: "all",
+    default_workflow: "summary-review",
+    summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
+  });
+  let attemptedAtLimit = false;
+  const [tool] = plugin.createTools({
+    project_id: "project",
+    session_id: "session",
+    async request_summary_review(request) {
+      if (request.sections.length < 20) {
+        return {
+          decision: "add-search",
+          approved_text: "",
+          selected_section_ids: request.selected_section_ids,
+          feedback_text: "",
+          summary_model: null,
+          query_text: `additional angle ${request.sections.length}`,
+        };
+      }
+      if (!attemptedAtLimit) {
+        attemptedAtLimit = true;
+        return {
+          decision: "add-search",
+          approved_text: "",
+          selected_section_ids: request.selected_section_ids,
+          feedback_text: "",
+          summary_model: null,
+          query_text: "one search too many",
+        };
+      }
+      assert.equal(request.sections.length, 20);
+      assert.match(request.query_notice, /at most 20 evidence cards/u);
+      return {
+        decision: "raw",
+        approved_text: "",
+        selected_section_ids: ["0"],
+        feedback_text: "",
+        summary_model: null,
+        query_text: "",
+      };
+    },
+  });
+
+  const result = await tool.execute(
+    "call",
+    { query: "initial", provider: "all" },
+    new AbortController().signal,
+    () => {},
+  );
+
+  assert.equal(searchCount, 10);
+  assert.equal(result.details.query_count, 10);
+  assert.equal(result.details.selected_query_count, 1);
 });
 
 test("summary-review regenerates selected evidence with feedback", async () => {

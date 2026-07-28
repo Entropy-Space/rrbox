@@ -581,12 +581,20 @@
   opacity: 1;
 }
 
+.summary-review-section.unavailable {
+  border-style: dashed;
+}
+
 .summary-review-section label {
   display: flex;
   align-items: flex-start;
   gap: 8px;
   cursor: pointer;
   font-size: 13px;
+}
+
+.summary-review-section.unavailable label {
+  cursor: default;
 }
 
 .summary-review-section p {

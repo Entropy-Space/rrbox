@@ -79,10 +79,17 @@ test("summary review pauses a tool until the viewer approves it", async () => {
                   section_id: "0",
                   title: "Query",
                   body: "Evidence",
+                  is_selectable: true,
                   sources: [{
                     title: "Source",
                     url: "https://example.com/",
                   }],
+                }, {
+                  section_id: "1",
+                  title: "Failed provider",
+                  body: "Provider unavailable",
+                  is_selectable: false,
+                  sources: [],
                 }],
                 selected_section_ids: ["0"],
               }, signal);
@@ -114,6 +121,24 @@ test("summary review pauses a tool until the viewer approves it", async () => {
     (event) => event.type === "summary_review_requested",
   );
   assert.equal(review.payload.draft_text, "Draft summary");
+
+  await core.handle(createCommand("summary_review_resolve", {
+    project_id: review.payload.project_id,
+    session_id: review.payload.session_id,
+    interaction_id: review.payload.interaction_id,
+    resolution: {
+      decision: "summarize",
+      approved_text: "",
+      selected_section_ids: ["1"],
+      feedback_text: "",
+      summary_model: null,
+      query_text: "",
+    },
+  }));
+  assert.equal(
+    events.findLast((event) => event.type === "error").payload.code,
+    "summary_review_not_found",
+  );
 
   await core.handle(createCommand("summary_review_resolve", {
     project_id: review.payload.project_id,
@@ -193,6 +218,7 @@ test("a local review deadline clears the interaction without aborting the run", 
                     section_id: "0",
                     title: "Query",
                     body: "Evidence",
+                    is_selectable: true,
                     sources: [],
                   }],
                   selected_section_ids: ["0"],

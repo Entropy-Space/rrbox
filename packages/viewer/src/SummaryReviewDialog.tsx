@@ -235,13 +235,15 @@ function ActiveSummaryReviewDialog({
                   key={section.section_id}
                   className={`summary-review-section ${
                     selected ? "selected" : ""
-                  }`}
+                  } ${section.is_selectable ? "" : "unavailable"}`}
                 >
                   <label>
                     <input
                       type="checkbox"
                       checked={selected}
-                      disabled={review.is_submitting}
+                      disabled={
+                        review.is_submitting || !section.is_selectable
+                      }
                       onChange={(event) => {
                         setSelectedSectionIds((current) => {
                           const next = new Set(current);

@@ -226,9 +226,16 @@ export class SessionRuntime {
     const availableIds = new Set(
       pending.request.sections.map((section) => section.section_id),
     );
+    const selectableIds = new Set(
+      pending.request.sections
+        .filter((section) => section.is_selectable)
+        .map((section) => section.section_id),
+    );
     if (
       resolution.selected_section_ids.some(
-        (sectionId) => !availableIds.has(sectionId),
+        (sectionId) =>
+          !availableIds.has(sectionId) ||
+          !selectableIds.has(sectionId),
       )
     ) {
       throw new Error(

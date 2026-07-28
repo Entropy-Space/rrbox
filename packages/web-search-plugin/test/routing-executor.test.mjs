@@ -164,6 +164,14 @@ test("all routing merges successes, deduplicates URLs, and reports partial failu
       "https://example.com/exa",
     ],
   );
+  assert.deepEqual(
+    result.provider_responses.map((entry) => entry.provider),
+    ["exa"],
+  );
+  assert.deepEqual(result.provider_errors, [{
+    provider: "anysearch",
+    error: "HTTP 429 quota exhausted",
+  }]);
 });
 
 test("all routing combines providers in configured order and respects the result bound", async () => {
@@ -201,6 +209,11 @@ test("all routing combines providers in configured order and respects the result
       "https://example.com/anysearch",
     ],
   );
+  assert.deepEqual(
+    result.provider_responses.map((entry) => entry.provider),
+    ["exa", "anysearch"],
+  );
+  assert.deepEqual(result.provider_errors, []);
 });
 
 test("all routing reports every provider failure", async () => {

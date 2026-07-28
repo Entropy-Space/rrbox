@@ -92,7 +92,7 @@ packages/viewer → browser workspace adapter → browser/archive.worker.ts
 The viewer depends on `CoreTransport`, not on `Worker`. Both applications
 construct `WorkerCoreTransport`, which validates all incoming protocol values,
 isolates subscribers, and owns worker teardown. The viewer and core worker
-exchange only protocol-v14 JSON values. Transport shutdown uses a separate
+exchange only protocol-v15 JSON values. Transport shutdown uses a separate
 versioned control envelope: it asks the worker to abort and drain the core,
 waits for disposal acknowledgement, and force-terminates after a bounded
 timeout if cleanup cannot finish. A
@@ -196,13 +196,16 @@ before the plugin returns a deterministic summary of the current selection.
 The router supports an explicit provider, configurable ordered automatic
 fallback for transient, quota, and network failures, or bounded all-provider
 aggregation with round-robin source diversity, URL deduplication, and
-partial-failure diagnostics. Each provider validates query and result bounds
-before networking, combines caller cancellation with a configured timeout,
-bounds its response before decoding it, and limits normalized source content
-to the configured budget. Both provider adapters have one compiled outbound
-destination and reject redirects. Native AnySearch does not forward provider
-error bodies because quota responses can contain generated credentials. The
-router and tool retain no search results, credentials, or session state.
+partial-failure diagnostics. Aggregated responses retain their structured
+provider entries so review exposes each success independently and renders
+provider failures as non-selectable evidence. Each provider validates query
+and result bounds before networking, combines caller cancellation with a
+configured timeout, bounds its response before decoding it, and limits
+normalized source content to the configured budget. Both provider adapters
+have one compiled outbound destination and reject redirects. Native AnySearch
+does not forward provider error bodies because quota responses can contain
+generated credentials. The router and tool retain no search results,
+credentials, or session state.
 
 The fork intentionally excludes upstream URL fetching, arbitrary/local paths,
 browser cookies, API-key configuration, curator servers, persistent result

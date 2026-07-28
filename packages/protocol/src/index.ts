@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 14 as const;
+export const PROTOCOL_VERSION = 15 as const;
 
 export const SUMMARY_REVIEW_MAX_SECTIONS = 20;
 export const SUMMARY_REVIEW_MAX_TEXT_LENGTH = 256 * 1024;
@@ -13,6 +13,7 @@ export type SummaryReviewSection = {
   section_id: string;
   title: string;
   body: string;
+  is_selectable: boolean;
   sources: SummaryReviewSource[];
 };
 
@@ -1133,6 +1134,11 @@ function parseSummaryReviewRequest(
   const sectionIds = new Set(
     parsedSections.map((section) => section.section_id),
   );
+  const selectableSectionIds = new Set(
+    parsedSections
+      .filter((section) => section.is_selectable)
+      .map((section) => section.section_id),
+  );
   if (sectionIds.size !== parsedSections.length) {
     throw new Error("Summary review section ids must be unique.");
   }
@@ -1149,7 +1155,11 @@ function parseSummaryReviewRequest(
   );
   if (
     (stage === "review-summary" && selectedSectionIds.length === 0) ||
-    selectedSectionIds.some((sectionId) => !sectionIds.has(sectionId))
+    selectedSectionIds.some(
+      (sectionId) =>
+        !sectionIds.has(sectionId) ||
+        !selectableSectionIds.has(sectionId),
+    )
   ) {
     throw new Error(
       "Summary review selected section ids must reference available sections.",
@@ -1232,7 +1242,7 @@ function parseSummaryReviewSection(
   }
   assertExactKeys(
     value,
-    ["section_id", "title", "body", "sources"],
+    ["section_id", "title", "body", "is_selectable", "sources"],
     "summary review section",
   );
   const sources = requireArray(value, "sources");
@@ -1248,6 +1258,7 @@ function parseSummaryReviewSection(
       SUMMARY_REVIEW_MAX_TEXT_LENGTH,
       true,
     ),
+    is_selectable: requireBoolean(value, "is_selectable"),
     sources: sources.map((source): SummaryReviewSource => {
       if (!isRecord(source)) {
         throw new Error("Summary review source must be an object.");

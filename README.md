@@ -136,7 +136,9 @@ available in both applications, while native also offers anonymous AnySearch
 through a fixed-endpoint Rust service. Automatic routing falls back only for
 transient, quota, or network failures; native settings can choose the provider
 order. **All available** merges bounded, URL-deduplicated results with
-round-robin source diversity. Searches have explicit result, response-size,
+round-robin source diversity while preserving each provider as an independent
+review card; failed providers remain visible but cannot be selected. Searches
+have explicit result, response-size,
 synthesis, and timeout bounds and retain no state. See
 `packages/web-search-plugin/THIRD_PARTY_NOTICES.md` for the MIT-licensed
 upstream attribution.

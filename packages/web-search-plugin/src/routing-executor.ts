@@ -1,6 +1,7 @@
 import type {
   WebSearchExecutor,
   WebSearchProviderId,
+  WebSearchProviderFailure,
   WebSearchRequest,
   WebSearchResolvedProviderId,
   WebSearchResponse,
@@ -381,6 +382,11 @@ function combineProviderResponses(
     provider: "all",
     answer: answerSections.join("\n\n"),
     sources,
+    provider_responses: [...responses],
+    provider_errors: failures.map((failure): WebSearchProviderFailure => ({
+      provider: failure.provider_id,
+      error: failure.message,
+    })),
   };
 }
 

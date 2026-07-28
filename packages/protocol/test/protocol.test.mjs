@@ -9,7 +9,7 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v14 command", () => {
+test("round-trips every protocol-v15 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("bootstrap", {
@@ -393,6 +393,7 @@ test("round-trips every normalized timeline core event", () => {
           section_id: "0",
           title: "Query",
           body: "Evidence",
+          is_selectable: true,
           sources: [{
             title: "Example",
             url: "https://example.com/",
@@ -555,6 +556,7 @@ test("validates summary model selections and draft metadata", () => {
         section_id: "0",
         title: "Query",
         body: "Evidence",
+        is_selectable: true,
         sources: [],
       }],
       selected_section_ids: ["0"],
@@ -616,6 +618,7 @@ test("bounds query curation and permits empty evidence selection", () => {
         section_id: "0",
         title: "Initial query",
         body: "Evidence",
+        is_selectable: true,
         sources: [],
       }],
       selected_section_ids: [],
@@ -623,6 +626,18 @@ test("bounds query curation and permits empty evidence selection", () => {
     "request-review",
   );
   assert.deepEqual(parseCoreEvent(selectionRequest), selectionRequest);
+
+  const unavailableSelection = structuredClone(selectionRequest);
+  unavailableSelection.payload.sections[0].is_selectable = false;
+  assert.deepEqual(
+    parseCoreEvent(unavailableSelection),
+    unavailableSelection,
+  );
+  unavailableSelection.payload.selected_section_ids = ["0"];
+  assert.throws(
+    () => parseCoreEvent(unavailableSelection),
+    /reference available sections/,
+  );
 
   const addSearch = createCommand("summary_review_resolve", {
     project_id: "project-1",
@@ -830,6 +845,7 @@ test("requires request correlation for commands and interactive results", () => 
         section_id: "0",
         title: "Query",
         body: "Evidence",
+        is_selectable: true,
         sources: [],
       }],
       selected_section_ids: ["0"],

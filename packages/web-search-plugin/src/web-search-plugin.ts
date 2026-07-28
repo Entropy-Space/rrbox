@@ -10,6 +10,7 @@ import type {
 export const MAX_WEB_SEARCH_QUERY_BYTES = 4 * 1024;
 export const MAX_WEB_SEARCH_QUERIES = 4;
 export const MAX_WEB_SEARCH_REVIEW_QUERIES = 20;
+export const MAX_WEB_SEARCH_REVIEW_SECTIONS = 20;
 export const MAX_WEB_SEARCH_DOMAIN_FILTERS = 20;
 
 export type WebSearchRecency = "day" | "week" | "month" | "year";
@@ -44,6 +45,13 @@ export type WebSearchResponse = {
   provider: Exclude<WebSearchProviderId, "auto">;
   answer: string;
   sources: WebSearchSource[];
+  provider_responses?: WebSearchResponse[];
+  provider_errors?: WebSearchProviderFailure[];
+};
+
+export type WebSearchProviderFailure = {
+  provider: WebSearchResolvedProviderId;
+  error: string;
 };
 
 export type WebSearchExecutor = {
@@ -85,7 +93,9 @@ type WebSearchToolDetails = {
 type QueryResult = {
   query: string;
   response?: WebSearchResponse;
+  provider?: Exclude<WebSearchProviderId, "auto">;
   error?: string;
+  provider_errors?: WebSearchProviderFailure[];
 };
 
 type PluginModelCompleter = (
@@ -203,6 +213,7 @@ export function createWebSearchAgentPlugin(
             searchOptions,
             signal,
           );
+          let reviewResults = createReviewResults(queryResults);
           let selectedResults = queryResults;
           let synthesis: Awaited<ReturnType<typeof synthesizeResults>> | null =
             null;
@@ -211,8 +222,9 @@ export function createWebSearchAgentPlugin(
           let summaryModel: ModelSelection | null = null;
           let queryDraft = "";
           let queryNotice: string | null = null;
-          let selectedSectionIds = queryResults.map(
-            (_result, index) => String(index),
+          let selectedSectionIds = reviewResults.flatMap(
+            (result, index) =>
+              result.response ? [String(index)] : [],
           );
           let approvedText: string | undefined;
           if (workflow === "summary-review") {
@@ -226,7 +238,7 @@ export function createWebSearchAgentPlugin(
             }
             selectionLoop:
             while (true) {
-              const sections = createReviewSections(queryResults);
+              const sections = createReviewSections(reviewResults);
               const selection = await requestSummaryReviewWithDeadline(
                 context.request_summary_review,
                 {
@@ -244,14 +256,20 @@ export function createWebSearchAgentPlugin(
                 signal,
               );
               if (selection === null) {
+                const selectableSectionIds = reviewResults.flatMap(
+                  (result, index) =>
+                    result.response ? [String(index)] : [],
+                );
                 const timeoutSelectionIds = selectedSectionIds.length > 0
                   ? selectedSectionIds
-                  : queryResults.map((_result, index) => String(index));
+                  : selectableSectionIds;
                 selectedSectionIds = timeoutSelectionIds;
-                selectedResults = selectQueryResults(
-                  queryResults,
-                  timeoutSelectionIds,
-                );
+                selectedResults = timeoutSelectionIds.length > 0
+                  ? selectQueryResults(
+                    reviewResults,
+                    timeoutSelectionIds,
+                  )
+                  : reviewResults;
                 synthesis = createReviewTimeoutSynthesis(
                   selectedResults,
                   options.maximum_output_bytes,
@@ -297,9 +315,12 @@ export function createWebSearchAgentPlugin(
                   queryNotice = "That query has already been searched.";
                   continue;
                 }
-                if (queryResults.length >= MAX_WEB_SEARCH_REVIEW_QUERIES) {
+                if (
+                  queryResults.length >= MAX_WEB_SEARCH_REVIEW_QUERIES ||
+                  reviewResults.length >= MAX_WEB_SEARCH_REVIEW_SECTIONS
+                ) {
                   queryNotice =
-                    `A review can contain at most ${MAX_WEB_SEARCH_REVIEW_QUERIES} searches.`;
+                    `A review can contain at most ${MAX_WEB_SEARCH_REVIEW_SECTIONS} evidence cards.`;
                   continue;
                 }
                 const [addedResult] = await executeQueries(
@@ -308,14 +329,27 @@ export function createWebSearchAgentPlugin(
                   searchOptions,
                   signal,
                 );
+                const previousReviewResultCount = reviewResults.length;
+                const addedReviewResultCount =
+                  createReviewResults([addedResult]).length;
                 queries.push(addedQuery);
                 queryResults.push(addedResult);
+                reviewResults = createReviewResults(queryResults);
+                const addedSectionIds = reviewResults.flatMap(
+                  (result, index) =>
+                    index >= previousReviewResultCount && result.response
+                      ? [String(index)]
+                      : [],
+                );
                 selectedSectionIds = [
                   ...selectedSectionIds,
-                  String(queryResults.length - 1),
+                  ...addedSectionIds,
                 ];
                 queryDraft = "";
-                queryNotice = addedResult.error
+                queryNotice = reviewResults.length -
+                      previousReviewResultCount < addedReviewResultCount
+                  ? `Search added; evidence was limited to ${MAX_WEB_SEARCH_REVIEW_SECTIONS} cards.`
+                  : addedResult.error
                   ? "The search was added but returned an error."
                   : "Search added and selected.";
                 reviewed = true;
@@ -330,7 +364,7 @@ export function createWebSearchAgentPlugin(
                 );
               }
               selectedResults = selectQueryResults(
-                queryResults,
+                reviewResults,
                 selectedSectionIds,
               );
               reviewed = true;
@@ -399,7 +433,7 @@ export function createWebSearchAgentPlugin(
                   summaryModel = resolution.summary_model;
                   selectedSectionIds = resolution.selected_section_ids;
                   selectedResults = selectQueryResults(
-                    queryResults,
+                    reviewResults,
                     selectedSectionIds,
                   );
                   synthesis = await synthesizeResults(
@@ -420,7 +454,7 @@ export function createWebSearchAgentPlugin(
                 }
                 selectedSectionIds = resolution.selected_section_ids;
                 selectedResults = selectQueryResults(
-                  queryResults,
+                  reviewResults,
                   selectedSectionIds,
                 );
                 approvedText = resolution.approved_text;
@@ -453,13 +487,11 @@ export function createWebSearchAgentPlugin(
                 ? `Searched web for “${summarizeQuery(queries[0])}”`
                 : `Searched web with ${queries.length} queries`,
               query_count: queries.length,
-              selected_query_count: selectedResults.length,
-              successful_queries: successful.length,
-              total_results: successful.reduce(
-                (total, result) =>
-                  total + (result.response?.sources.length ?? 0),
-                0,
-              ),
+              selected_query_count:
+                new Set(selectedResults.map((result) => result.query)).size,
+              successful_queries:
+                new Set(successful.map((result) => result.query)).size,
+              total_results: countUniqueSources(successful),
               provider,
               workflow,
               ...(synthesis
@@ -492,15 +524,57 @@ export function createWebSearchAgentPlugin(
 function createReviewSections(results: QueryResult[]) {
   return results.map((result, index) => ({
     section_id: String(index),
-    title: result.query,
+    title: result.provider
+      ? `${result.query} · ${providerLabel(result.provider)}`
+      : result.query,
     body: result.error ??
       result.response?.answer ??
       "No answer text returned.",
+    is_selectable: result.response !== undefined,
     sources: (result.response?.sources ?? []).map((source) => ({
       title: source.title,
       url: source.url,
     })),
   }));
+}
+
+function createReviewResults(results: QueryResult[]): QueryResult[] {
+  return results.flatMap((result): QueryResult[] => {
+    if (!result.response) {
+      if (!result.provider_errors || result.provider_errors.length === 0) {
+        return [result];
+      }
+      return result.provider_errors.map((failure) => ({
+        query: result.query,
+        provider: failure.provider,
+        error: failure.error,
+      }));
+    }
+    const response = result.response;
+    if (
+      response.provider !== "all" ||
+      !response.provider_responses ||
+      response.provider_responses.length === 0
+    ) {
+      return [{
+        query: result.query,
+        response,
+        provider: response.provider,
+      }];
+    }
+    return [
+      ...response.provider_responses.map((providerResponse) => ({
+        query: result.query,
+        response: providerResponse,
+        provider: providerResponse.provider,
+      })),
+      ...(response.provider_errors ?? []).map((failure) => ({
+        query: result.query,
+        provider: failure.provider,
+        error: failure.error,
+      })),
+    ];
+  }).slice(0, MAX_WEB_SEARCH_REVIEW_SECTIONS);
 }
 
 function selectQueryResults(
@@ -511,12 +585,28 @@ function selectQueryResults(
     selectedSectionIds.map((sectionId) => Number(sectionId)),
   );
   const selected = results.filter(
-    (_result, index) => selectedIndices.has(index),
+    (result, index) =>
+      selectedIndices.has(index) && result.response !== undefined,
   );
   if (selected.length === 0) {
     throw new Error("At least one search result must be selected.");
   }
   return selected;
+}
+
+function countUniqueSources(results: QueryResult[]): number {
+  return new Set(
+    results.flatMap((result) =>
+      (result.response?.sources ?? []).map((source) => source.url)
+    ),
+  ).size;
+}
+
+function providerLabel(
+  provider: Exclude<WebSearchProviderId, "auto">,
+): string {
+  if (provider === "anysearch") return "AnySearch";
+  return provider.charAt(0).toUpperCase() + provider.slice(1);
 }
 
 function createReviewErrorResult(
@@ -618,10 +708,38 @@ async function executeQueries(
         error: error instanceof Error
           ? error.message
           : "The web search failed.",
+        provider_errors: extractProviderFailures(error),
       });
     }
   }
   return results;
+}
+
+function extractProviderFailures(
+  error: unknown,
+): WebSearchProviderFailure[] | undefined {
+  if (
+    !(error instanceof Error) ||
+    error.name !== "WebSearchAggregateError"
+  ) {
+    return undefined;
+  }
+  const errors = (error as Error & { errors?: unknown }).errors;
+  if (!Array.isArray(errors)) return undefined;
+  const failures = errors.flatMap((candidate): WebSearchProviderFailure[] => {
+    if (!candidate || typeof candidate !== "object") return [];
+    const provider = Reflect.get(candidate, "provider_id");
+    const message = Reflect.get(candidate, "message");
+    if (
+      (provider !== "exa" && provider !== "anysearch") ||
+      typeof message !== "string" ||
+      message.trim().length === 0
+    ) {
+      return [];
+    }
+    return [{ provider, error: message }];
+  });
+  return failures.length > 0 ? failures : undefined;
 }
 
 async function requestSummaryReviewWithDeadline(
@@ -991,12 +1109,16 @@ function formatResponseForSummary(response: WebSearchResponse): string {
 
 function formatRawSearchResults(results: QueryResult[]): string {
   return results.map((result) => {
+    const provider = result.provider ?? result.response?.provider;
+    const heading = provider
+      ? `## Query: ${result.query} · ${providerLabel(provider)}`
+      : `## Query: ${result.query}`;
     if (result.error) {
-      return `## Query: ${result.query}\n\nError: ${result.error}`;
+      return `${heading}\n\nError: ${result.error}`;
     }
     const response = result.response!;
     return [
-      `## Query: ${result.query}`,
+      heading,
       "",
       response.answer,
       "",

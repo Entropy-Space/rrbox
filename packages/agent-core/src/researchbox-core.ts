@@ -1304,6 +1304,10 @@ export class ResearchBoxCore {
             workspace,
             model_transport: this.modelTransport,
             model: this.requireActiveModel(),
+            resolve_model: (selection) =>
+              this.providerCatalog.isModelReady(selection)
+                ? this.providerCatalog.getModel(selection)
+                : undefined,
             system_prompt: this.systemPrompt,
             plugins: this.plugins,
             event_sink: this.eventSink,

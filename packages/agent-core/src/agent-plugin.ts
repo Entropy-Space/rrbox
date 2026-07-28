@@ -1,8 +1,11 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type {
+  ModelSelection,
   SummaryReviewRequest,
   SummaryReviewResolution,
 } from "@researchbox/protocol";
+
+export type { ModelSelection };
 
 export type AgentPluginContext = {
   project_id: string;
@@ -10,6 +13,7 @@ export type AgentPluginContext = {
   complete_model?: (
     prompt: string,
     signal?: AbortSignal,
+    model?: ModelSelection,
   ) => Promise<AgentPluginModelCompletion>;
   request_summary_review?: (
     request: Omit<SummaryReviewRequest, "interaction_id">,

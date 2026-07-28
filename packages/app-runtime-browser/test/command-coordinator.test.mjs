@@ -159,6 +159,7 @@ test("project deletion waits while run controls remain lock-free", async () => {
         approved_text: "Approved",
         selected_section_ids: ["0"],
         feedback_text: "",
+        summary_model: null,
       },
     }),
     async () => {

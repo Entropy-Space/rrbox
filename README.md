@@ -119,10 +119,13 @@ pipelines. It accepts one focused query or up to four varied queries, optional
 domain and recency filters, and raw, automatic-summary, or reviewed-summary
 workflows. Reviewed summary first asks which query results to keep, generates
 from only that evidence, then allows editing, Markdown preview, regeneration
-with feedback, approval, or returning to selection. The review exists only
-while the tool call is active. Automatic summary uses the chat's active model
-and falls back to a deterministic, source-linked digest on timeout or model
-failure. Retrieval is routed through a provider interface; Exa MCP is currently
+with feedback, changing the summary provider/model, approval, or returning to
+selection. The draft reports the model actually used, generation time,
+estimated tokens, and deterministic fallback reason. The review exists only
+while the tool call is active. Automatic summary uses the chat's active model.
+A reviewed summary may use any ready model; if an explicit choice fails, it
+retries with the active model before producing a deterministic, source-linked
+digest. Retrieval is routed through a provider interface; Exa MCP is currently
 available in both applications, while native also offers anonymous AnySearch
 through a fixed-endpoint Rust service. Automatic routing falls back only for
 transient, quota, or network failures; native settings can choose the provider

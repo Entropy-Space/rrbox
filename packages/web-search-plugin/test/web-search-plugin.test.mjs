@@ -79,7 +79,14 @@ test("searches multiple angles and summarizes with the active model", async () =
     result.content[0].text,
     "Synthesized answer.\n\nSources\n- https://www.rust-lang.org/",
   );
-  assert.deepEqual(result.details.synthesis, {
+  const {
+    duration_ms: durationMs,
+    token_estimate: tokenEstimate,
+    ...synthesis
+  } = result.details.synthesis;
+  assert.ok(durationMs >= 0);
+  assert.equal(tokenEstimate, 15);
+  assert.deepEqual(synthesis, {
     model: "openai/test-model",
     fallback_used: false,
     reviewed: false,
@@ -153,11 +160,14 @@ test("summary-review returns only the user-approved synthesis", async () => {
   });
   const reviewRequests = [];
   let summaryPrompt;
+  const requestedSummaryModels = [];
   const [tool] = plugin.createTools({
     project_id: "project",
     session_id: "session",
-    async complete_model(prompt) {
+    async complete_model(prompt, _signal, model) {
       summaryPrompt = prompt;
+      requestedSummaryModels.push(model);
+      if (model) throw new Error("Selected model is temporarily unavailable.");
       return {
         text: "Draft summary",
         provider_id: "openai",
@@ -172,6 +182,10 @@ test("summary-review returns only the user-approved synthesis", async () => {
           approved_text: "",
           selected_section_ids: ["1"],
           feedback_text: "",
+          summary_model: {
+            provider_id: "local-openai",
+            model_id: "summary-model",
+          },
         };
       }
       return {
@@ -179,6 +193,10 @@ test("summary-review returns only the user-approved synthesis", async () => {
         approved_text: "Edited and approved",
         selected_section_ids: ["1"],
         feedback_text: "",
+        summary_model: {
+          provider_id: "local-openai",
+          model_id: "summary-model",
+        },
       };
     },
   });
@@ -195,12 +213,35 @@ test("summary-review returns only the user-approved synthesis", async () => {
   assert.equal(reviewRequests[0].draft_text, "");
   assert.equal(reviewRequests[1].stage, "review-summary");
   assert.equal(reviewRequests[1].draft_text, "Draft summary");
+  assert.deepEqual(reviewRequests[1].summary_model, {
+    provider_id: "local-openai",
+    model_id: "summary-model",
+  });
+  assert.deepEqual(reviewRequests[1].draft_metadata.model, {
+    provider_id: "openai",
+    model_id: "test-model",
+  });
+  assert.equal(reviewRequests[1].draft_metadata.fallback_used, false);
+  assert.deepEqual(requestedSummaryModels, [
+    {
+      provider_id: "local-openai",
+      model_id: "summary-model",
+    },
+    undefined,
+  ]);
   assert.equal(reviewRequests[1].sections.length, 2);
   assert.doesNotMatch(summaryPrompt, /angle 0/u);
   assert.match(summaryPrompt, /angle 1/u);
   assert.equal(result.content[0].text, "Edited and approved");
   assert.equal(result.details.selected_query_count, 1);
-  assert.deepEqual(result.details.synthesis, {
+  const {
+    duration_ms: durationMs,
+    token_estimate: tokenEstimate,
+    ...synthesis
+  } = result.details.synthesis;
+  assert.ok(durationMs >= 0);
+  assert.equal(tokenEstimate, 4);
+  assert.deepEqual(synthesis, {
     model: "openai/test-model",
     fallback_used: false,
     reviewed: true,
@@ -251,6 +292,7 @@ test("summary-review regenerates selected evidence with feedback", async () => {
           approved_text: "",
           selected_section_ids: ["0"],
           feedback_text: "",
+          summary_model: null,
         };
       }
       if (reviewCount === 2) {
@@ -259,6 +301,7 @@ test("summary-review regenerates selected evidence with feedback", async () => {
           approved_text: request.draft_text,
           selected_section_ids: ["0"],
           feedback_text: "Emphasize the caveat.",
+          summary_model: null,
         };
       }
       return {
@@ -266,6 +309,7 @@ test("summary-review regenerates selected evidence with feedback", async () => {
         approved_text: request.draft_text,
         selected_section_ids: ["0"],
         feedback_text: "",
+        summary_model: null,
       };
     },
   });
@@ -319,6 +363,7 @@ test("summary-review can return selected raw evidence without synthesis", async 
         approved_text: "",
         selected_section_ids: ["1"],
         feedback_text: "",
+        summary_model: null,
       };
     },
   });

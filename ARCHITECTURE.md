@@ -92,7 +92,7 @@ packages/viewer → browser workspace adapter → browser/archive.worker.ts
 The viewer depends on `CoreTransport`, not on `Worker`. Both applications
 construct `WorkerCoreTransport`, which validates all incoming protocol values,
 isolates subscribers, and owns worker teardown. The viewer and core worker
-exchange only protocol-v12 JSON values. Transport shutdown uses a separate
+exchange only protocol-v13 JSON values. Transport shutdown uses a separate
 versioned control envelope: it asks the worker to abort and drain the core,
 waits for disposal acknowledgement, and force-terminates after a bounded
 timeout if cleanup cannot finish. A
@@ -176,13 +176,17 @@ and recency filters, larger inline excerpts, explicit provider selection, and
 raw, automatic-summary, or summary-review workflows. Search results are
 normalized into provider-independent answers and source records before
 rendering. Automatic summary calls the active session model through a
-constrained completion hook; it uses an independent deadline and falls back to
-a deterministic source-linked summary if the model is unavailable. The
-summary-review workflow first pauses the tool so the viewer can select evidence
-or send it raw. Only the selected evidence reaches summary generation. A second
-ephemeral interaction allows editing, Markdown preview, regeneration with
-feedback, returning to selection, approval, or cancellation. These internal
-model calls use the same model transport and cancellation boundary as the
+constrained completion hook. During reviewed synthesis, the viewer may choose
+any ready provider/model from the live catalog; the core resolves that choice
+instead of accepting an arbitrary model descriptor. A failed explicit choice
+retries once with the active model under the same deadline before producing a
+deterministic source-linked summary. The summary-review workflow first pauses
+the tool so the viewer can select evidence or send it raw. Only the selected
+evidence reaches summary generation. A second ephemeral interaction reports
+the actual model, duration, token estimate, and fallback reason, and allows
+editing, Markdown preview, regeneration with feedback, changing models,
+returning to selection, approval, or cancellation. These internal model calls
+use the same model transport and cancellation boundary as the
 active agent.
 
 The router supports an explicit provider, configurable ordered automatic

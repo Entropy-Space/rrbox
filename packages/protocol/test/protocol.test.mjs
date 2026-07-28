@@ -8,7 +8,7 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v12 command", () => {
+test("round-trips every protocol-v13 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("bootstrap", {
@@ -71,6 +71,10 @@ test("round-trips every protocol-v12 command", () => {
         approved_text: "Approved summary",
         selected_section_ids: ["0"],
         feedback_text: "",
+        summary_model: {
+          provider_id: "local-openai",
+          model_id: "gpt-5.4",
+        },
       },
     }),
     createCommand("workspace_export", { project_id: "p1" }),
@@ -370,6 +374,17 @@ test("round-trips every normalized timeline core event", () => {
         stage: "review-summary",
         title: "Review web search summary",
         draft_text: "Draft summary",
+        summary_model: null,
+        draft_metadata: {
+          model: {
+            provider_id: "local-openai",
+            model_id: "gpt-5.4",
+          },
+          duration_ms: 1_200,
+          token_estimate: 42,
+          fallback_used: false,
+          fallback_reason: null,
+        },
         sections: [{
           section_id: "0",
           title: "Query",
@@ -504,6 +519,77 @@ test("round-trips every normalized timeline core event", () => {
   ];
 
   for (const event of events) assert.deepEqual(parseCoreEvent(event), event);
+});
+
+test("validates summary model selections and draft metadata", () => {
+  const request = coreEvent(
+    "summary_review_requested",
+    {
+      project_id: "project-1",
+      session_id: "session-1",
+      interaction_id: "review-1",
+      stage: "review-summary",
+      title: "Review web search summary",
+      draft_text: "Draft summary",
+      summary_model: {
+        provider_id: "local-openai",
+        model_id: "gpt-5.4",
+      },
+      draft_metadata: {
+        model: {
+          provider_id: "local-openai",
+          model_id: "gpt-5.4",
+        },
+        duration_ms: 900,
+        token_estimate: 24,
+        fallback_used: false,
+        fallback_reason: null,
+      },
+      sections: [{
+        section_id: "0",
+        title: "Query",
+        body: "Evidence",
+        sources: [],
+      }],
+      selected_section_ids: ["0"],
+    },
+    "request-review",
+  );
+  assert.deepEqual(parseCoreEvent(request), request);
+
+  const inconsistentFallback = structuredClone(request);
+  inconsistentFallback.payload.draft_metadata.fallback_used = true;
+  assert.throws(
+    () => parseCoreEvent(inconsistentFallback),
+    /inconsistent fallback fields/,
+  );
+
+  const invalidDuration = structuredClone(request);
+  invalidDuration.payload.draft_metadata.duration_ms = -1;
+  assert.throws(
+    () => parseCoreEvent(invalidDuration),
+    /non-negative/,
+  );
+
+  const additiveModel = structuredClone(request);
+  additiveModel.payload.summary_model.api_key = "must-not-cross";
+  assert.throws(
+    () => parseCoreEvent(additiveModel),
+    /summary model selection must contain exactly/,
+  );
+
+  const oversizedReason = structuredClone(request);
+  oversizedReason.payload.draft_metadata = {
+    model: null,
+    duration_ms: 1,
+    token_estimate: 1,
+    fallback_used: true,
+    fallback_reason: "x".repeat(257),
+  };
+  assert.throws(
+    () => parseCoreEvent(oversizedReason),
+    /fallback_reason must not exceed 256 characters/,
+  );
 });
 
 test("rejects impossible workspace recovery counts", () => {
@@ -665,6 +751,8 @@ test("requires request correlation for commands and interactive results", () => 
       stage: "select-evidence",
       title: "Select evidence",
       draft_text: "",
+      summary_model: null,
+      draft_metadata: null,
       sections: [{
         section_id: "0",
         title: "Query",

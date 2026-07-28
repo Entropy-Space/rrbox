@@ -507,6 +507,36 @@
   font-size: 13px;
 }
 
+.summary-review-models {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.summary-review-models label {
+  display: grid;
+  min-width: 180px;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.summary-review-models select {
+  min-height: 34px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 0 9px;
+  background: var(--canvas);
+  color: var(--ink);
+  font: inherit;
+}
+
+.summary-review-models select:focus {
+  border-color: var(--accent);
+  outline: 2px solid color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
 .summary-review-icon {
   display: grid;
   width: 38px;
@@ -680,6 +710,7 @@
 
 .summary-review-footer button:disabled,
 .summary-review-header button:disabled,
+.summary-review-models select:disabled,
 .summary-review-editor textarea:disabled,
 .summary-review-editor > input:disabled,
 .summary-review-section input:disabled {

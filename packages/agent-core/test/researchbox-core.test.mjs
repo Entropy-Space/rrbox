@@ -71,6 +71,8 @@ test("summary review pauses a tool until the viewer approves it", async () => {
                 stage: "review-summary",
                 title: "Review summary",
                 draft_text: "Draft summary",
+                summary_model: null,
+                draft_metadata: null,
                 sections: [{
                   section_id: "0",
                   title: "Query",
@@ -120,6 +122,7 @@ test("summary review pauses a tool until the viewer approves it", async () => {
       approved_text: "Approved summary",
       selected_section_ids: ["0"],
       feedback_text: "",
+      summary_model: null,
     },
   }));
   await prompt;
@@ -135,6 +138,122 @@ test("summary review pauses a tool until the viewer approves it", async () => {
       entry.tool_name === "review_test",
   );
   assert.equal(result.content, "Approved summary");
+});
+
+test("plugin completion resolves an explicitly selected ready model", async () => {
+  const events = [];
+  const requests = [];
+  const core = createCore(
+    new MemoryProjectStore(),
+    createWorkspaceProvider(),
+    events,
+    {
+      async *stream(request) {
+        requests.push({
+          provider_id: request.provider_id,
+          model_id: request.model_id,
+        });
+        if (
+          request.messages.some(
+            (message) =>
+              message.role === "user" &&
+              message.content === "Summarize selected evidence.",
+          )
+        ) {
+          yield* textEvents("Local summary");
+          yield { type: "done", stop_reason: "stop" };
+          return;
+        }
+        const hasToolResult = request.messages.some(
+          (message) =>
+            message.role === "tool" &&
+            message.tool_name === "summary_model_test",
+        );
+        if (!hasToolResult) {
+          yield* toolCallEvents({
+            tool_call_id: "summary-model-call",
+            tool_name: "summary_model_test",
+            arguments: {},
+          });
+          yield { type: "done", stop_reason: "tool_use" };
+          return;
+        }
+        yield* textEvents("Used the selected summary model.");
+        yield { type: "done", stop_reason: "stop" };
+      },
+    },
+    {
+      providers: [
+        {
+          provider_id: model.provider,
+          display_name: "ResearchBox",
+          kind: "mock",
+          models: [model],
+        },
+        {
+          provider_id: localModel.provider,
+          display_name: "Local OpenAI",
+          kind: "openai_compatible",
+          models: [localModel],
+        },
+      ],
+      plugins: [{
+        id: "summary-model-test",
+        createTools(context) {
+          return [{
+            name: "summary_model_test",
+            label: "Summary model",
+            description: "Exercise plugin model selection.",
+            parameters: Type.Object({}),
+            async execute(_callId, _params, signal) {
+              const completion = await context.complete_model(
+                "Summarize selected evidence.",
+                signal,
+                {
+                  provider_id: localModel.provider,
+                  model_id: localModel.id,
+                },
+              );
+              return {
+                content: [{ type: "text", text: completion.text }],
+                details: { summary: "Summarized" },
+              };
+            },
+          }];
+        },
+      }],
+    },
+  );
+
+  await core.handle(createCommand("bootstrap", {}));
+  const state = latestState(events);
+  await core.handle(createCommand("prompt", {
+    project_id: state.active_project_id,
+    session_id: null,
+    text: "Use another summary model.",
+  }));
+
+  const toolResult = latestState(events).timeline.find(
+    (entry) =>
+      entry.type === "tool_result" &&
+      entry.tool_name === "summary_model_test",
+  );
+  assert.equal(toolResult?.is_error, false, toolResult?.content);
+  assert.deepEqual(requests, [
+    {
+      provider_id: model.provider,
+      model_id: model.id,
+    },
+    {
+      provider_id: localModel.provider,
+      model_id: localModel.id,
+    },
+    {
+      provider_id: model.provider,
+      model_id: model.id,
+    },
+  ]);
+  assert.equal(toolResult.content, "Local summary");
 });
 
 test("accepts the deprecated workspace provider composition option", async () => {

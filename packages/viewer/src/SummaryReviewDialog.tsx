@@ -9,16 +9,24 @@ import {
   Send,
   X,
 } from "lucide-react";
-import type { SummaryReviewResolution } from "@researchbox/protocol";
+import type {
+  ModelSelection,
+  ProviderSummary,
+  SummaryReviewResolution,
+} from "@researchbox/protocol";
 import { useEffect, useRef, useState } from "react";
 import { MarkdownContent } from "./MarkdownContent.tsx";
 import type { SummaryReviewView } from "./use-agent-session.ts";
 
 export function SummaryReviewDialog({
   review,
+  providers,
+  active_model,
   onResolve,
 }: {
   review: SummaryReviewView | null;
+  providers: ProviderSummary[];
+  active_model: ModelSelection;
   onResolve(resolution: SummaryReviewResolution): void;
 }) {
   return review
@@ -26,6 +34,8 @@ export function SummaryReviewDialog({
         <ActiveSummaryReviewDialog
           key={review.interaction_id}
           review={review}
+          providers={providers}
+          active_model={active_model}
           onResolve={onResolve}
         />
       )
@@ -34,9 +44,13 @@ export function SummaryReviewDialog({
 
 function ActiveSummaryReviewDialog({
   review,
+  providers,
+  active_model,
   onResolve,
 }: {
   review: SummaryReviewView;
+  providers: ProviderSummary[];
+  active_model: ModelSelection;
   onResolve(resolution: SummaryReviewResolution): void;
 }) {
   const dialogRef = useRef<HTMLDialogElement | null>(null);
@@ -44,6 +58,12 @@ function ActiveSummaryReviewDialog({
   const [approvedText, setApprovedText] = useState(review.draft_text);
   const [feedbackText, setFeedbackText] = useState("");
   const [isPreviewing, setIsPreviewing] = useState(false);
+  const [summaryProviderId, setSummaryProviderId] = useState(
+    review.summary_model?.provider_id ?? "",
+  );
+  const [summaryModelId, setSummaryModelId] = useState(
+    review.summary_model?.model_id ?? "",
+  );
   const [selectedSectionIds, setSelectedSectionIds] = useState<Set<string>>(
     () => new Set(review.selected_section_ids),
   );
@@ -52,6 +72,9 @@ function ActiveSummaryReviewDialog({
     selectedSectionIds,
     review.selected_section_ids,
   );
+  const summaryModelChanged =
+    summaryProviderId !== (review.summary_model?.provider_id ?? "") ||
+    summaryModelId !== (review.summary_model?.model_id ?? "");
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -66,8 +89,39 @@ function ActiveSummaryReviewDialog({
     !review.is_submitting &&
     approvedText.trim().length > 0 &&
     selectedSectionIds.size > 0 &&
-    !selectionChanged;
+    !selectionChanged &&
+    !summaryModelChanged;
   const selectedIds = () => [...selectedSectionIds];
+  const readyProviders = providers
+    .map((provider) => ({
+      ...provider,
+      models: provider.models.filter(
+        (model) => model.availability === "ready",
+      ),
+    }))
+    .filter(
+      (provider) =>
+        provider.availability === "ready" && provider.models.length > 0,
+    );
+  const selectedProvider = readyProviders.find(
+    (provider) => provider.provider_id === summaryProviderId,
+  );
+  const selectedSummaryModel = (): ModelSelection | null =>
+    summaryProviderId && summaryModelId
+      ? {
+          provider_id: summaryProviderId,
+          model_id: summaryModelId,
+        }
+      : null;
+  const activeModelLabel =
+    providers
+      .find(
+        (provider) =>
+          provider.provider_id === active_model.provider_id,
+      )
+      ?.models.find(
+        (model) => model.model_id === active_model.model_id,
+      )?.display_name ?? active_model.model_id;
 
   function cancel() {
     if (review?.is_submitting) return;
@@ -76,6 +130,7 @@ function ActiveSummaryReviewDialog({
       approved_text: "",
       selected_section_ids: [],
       feedback_text: "",
+      summary_model: selectedSummaryModel(),
     });
   }
 
@@ -101,6 +156,58 @@ function ActiveSummaryReviewDialog({
                 ? "Choose which search results the agent may use."
                 : "Edit, preview, or regenerate the synthesis before approval."}
             </p>
+            <div className="summary-review-models">
+              <label>
+                <span>Summary provider</span>
+                <select
+                  value={summaryProviderId}
+                  disabled={review.is_submitting}
+                  onChange={(event) => {
+                    const providerId = event.target.value;
+                    const provider = readyProviders.find(
+                      (candidate) =>
+                        candidate.provider_id === providerId,
+                    );
+                    setSummaryProviderId(providerId);
+                    setSummaryModelId(
+                      provider?.models[0]?.model_id ?? "",
+                    );
+                  }}
+                >
+                  <option value="">Auto ({activeModelLabel})</option>
+                  {readyProviders.map((provider) => (
+                    <option
+                      key={provider.provider_id}
+                      value={provider.provider_id}
+                    >
+                      {provider.display_name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Summary model</span>
+                <select
+                  value={summaryModelId}
+                  disabled={
+                    review.is_submitting || summaryProviderId === ""
+                  }
+                  onChange={(event) =>
+                    setSummaryModelId(event.target.value)}
+                >
+                  {summaryProviderId === ""
+                    ? <option value="">Active model</option>
+                    : selectedProvider?.models.map((model) => (
+                        <option
+                          key={model.model_id}
+                          value={model.model_id}
+                        >
+                          {model.display_name}
+                        </option>
+                      ))}
+                </select>
+              </label>
+            </div>
           </div>
           <button
             className="icon-button"
@@ -175,9 +282,11 @@ function ActiveSummaryReviewDialog({
                   {isPreviewing ? "Summary preview" : "Approved summary"}
                 </strong>
                 <small>
-                  {selectionChanged
-                    ? "Selection changed. Regenerate before approval."
-                    : "Only the approved Markdown is sent to the agent."}
+                  {selectionChanged || summaryModelChanged
+                    ? `${
+                        selectionChanged ? "Selection" : "Summary model"
+                      } changed. Regenerate before approval.`
+                    : formatDraftMetadata(review)}
                 </small>
               </span>
               {isPreviewing
@@ -241,6 +350,7 @@ function ActiveSummaryReviewDialog({
                           approved_text: "",
                           selected_section_ids: selectedIds(),
                           feedback_text: "",
+                          summary_model: selectedSummaryModel(),
                         });
                       }}
                     >
@@ -260,6 +370,7 @@ function ActiveSummaryReviewDialog({
                           approved_text: "",
                           selected_section_ids: selectedIds(),
                           feedback_text: "",
+                          summary_model: selectedSummaryModel(),
                         });
                       }}
                     >
@@ -279,6 +390,7 @@ function ActiveSummaryReviewDialog({
                           approved_text: "",
                           selected_section_ids: selectedIds(),
                           feedback_text: "",
+                          summary_model: selectedSummaryModel(),
                         });
                       }}
                     >
@@ -297,6 +409,7 @@ function ActiveSummaryReviewDialog({
                           approved_text: approvedText,
                           selected_section_ids: selectedIds(),
                           feedback_text: feedbackText.trim(),
+                          summary_model: selectedSummaryModel(),
                         });
                       }}
                     >
@@ -321,6 +434,7 @@ function ActiveSummaryReviewDialog({
                           approved_text: approvedText.trim(),
                           selected_section_ids: selectedIds(),
                           feedback_text: "",
+                          summary_model: selectedSummaryModel(),
                         });
                       }}
                     >
@@ -348,4 +462,25 @@ function sameStringSet(
 ): boolean {
   return current.size === expected.length &&
     expected.every((value) => current.has(value));
+}
+
+function formatDraftMetadata(review: SummaryReviewView): string {
+  const metadata = review.draft_metadata;
+  if (!metadata) return "Only the approved Markdown is sent to the agent.";
+  const model = metadata.model
+    ? `${metadata.model.provider_id}/${metadata.model.model_id}`
+    : "deterministic fallback";
+  const requestedModel = review.summary_model
+    ? `${review.summary_model.provider_id}/${review.summary_model.model_id}`
+    : null;
+  const modelLabel =
+    requestedModel && requestedModel !== model
+      ? `requested ${requestedModel}; generated with ${model}`
+      : model;
+  const timing = `${(metadata.duration_ms / 1_000).toFixed(1)}s`;
+  const tokens = `~${metadata.token_estimate} tokens`;
+  const fallback = metadata.fallback_reason
+    ? ` · ${metadata.fallback_reason}`
+    : "";
+  return `${modelLabel} · ${timing} · ${tokens}${fallback}`;
 }

@@ -468,6 +468,8 @@ export function ResearchBoxViewer({
 
       <SummaryReviewDialog
         review={summaryReview}
+        providers={coreState.providers}
+        active_model={coreState.active_model}
         onResolve={resolveSummaryReview}
       />
 

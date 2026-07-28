@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 12 as const;
+export const PROTOCOL_VERSION = 13 as const;
 
 export const SUMMARY_REVIEW_MAX_SECTIONS = 20;
 export const SUMMARY_REVIEW_MAX_TEXT_LENGTH = 256 * 1024;
@@ -15,11 +15,21 @@ export type SummaryReviewSection = {
   sources: SummaryReviewSource[];
 };
 
+export type SummaryReviewDraftMetadata = {
+  model: ModelSelection | null;
+  duration_ms: number;
+  token_estimate: number;
+  fallback_used: boolean;
+  fallback_reason: string | null;
+};
+
 export type SummaryReviewRequest = {
   interaction_id: string;
   stage: "select-evidence" | "review-summary";
   title: string;
   draft_text: string;
+  summary_model: ModelSelection | null;
+  draft_metadata: SummaryReviewDraftMetadata | null;
   sections: SummaryReviewSection[];
   selected_section_ids: string[];
 };
@@ -35,6 +45,7 @@ export type SummaryReviewResolution = {
   approved_text: string;
   selected_section_ids: string[];
   feedback_text: string;
+  summary_model: ModelSelection | null;
 };
 
 export type FileEntry = {
@@ -1096,6 +1107,8 @@ function parseSummaryReviewRequest(
       "stage",
       "title",
       "draft_text",
+      "summary_model",
+      "draft_metadata",
       "sections",
       "selected_section_ids",
     ],
@@ -1134,13 +1147,62 @@ function parseSummaryReviewRequest(
       "Summary review selected section ids must reference available sections.",
     );
   }
+  const summaryModel = parseNullableSummaryModelSelection(
+    value.summary_model,
+  );
+  const draftMetadata = parseNullableSummaryReviewDraftMetadata(
+    value.draft_metadata,
+  );
   return {
     interaction_id: requireString(value, "interaction_id"),
     stage,
     title: requireBoundedString(value, "title", 200),
     draft_text: draftText,
+    summary_model: summaryModel,
+    draft_metadata: draftMetadata,
     sections: parsedSections,
     selected_section_ids: selectedSectionIds,
+  };
+}
+
+function parseNullableSummaryReviewDraftMetadata(
+  value: unknown,
+): SummaryReviewDraftMetadata | null {
+  if (value === null) return null;
+  if (!isRecord(value)) {
+    throw new Error("Summary review draft metadata must be an object.");
+  }
+  assertExactKeys(
+    value,
+    [
+      "model",
+      "duration_ms",
+      "token_estimate",
+      "fallback_used",
+      "fallback_reason",
+    ],
+    "summary review draft metadata",
+  );
+  const fallbackReason = value.fallback_reason === null
+    ? null
+    : requireBoundedString(value, "fallback_reason", 256);
+  const model = parseNullableSummaryModelSelection(value.model);
+  const fallbackUsed = requireBoolean(value, "fallback_used");
+  if (
+    fallbackUsed
+      ? model !== null || !fallbackReason
+      : model === null || fallbackReason !== null
+  ) {
+    throw new Error(
+      "Summary review draft metadata has inconsistent fallback fields.",
+    );
+  }
+  return {
+    model,
+    duration_ms: requireNonNegativeInteger(value, "duration_ms"),
+    token_estimate: requireNonNegativeInteger(value, "token_estimate"),
+    fallback_used: fallbackUsed,
+    fallback_reason: fallbackReason,
   };
 }
 
@@ -1211,6 +1273,7 @@ function parseSummaryReviewResolution(
       "approved_text",
       "selected_section_ids",
       "feedback_text",
+      "summary_model",
     ],
     "summary review resolution",
   );
@@ -1248,6 +1311,27 @@ function parseSummaryReviewResolution(
     approved_text: approvedText,
     selected_section_ids: selectedSectionIds,
     feedback_text: feedbackText,
+    summary_model: parseNullableSummaryModelSelection(
+      value.summary_model,
+    ),
+  };
+}
+
+function parseNullableSummaryModelSelection(
+  value: unknown,
+): ModelSelection | null {
+  if (value === null) return null;
+  if (!isRecord(value)) {
+    throw new Error("Summary model selection must be an object.");
+  }
+  assertExactKeys(
+    value,
+    ["provider_id", "model_id"],
+    "summary model selection",
+  );
+  return {
+    provider_id: requireBoundedString(value, "provider_id", 256),
+    model_id: requireBoundedString(value, "model_id", 512),
   };
 }
 

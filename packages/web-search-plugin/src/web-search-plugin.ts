@@ -3,6 +3,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type {
   AgentPlugin,
   AgentPluginModelCompletion,
+  ModelSelection,
 } from "@researchbox/agent-core";
 
 export const MAX_WEB_SEARCH_QUERY_BYTES = 4 * 1024;
@@ -71,6 +72,8 @@ type WebSearchToolDetails = {
     model: string | null;
     fallback_used: boolean;
     fallback_reason?: string;
+    duration_ms: number;
+    token_estimate: number;
     reviewed: boolean;
     edited: boolean;
   };
@@ -187,6 +190,7 @@ export function createWebSearchAgentPlugin(
             null;
           let reviewed = false;
           let edited = false;
+          let summaryModel: ModelSelection | null = null;
           let selectedSectionIds = queryResults.map(
             (_result, index) => String(index),
           );
@@ -208,6 +212,8 @@ export function createWebSearchAgentPlugin(
                   stage: "select-evidence",
                   title: "Select web search evidence",
                   draft_text: "",
+                  summary_model: summaryModel,
+                  draft_metadata: null,
                   sections,
                   selected_section_ids: selectedSectionIds,
                 },
@@ -230,6 +236,7 @@ export function createWebSearchAgentPlugin(
                 );
               }
               selectedSectionIds = selection.selected_section_ids;
+              summaryModel = selection.summary_model;
               selectedResults = selectQueryResults(
                 queryResults,
                 selectedSectionIds,
@@ -246,6 +253,7 @@ export function createWebSearchAgentPlugin(
                 options.summary_timeout_ms,
                 options.maximum_output_bytes,
                 signal,
+                summaryModel,
               );
               while (true) {
                 const resolution = await context.request_summary_review(
@@ -253,6 +261,15 @@ export function createWebSearchAgentPlugin(
                     stage: "review-summary",
                     title: "Review web search summary",
                     draft_text: synthesis.text,
+                    summary_model: summaryModel,
+                    draft_metadata: {
+                      model: synthesis.model_selection,
+                      duration_ms: synthesis.duration_ms,
+                      token_estimate: synthesis.token_estimate,
+                      fallback_used: synthesis.fallback_used,
+                      fallback_reason:
+                        synthesis.fallback_reason ?? null,
+                    },
                     sections,
                     selected_section_ids: selectedSectionIds,
                   },
@@ -270,9 +287,11 @@ export function createWebSearchAgentPlugin(
                   if (resolution.selected_section_ids.length > 0) {
                     selectedSectionIds = resolution.selected_section_ids;
                   }
+                  summaryModel = resolution.summary_model;
                   continue selectionLoop;
                 }
                 if (resolution.decision === "regenerate") {
+                  summaryModel = resolution.summary_model;
                   selectedSectionIds = resolution.selected_section_ids;
                   selectedResults = selectQueryResults(
                     queryResults,
@@ -284,6 +303,7 @@ export function createWebSearchAgentPlugin(
                     options.summary_timeout_ms,
                     options.maximum_output_bytes,
                     signal,
+                    summaryModel,
                     resolution.feedback_text,
                   );
                   continue;
@@ -342,6 +362,8 @@ export function createWebSearchAgentPlugin(
                     synthesis: {
                       model: synthesis.model,
                       fallback_used: synthesis.fallback_used,
+                      duration_ms: synthesis.duration_ms,
+                      token_estimate: synthesis.token_estimate,
                       ...(synthesis.fallback_reason
                         ? {
                             fallback_reason:
@@ -498,25 +520,32 @@ async function synthesizeResults(
     | ((
         prompt: string,
         signal?: AbortSignal,
+        model?: ModelSelection,
       ) => Promise<AgentPluginModelCompletion>)
     | undefined,
   timeoutMs: number,
   maximumOutputBytes: number,
   signal?: AbortSignal,
+  model?: ModelSelection | null,
   feedback?: string,
 ): Promise<{
   text: string;
   model: string | null;
+  model_selection: ModelSelection | null;
   fallback_used: boolean;
   fallback_reason?: string;
+  duration_ms: number;
+  token_estimate: number;
 }> {
+  const startedAt = Date.now();
   if (!completeModel) {
-    return {
-      text: buildDeterministicSummary(results),
-      model: null,
-      fallback_used: true,
-      fallback_reason: "model-completion-unavailable",
-    };
+    return createSynthesisResult(
+      buildDeterministicSummary(results),
+      null,
+      true,
+      startedAt,
+      "model-completion-unavailable",
+    );
   }
   const timeoutController = new AbortController();
   const timeoutMarker = Symbol("web-search-summary-timeout");
@@ -548,48 +577,94 @@ async function synthesizeResults(
       })
     : null;
   try {
-    const completionPromise = completeModel(
-      buildSummaryPrompt(results, maximumOutputBytes, feedback),
-      completionSignal,
+    const prompt = buildSummaryPrompt(
+      results,
+      maximumOutputBytes,
+      feedback,
     );
-    void completionPromise.catch(() => undefined);
-    const outcome = await Promise.race([
-      completionPromise,
-      timeoutPromise,
-      ...(callerAbortPromise ? [callerAbortPromise] : []),
-    ]);
-    if (outcome === timeoutMarker) {
-      return {
-        text: buildDeterministicSummary(results),
-        model: null,
-        fallback_used: true,
-        fallback_reason: "summary-generation-timeout",
-      };
-    }
-    const completion = outcome;
-    return {
-      text: completion.text,
-      model: `${completion.provider_id}/${completion.model_id}`,
-      fallback_used: false,
+    const completeOnce = async (
+      selectedModel?: ModelSelection,
+    ): Promise<AgentPluginModelCompletion> => {
+      const completionPromise = completeModel(
+        prompt,
+        completionSignal,
+        selectedModel,
+      );
+      void completionPromise.catch(() => undefined);
+      const outcome = await Promise.race([
+        completionPromise,
+        timeoutPromise,
+        ...(callerAbortPromise ? [callerAbortPromise] : []),
+      ]);
+      if (outcome === timeoutMarker) throw timeoutMarker;
+      return outcome;
     };
+    let completion: AgentPluginModelCompletion;
+    try {
+      completion = await completeOnce(model ?? undefined);
+    } catch (error) {
+      if (
+        !model ||
+        signal?.aborted ||
+        error === timeoutMarker ||
+        timeoutController.signal.aborted
+      ) {
+        throw error;
+      }
+      completion = await completeOnce();
+    }
+    return createSynthesisResult(
+      completion.text,
+      {
+        provider_id: completion.provider_id,
+        model_id: completion.model_id,
+      },
+      false,
+      startedAt,
+    );
   } catch (error) {
     if (signal?.aborted) throw error;
-    return {
-      text: buildDeterministicSummary(results),
-      model: null,
-      fallback_used: true,
-      fallback_reason: timeoutController.signal.aborted
+    return createSynthesisResult(
+      buildDeterministicSummary(results),
+      null,
+      true,
+      startedAt,
+      timeoutController.signal.aborted
         ? "summary-generation-timeout"
-        : `summary-model-unavailable: ${
-            error instanceof Error ? error.message : "unknown error"
-          }`,
-    };
+        : "summary-model-unavailable",
+    );
   } finally {
     clearTimeout(timeout);
     if (signal && rejectCallerAbort) {
       signal.removeEventListener("abort", rejectCallerAbort);
     }
   }
+}
+
+function createSynthesisResult(
+  text: string,
+  modelSelection: ModelSelection | null,
+  fallbackUsed: boolean,
+  startedAt: number,
+  fallbackReason?: string,
+) {
+  const model = modelSelection
+    ? `${modelSelection.provider_id}/${modelSelection.model_id}`
+    : null;
+  return {
+    text,
+    model,
+    model_selection: modelSelection,
+    fallback_used: fallbackUsed,
+    ...(fallbackReason ? { fallback_reason: fallbackReason } : {}),
+    duration_ms: Math.max(0, Date.now() - startedAt),
+    token_estimate: estimateTokens(text),
+  };
+}
+
+function estimateTokens(text: string): number {
+  const trimmed = text.trim();
+  return trimmed.length === 0 ? 0 : Math.max(1, Math.ceil(trimmed.length / 4));
 }
 
 function buildSummaryPrompt(

@@ -16,6 +16,7 @@ import {
   type AssistantBlock,
   type AssistantMessageEntry,
   type CoreEvent,
+  type ModelSelection,
   type SummaryReviewRequest,
   type SummaryReviewResolution,
   type ToolCallBlock,
@@ -50,6 +51,7 @@ export type SessionRuntimeOptions = {
   workspace: WorkspaceController;
   model_transport: ModelTransport;
   model: Model<string>;
+  resolve_model?: (selection: ModelSelection) => Model<string> | undefined;
   system_prompt: string;
   plugins?: readonly AgentPlugin[];
   event_sink: CoreEventSink;
@@ -124,10 +126,10 @@ export class SessionRuntime {
           {
             project_id: options.project_id,
             session_id: options.session_id,
-            complete_model: (prompt, signal) =>
+            complete_model: (prompt, signal, selection) =>
               completePluginModel(
                 options.model_transport,
-                options.model,
+                resolvePluginModel(options, selection),
                 options.session_id,
                 prompt,
                 signal,
@@ -296,6 +298,12 @@ export class SessionRuntime {
       stage: request.stage,
       title: request.title,
       draft_text: request.draft_text,
+      summary_model: request.summary_model
+        ? { ...request.summary_model }
+        : null,
+      draft_metadata: request.draft_metadata
+        ? structuredClone(request.draft_metadata)
+        : null,
       sections: structuredClone(request.sections),
       selected_section_ids: [...request.selected_section_ids],
     };
@@ -1363,6 +1371,20 @@ export class SessionRuntime {
       requestId,
     );
   }
+}
+
+function resolvePluginModel(
+  options: Pick<SessionRuntimeOptions, "model" | "resolve_model">,
+  selection: ModelSelection | undefined,
+): Model<string> {
+  if (!selection) return options.model;
+  const model = options.resolve_model?.(selection);
+  if (!model) {
+    throw new Error(
+      `Summary model is unavailable: ${selection.provider_id}/${selection.model_id}`,
+    );
+  }
+  return model;
 }
 
 async function completePluginModel(

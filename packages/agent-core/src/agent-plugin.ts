@@ -9,6 +9,7 @@ export type { ModelSelection };
 
 export type SummaryReviewInteraction = {
   resolution: Promise<SummaryReviewResolution>;
+  subscribe_activity(listener: () => void): () => void;
   update(
     request: Omit<SummaryReviewRequest, "interaction_id">,
   ): void;

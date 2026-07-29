@@ -134,6 +134,7 @@ export function ResearchBoxViewer({
     refreshingProviderIds,
     summaryReview,
     resolveSummaryReview,
+    touchSummaryReview,
     submitPrompt,
     updateInputDraft,
     createProject,
@@ -471,6 +472,7 @@ export function ResearchBoxViewer({
         providers={coreState.providers}
         active_model={coreState.active_model}
         onResolve={resolveSummaryReview}
+        onActivity={touchSummaryReview}
       />
 
       {activePage === "plugins" && (

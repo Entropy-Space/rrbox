@@ -323,6 +323,83 @@ test("summary review deadline returns a deterministic synthesis", async () => {
   assert.equal(result.details.synthesis.reviewed, true);
 });
 
+test("active review interaction resets the idle deadline", async () => {
+  const plugin = createWebSearchAgentPlugin({
+    async search(request) {
+      return {
+        query: request.query,
+        provider: "exa",
+        answer: "Evidence retained during active review.",
+        sources: [{
+          title: "Example",
+          url: "https://example.com/",
+        }],
+      };
+    },
+    close() {},
+  }, {
+    maximum_results: 5,
+    maximum_output_bytes: 64 * 1024,
+    default_provider: "exa",
+    default_workflow: "summary-review",
+    summary_timeout_ms: 1_000,
+    review_timeout_ms: 60,
+  });
+  let draftRequest;
+  let resolveReview;
+  const [tool] = plugin.createTools({
+    project_id: "project",
+    session_id: "session",
+    open_summary_review() {
+      const activityTimers = [];
+      return {
+        resolution: new Promise((resolve) => {
+          resolveReview = resolve;
+        }),
+        subscribe_activity(listener) {
+          activityTimers.push(setTimeout(listener, 40));
+          activityTimers.push(setTimeout(() => {
+            resolveReview({
+              decision: "approve",
+              approved_text: draftRequest.draft_text,
+              selected_section_ids:
+                draftRequest.selected_section_ids,
+              feedback_text: "",
+              summary_model: null,
+              search_provider: "exa",
+              query_text: "",
+            });
+          }, 80));
+          return () => {
+            for (const timer of activityTimers) clearTimeout(timer);
+          };
+        },
+        update(request) {
+          if (request.stage === "review-summary") {
+            draftRequest = request;
+          }
+        },
+      };
+    },
+  });
+
+  const result = await tool.execute(
+    "call",
+    { query: "example" },
+    new AbortController().signal,
+    () => {},
+  );
+
+  assert.match(
+    result.content[0].text,
+    /Evidence retained during active review/u,
+  );
+  assert.equal(
+    result.details.synthesis.fallback_reason,
+    "model-completion-unavailable",
+  );
+});
+
 test("summary draft deadline discards the unapproved model draft", async () => {
   const plugin = createWebSearchAgentPlugin({
     async search(request) {

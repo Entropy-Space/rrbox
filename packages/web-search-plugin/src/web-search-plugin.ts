@@ -447,6 +447,7 @@ export function createWebSearchAgentPlugin(
                   reviewController,
                   options.review_timeout_ms,
                   signal,
+                  liveReview.subscribe_activity,
                 );
               } else {
                 try {
@@ -569,6 +570,7 @@ export function createWebSearchAgentPlugin(
                     reviewController,
                     options.review_timeout_ms,
                     signal,
+                    liveReview.subscribe_activity,
                   );
                   reviewed = true;
                 }
@@ -617,6 +619,7 @@ export function createWebSearchAgentPlugin(
                     },
                     options.review_timeout_ms,
                     signal,
+                    context.open_summary_review,
                   );
                 pendingSelection = null;
                 if (selection === null) {
@@ -860,6 +863,7 @@ export function createWebSearchAgentPlugin(
                     },
                     options.review_timeout_ms,
                     signal,
+                    context.open_summary_review,
                   );
                 nextDraftResolution = null;
                 if (resolution === null) {
@@ -1292,10 +1296,22 @@ async function requestSummaryReviewWithDeadline(
   request: SummaryReviewInput,
   timeoutMs: number,
   signal?: AbortSignal,
+  openReview?: SummaryReviewOpener,
 ): Promise<SummaryReviewResolution | null> {
+  if (openReview) {
+    return openSummaryReviewWithDeadline(
+      openReview,
+      request,
+      timeoutMs,
+      signal,
+    ).resolution;
+  }
   return openSummaryReviewWithDeadline(
     (initialRequest, reviewSignal) => ({
       resolution: requestReview(initialRequest, reviewSignal),
+      subscribe_activity() {
+        return () => undefined;
+      },
       update() {
         throw new Error("This summary review cannot be updated.");
       },
@@ -1330,6 +1346,7 @@ function openSummaryReviewWithDeadline(
       timeoutController,
       timeoutMs,
       signal,
+      interaction.subscribe_activity,
     ),
   };
 }
@@ -1339,16 +1356,23 @@ async function waitForSummaryReviewWithDeadline(
   timeoutController: AbortController,
   timeoutMs: number,
   signal?: AbortSignal,
+  subscribeActivity?: SummaryReviewInteraction["subscribe_activity"],
 ): Promise<SummaryReviewResolution | null> {
   const timeoutMarker = Symbol("summary-review-timeout");
   let resolveTimeout!: () => void;
   const timeoutPromise = new Promise<typeof timeoutMarker>((resolve) => {
     resolveTimeout = () => resolve(timeoutMarker);
   });
-  const timeout = setTimeout(() => {
-    timeoutController.abort();
-    resolveTimeout();
-  }, timeoutMs);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const resetTimeout = () => {
+    if (timeout) clearTimeout(timeout);
+    timeout = setTimeout(() => {
+      timeoutController.abort();
+      resolveTimeout();
+    }, timeoutMs);
+  };
+  resetTimeout();
+  const unsubscribeActivity = subscribeActivity?.(resetTimeout);
   let rejectCallerAbort: (() => void) | undefined;
   const callerAbortPromise = signal
     ? new Promise<never>((_resolve, reject) => {
@@ -1370,7 +1394,8 @@ async function waitForSummaryReviewWithDeadline(
     if (timeoutController.signal.aborted) return null;
     throw error;
   } finally {
-    clearTimeout(timeout);
+    if (timeout) clearTimeout(timeout);
+    unsubscribeActivity?.();
     if (signal && rejectCallerAbort) {
       signal.removeEventListener("abort", rejectCallerAbort);
     }

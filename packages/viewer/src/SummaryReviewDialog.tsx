@@ -23,11 +23,13 @@ export function SummaryReviewDialog({
   providers,
   active_model,
   onResolve,
+  onActivity,
 }: {
   review: SummaryReviewView | null;
   providers: ProviderSummary[];
   active_model: ModelSelection;
   onResolve(resolution: SummaryReviewResolution): void;
+  onActivity(): void;
 }) {
   return review
     ? (
@@ -37,6 +39,7 @@ export function SummaryReviewDialog({
           providers={providers}
           active_model={active_model}
           onResolve={onResolve}
+          onActivity={onActivity}
         />
       )
     : <dialog className="summary-review-dialog" />;
@@ -47,14 +50,17 @@ function ActiveSummaryReviewDialog({
   providers,
   active_model,
   onResolve,
+  onActivity,
 }: {
   review: SummaryReviewView;
   providers: ProviderSummary[];
   active_model: ModelSelection;
   onResolve(resolution: SummaryReviewResolution): void;
+  onActivity(): void;
 }) {
   const dialogRef = useRef<HTMLDialogElement | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
+  const lastActivityAtRef = useRef(0);
   const [approvedTextOverride, setApprovedText] = useState<string | null>(
     null,
   );
@@ -147,11 +153,23 @@ function ActiveSummaryReviewDialog({
     });
   }
 
+  function reportActivity() {
+    const now = Date.now();
+    if (now - lastActivityAtRef.current < 1_000) return;
+    lastActivityAtRef.current = now;
+    onActivity();
+  }
+
   return (
     <dialog
       ref={dialogRef}
       className="summary-review-dialog"
       aria-labelledby="summary-review-title"
+      onClickCapture={reportActivity}
+      onInputCapture={reportActivity}
+      onKeyDownCapture={reportActivity}
+      onPointerMoveCapture={reportActivity}
+      onScrollCapture={reportActivity}
       onCancel={(event) => {
         event.preventDefault();
         cancel();

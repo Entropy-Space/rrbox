@@ -236,6 +236,9 @@ export class ResearchBoxCore {
       case "summary_review_resolve":
         this.resolveSummaryReview(command);
         return;
+      case "summary_review_touch":
+        this.touchSummaryReview(command);
+        return;
       case "prompt":
         await this.prompt(command);
         return;
@@ -745,6 +748,22 @@ export class ResearchBoxCore {
         command.payload.session_id,
       );
     }
+  }
+
+  private touchSummaryReview(
+    command: Extract<
+      ViewerCommand,
+      { type: "summary_review_touch" }
+    >,
+  ): void {
+    const runtime = this.runtime;
+    if (
+      runtime?.project_id !== command.payload.project_id ||
+      runtime.session_id !== command.payload.session_id
+    ) {
+      return;
+    }
+    runtime.touchSummaryReview(command.payload.interaction_id);
   }
 
   private async createProject(name: string, requestId: string): Promise<void> {

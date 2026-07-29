@@ -33,6 +33,7 @@ const localModel = {
 
 test("summary review pauses a tool until the viewer approves it", async () => {
   const events = [];
+  let reviewActivityCount = 0;
   let publishReviewResults;
   const reviewResultsReady = new Promise((resolve) => {
     publishReviewResults = resolve;
@@ -92,6 +93,11 @@ test("summary review pauses a tool until the viewer approves it", async () => {
                 sections: [],
                 selected_section_ids: [],
               }, signal);
+              const unsubscribeActivity = interaction.subscribe_activity(
+                () => {
+                  reviewActivityCount += 1;
+                },
+              );
               await reviewResultsReady;
               interaction.update({
                 stage: "review-summary",
@@ -130,6 +136,7 @@ test("summary review pauses a tool until the viewer approves it", async () => {
                 selected_section_ids: ["0"],
               });
               const resolution = await interaction.resolution;
+              unsubscribeActivity();
               return {
                 content: [{
                   type: "text",
@@ -159,6 +166,12 @@ test("summary review pauses a tool until the viewer approves it", async () => {
   );
   assert.equal(review.payload.is_loading, true);
   assert.deepEqual(review.payload.sections, []);
+  await core.handle(createCommand("summary_review_touch", {
+    project_id: review.payload.project_id,
+    session_id: review.payload.session_id,
+    interaction_id: review.payload.interaction_id,
+  }));
+  assert.equal(reviewActivityCount, 1);
   await core.handle(createCommand("summary_review_resolve", {
     project_id: review.payload.project_id,
     session_id: review.payload.session_id,
@@ -244,6 +257,13 @@ test("summary review pauses a tool until the viewer approves it", async () => {
     },
   }));
   await prompt;
+
+  await core.handle(createCommand("summary_review_touch", {
+    project_id: review.payload.project_id,
+    session_id: review.payload.session_id,
+    interaction_id: review.payload.interaction_id,
+  }));
+  assert.equal(reviewActivityCount, 1);
 
   assert.equal(
     events.filter((event) => event.type === "summary_review_resolved").length,

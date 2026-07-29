@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 18 as const;
+export const PROTOCOL_VERSION = 19 as const;
 
 export const SUMMARY_REVIEW_MAX_SECTIONS = 20;
 export const SUMMARY_REVIEW_MAX_SEARCH_PROVIDERS = 20;
@@ -333,6 +333,10 @@ export type ViewerCommand =
         resolution: SummaryReviewResolution;
       }
     >
+  | CommandEnvelope<
+      "summary_review_touch",
+      SessionScope & { interaction_id: string }
+    >
   | CommandEnvelope<"workspace_export", { project_id: string }>
   | CommandEnvelope<
       "workspace_export_cancel",
@@ -633,6 +637,16 @@ export function parseViewerCommand(value: unknown): ViewerCommand {
         ...parseSessionScope(payload),
         interaction_id: requireString(payload, "interaction_id"),
         resolution: parseSummaryReviewResolution(payload.resolution),
+      });
+    case "summary_review_touch":
+      assertExactKeys(
+        payload,
+        ["project_id", "session_id", "interaction_id"],
+        "summary_review_touch payload",
+      );
+      return commandEnvelope("summary_review_touch", requestId, {
+        ...parseSessionScope(payload),
+        interaction_id: requireString(payload, "interaction_id"),
       });
     case "workspace_export":
       assertExactKeys(

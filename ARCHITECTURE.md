@@ -92,7 +92,7 @@ packages/viewer → browser workspace adapter → browser/archive.worker.ts
 The viewer depends on `CoreTransport`, not on `Worker`. Both applications
 construct `WorkerCoreTransport`, which validates all incoming protocol values,
 isolates subscribers, and owns worker teardown. The viewer and core worker
-exchange only protocol-v18 JSON values. Transport shutdown uses a separate
+exchange only protocol-v19 JSON values. Transport shutdown uses a separate
 versioned control envelope: it asks the worker to abort and drain the core,
 waits for disposal acknowledgement, and force-terminates after a bounded
 timeout if cleanup cannot finish. A
@@ -193,16 +193,18 @@ evidence.
 It reports the actual model, duration, token estimate, and fallback reason, and
 allows editing, Markdown preview, regeneration with feedback, changing models,
 returning to evidence selection, approval, or cancellation. Only selected
-evidence reaches later regeneration. During evidence selection,
-the viewer can switch among currently available search providers to add independently
-selectable evidence for the current query set, improve a bounded query with
-the selected summary model, or add another bounded search with the active
-search provider; neither query drafts nor results persist after the tool
-call. These internal model calls use the same model transport and
-cancellation boundary as the active agent. Each actionable review interaction
-also has a bounded deadline; initial retrieval does not consume that review
-window. Expiry aborts and clears the pending core interaction before the
-plugin returns a deterministic summary of the current selection.
+evidence reaches later regeneration. During evidence selection, the viewer can
+switch among currently available search providers to add independently
+selectable evidence for the current query set, improve a bounded query with the
+selected summary model, or add another bounded search with the active search
+provider; neither query drafts nor results persist after the tool call. These
+internal model calls use the same model transport and cancellation boundary as
+the active agent. Each actionable review interaction also has a bounded idle
+timeout; initial retrieval does not consume that window. Throttled,
+interaction-scoped viewer activity resets it, so active
+editing does not expire; stale activity is ignored without reviving a closed
+interaction. Idle expiry aborts and clears the pending core interaction before
+the plugin returns a deterministic summary of the current selection.
 
 The router supports an explicit provider, configurable ordered automatic
 fallback for transient, quota, and network failures, or bounded all-provider

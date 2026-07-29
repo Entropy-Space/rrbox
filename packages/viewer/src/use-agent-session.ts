@@ -866,6 +866,22 @@ export function useAgentSession(
     [summaryReview],
   );
 
+  const touchSummaryReview = useCallback((): void => {
+    const review = summaryReview;
+    if (!review || review.is_submitting) return;
+    const transport = transportRef.current;
+    if (!transport) return;
+    try {
+      transport.send(createCommand("summary_review_touch", {
+        project_id: review.project_id,
+        session_id: review.session_id,
+        interaction_id: review.interaction_id,
+      }));
+    } catch {
+      // Activity heartbeats are best-effort and never change review state.
+    }
+  }, [summaryReview]);
+
   const openFile = useCallback(
     (entry: FileEntry) => {
       if (!coreState.active_project_id) return;
@@ -917,6 +933,7 @@ export function useAgentSession(
     refreshingProviderIds,
     summaryReview,
     resolveSummaryReview,
+    touchSummaryReview,
     submitPrompt,
     updateInputDraft,
     createProject,

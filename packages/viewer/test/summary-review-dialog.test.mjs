@@ -2,17 +2,22 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const [dialogSource, viewerSource, stylesSource] = await Promise.all([
-  readFile(
-    new URL("../src/SummaryReviewDialog.tsx", import.meta.url),
-    "utf8",
-  ),
-  readFile(
-    new URL("../src/ResearchBoxViewer.tsx", import.meta.url),
-    "utf8",
-  ),
-  readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
-]);
+const [dialogSource, viewerSource, sessionSource, stylesSource] =
+  await Promise.all([
+    readFile(
+      new URL("../src/SummaryReviewDialog.tsx", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../src/ResearchBoxViewer.tsx", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../src/use-agent-session.ts", import.meta.url),
+      "utf8",
+    ),
+    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+  ]);
 
 test("summary review is a modal approval boundary with editable output", () => {
   assert.match(dialogSource, /dialog\.showModal\(\)/u);
@@ -47,9 +52,13 @@ test("summary review is a modal approval boundary with editable output", () => {
   assert.match(dialogSource, /review\.is_loading/u);
   assert.match(dialogSource, /review\.loading_phase === "summary"/u);
   assert.match(dialogSource, /canAddSearchWhileLoading/u);
+  assert.match(dialogSource, /lastActivityAtRef/u);
+  assert.match(dialogSource, /onPointerMoveCapture=\{reportActivity\}/u);
   assert.match(dialogSource, /Searching for evidence/u);
   assert.match(dialogSource, /rel="noreferrer"/u);
   assert.match(viewerSource, /<SummaryReviewDialog/u);
+  assert.match(viewerSource, /onActivity=\{touchSummaryReview\}/u);
+  assert.match(sessionSource, /createCommand\("summary_review_touch"/u);
   assert.match(
     viewerSource,
     /inert=\{modalNavigationOpen \|\| summaryReview \? true : undefined\}/u,

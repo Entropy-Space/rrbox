@@ -86,6 +86,7 @@ type ActiveRun = {
 
 type PendingSummaryReview = {
   request: SummaryReviewRequest;
+  activity_listeners: Set<() => void>;
   signal?: AbortSignal;
   on_abort?: () => void;
   resolve(resolution: SummaryReviewResolution): void;
@@ -325,6 +326,21 @@ export class SessionRuntime {
     pending.resolve(structuredClone(resolution));
   }
 
+  touchSummaryReview(interactionId: string): boolean {
+    const pending = this.pendingSummaryReview;
+    if (!pending || pending.request.interaction_id !== interactionId) {
+      return false;
+    }
+    for (const listener of [...pending.activity_listeners]) {
+      try {
+        listener();
+      } catch {
+        // Plugin activity observers must not break core command handling.
+      }
+    }
+    return true;
+  }
+
   private async executePrompt(text: string, requestId: string): Promise<void> {
     const timelineLength = this.document.timeline.length;
     const previousInputDraft = this.document.input_draft;
@@ -393,6 +409,7 @@ export class SessionRuntime {
       (resolve, reject) => {
         const pending: PendingSummaryReview = {
           request: review,
+          activity_listeners: new Set(),
           signal,
           resolve,
           reject,
@@ -422,6 +439,19 @@ export class SessionRuntime {
     );
     return {
       resolution,
+      subscribe_activity: (listener) => {
+        const pending = this.pendingSummaryReview;
+        if (
+          !pending ||
+          pending.request.interaction_id !== interactionId
+        ) {
+          return () => undefined;
+        }
+        pending.activity_listeners.add(listener);
+        return () => {
+          pending.activity_listeners.delete(listener);
+        };
+      },
       update: (updatedRequest) => {
         const pending = this.pendingSummaryReview;
         if (
@@ -458,6 +488,7 @@ export class SessionRuntime {
     if (pending.signal && pending.on_abort) {
       pending.signal.removeEventListener("abort", pending.on_abort);
     }
+    pending.activity_listeners.clear();
     this.pendingSummaryReview = null;
   }
 

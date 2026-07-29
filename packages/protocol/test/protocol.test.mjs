@@ -9,7 +9,7 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v18 command", () => {
+test("round-trips every protocol-v19 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("bootstrap", {
@@ -79,6 +79,11 @@ test("round-trips every protocol-v18 command", () => {
         search_provider: null,
         query_text: "",
       },
+    }),
+    createCommand("summary_review_touch", {
+      project_id: "p1",
+      session_id: "s1",
+      interaction_id: "review-1",
     }),
     createCommand("workspace_export", { project_id: "p1" }),
     createCommand("workspace_export_cancel", {

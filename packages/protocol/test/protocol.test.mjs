@@ -504,7 +504,7 @@ test("round-trips every normalized timeline core event", () => {
         project_id: "project-1",
         path: "/README.md",
         workspace_revision: 2,
-        content: "# ResearchBox",
+        content: "# rrbox",
       },
       "request-read",
     ),
@@ -524,7 +524,7 @@ test("round-trips every normalized timeline core event", () => {
         project_name: "Project one",
         workspace_revision: 2,
         files: [
-          { path: "/README.md", content: "# ResearchBox" },
+          { path: "/README.md", content: "# rrbox" },
           { path: "/empty.txt", content: "" },
         ],
       },
@@ -1599,14 +1599,14 @@ function createVirtualState() {
 function createMockProvider() {
   return {
     provider_id: "researchbox",
-    display_name: "ResearchBox",
+    display_name: "rrbox",
     kind: "mock",
     availability: "ready",
     models: [
       {
         provider_id: "researchbox",
         model_id: "researchbox-mock",
-        display_name: "ResearchBox Mock",
+        display_name: "rrbox Mock",
         availability: "ready",
       },
     ],

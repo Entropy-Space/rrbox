@@ -100,7 +100,7 @@ test("local OpenAI proxy reports an unreachable gateway", async () => {
   });
 });
 
-test("local OpenAI proxy rejects non-ResearchBox callers", async () => {
+test("local OpenAI proxy rejects non-rrbox callers", async () => {
   await withFetchStub(async () => {
     throw new Error("fetch must not be called");
   }, async () => {

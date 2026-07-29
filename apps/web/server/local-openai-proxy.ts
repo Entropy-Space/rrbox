@@ -16,7 +16,7 @@ export async function proxyLocalOpenAiRequest(
     (fetchSite !== null && fetchSite !== "same-origin")
   ) {
     return Response.json(
-      { error_message: "Local provider access is restricted to ResearchBox." },
+      { error_message: "Local provider access is restricted to rrbox." },
       { status: 403 },
     );
   }

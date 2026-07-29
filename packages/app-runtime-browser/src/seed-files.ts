@@ -1,6 +1,6 @@
 export const researchBoxSeedFiles: Record<string, string> = {
   "/README.md": [
-    "# ResearchBox",
+    "# rrbox",
     "",
     "A browser-native workspace for a Pi agent.",
     "",

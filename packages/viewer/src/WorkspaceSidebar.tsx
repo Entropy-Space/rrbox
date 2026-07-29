@@ -386,9 +386,9 @@ export function WorkspaceSidebar({
         aria-label="Workspace navigation"
       >
         <div className="sidebar-topline">
-          <div className="brand-lockup" aria-label="ResearchBox">
-            <span className="brand-mark">R</span>
-            <span>ResearchBox</span>
+          <div className="brand-lockup" aria-label="rrbox">
+            <span className="brand-mark">rr</span>
+            <span>rrbox</span>
           </div>
           <button
             ref={closeButtonRef}

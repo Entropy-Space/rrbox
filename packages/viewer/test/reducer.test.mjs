@@ -1906,14 +1906,14 @@ function snapshot(
 function mockProvider() {
   return {
     provider_id: "researchbox",
-    display_name: "ResearchBox",
+    display_name: "rrbox",
     kind: "mock",
     availability: "ready",
     models: [
       {
         provider_id: "researchbox",
         model_id: "researchbox-mock",
-        display_name: "ResearchBox Mock",
+        display_name: "rrbox Mock",
         availability: "ready",
       },
     ],

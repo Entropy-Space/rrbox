@@ -136,7 +136,7 @@ export class ResearchBoxDatabase {
         rejectOpen(request.error ?? new Error("IndexedDB open failed."));
       request.onblocked = () => {
         rejectOpen(
-          new Error("IndexedDB upgrade is blocked by another ResearchBox tab."),
+          new Error("IndexedDB upgrade is blocked by another rrbox tab."),
         );
       };
       request.onsuccess = () => {

@@ -1,4 +1,4 @@
-# ResearchBox native
+# rrbox native
 
 This Tauri 2 composition root targets macOS, iOS, and Android with one
 statically bundled React surface. It mounts the shared `ResearchBoxViewer`,
@@ -47,7 +47,7 @@ TypeScript OpenAI transport remains the only SSE and tool-call parser. If the
 local provider is unavailable, only that catalog entry becomes unavailable;
 the mock provider remains usable.
 
-On macOS, `127.0.0.1` refers to the same Mac running ResearchBox. On iOS and
+On macOS, `127.0.0.1` refers to the same Mac running rrbox. On iOS and
 Android it refers to the device or emulator, not the development Mac. A
 configurable, authenticated LAN provider endpoint is intentionally deferred
 until its network and credential policy is designed.
@@ -78,7 +78,7 @@ harness binary is feature-gated and is not included in normal native builds.
 
 ## iOS
 
-The generated Xcode project is committed at `src-tauri/gen/apple`. ResearchBox
+The generated Xcode project is committed at `src-tauri/gen/apple`. rrbox
 targets iOS 15 and newer on arm64 devices and Apple Silicon simulators. The
 project was generated and tested with Xcode 16.3 and XcodeGen 2.45.4. Build
 products, the linked Rust library, and per-user Xcode state are ignored by the

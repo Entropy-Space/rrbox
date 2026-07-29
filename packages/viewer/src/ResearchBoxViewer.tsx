@@ -673,8 +673,8 @@ export function ResearchBoxViewer({
                   ref={composerRef}
                   value={coreState.input_draft}
                   rows={1}
-                  aria-label="Message ResearchBox"
-                  placeholder="Message ResearchBox"
+                  aria-label="Message rrbox"
+                  placeholder="Message rrbox"
                   disabled={
                     !coreState.is_ready ||
                     coreState.active_project_id === null
@@ -725,7 +725,7 @@ export function ResearchBoxViewer({
                 </div>
               </form>
               <p className="composer-note">
-                ResearchBox can make mistakes. Check important work.
+                rrbox can make mistakes. Check important work.
               </p>
             </div>
           </div>

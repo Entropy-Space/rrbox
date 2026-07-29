@@ -3,7 +3,7 @@ import type { ModelDescriptor } from "@researchbox/model-transport";
 
 export const researchBoxMockModel: ResearchBoxCoreOptions["model"] = {
   id: "researchbox-mock",
-  name: "ResearchBox Mock",
+  name: "rrbox Mock",
   api: "researchbox-mock",
   provider: "researchbox",
   baseUrl: "/api/mock",
@@ -21,7 +21,7 @@ export const researchBoxMockModel: ResearchBoxCoreOptions["model"] = {
 
 export const researchBoxMockModelDescriptor: ModelDescriptor = {
   provider_id: researchBoxMockModel.provider,
-  provider_display_name: "ResearchBox",
+  provider_display_name: "rrbox",
   model_id: researchBoxMockModel.id,
   display_name: researchBoxMockModel.name,
   context_window: researchBoxMockModel.contextWindow,
@@ -32,4 +32,4 @@ export const researchBoxMockModelDescriptor: ModelDescriptor = {
 };
 
 export const researchBoxSystemPrompt =
-  "You are ResearchBox, a careful coding and research agent working inside a browser-native virtual filesystem.";
+  "You are rrbox, a careful coding and research agent working inside a browser-native virtual filesystem.";

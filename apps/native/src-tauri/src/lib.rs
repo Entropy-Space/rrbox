@@ -39,5 +39,5 @@ pub fn run() {
       native_web_search_cancel,
     ])
     .run(tauri::generate_context!())
-    .expect("ResearchBox native runtime failed");
+    .expect("rrbox native runtime failed");
 }

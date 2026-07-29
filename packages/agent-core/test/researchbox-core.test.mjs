@@ -679,7 +679,7 @@ test("plugin completion resolves an explicitly selected ready model", async () =
       providers: [
         {
           provider_id: model.provider,
-          display_name: "ResearchBox",
+          display_name: "rrbox",
           kind: "mock",
           models: [model],
         },
@@ -1188,7 +1188,7 @@ test("model selection is chat-scoped and survives first send and reload", async 
       providers: [
         {
           provider_id: model.provider,
-          display_name: "ResearchBox",
+          display_name: "rrbox",
           kind: "mock",
           models: [model],
         },
@@ -1318,7 +1318,7 @@ test("dynamic providers refresh, reject non-tool models, and recover", async () 
     providers: [
       {
         provider_id: model.provider,
-        display_name: "ResearchBox",
+        display_name: "rrbox",
         kind: "mock",
         models: [model],
       },
@@ -1419,7 +1419,7 @@ test("persisted dynamic model becomes ready after reload discovery", async () =>
   const providers = [
     {
       provider_id: model.provider,
-      display_name: "ResearchBox",
+      display_name: "rrbox",
       kind: "mock",
       models: [model],
     },
@@ -1569,7 +1569,7 @@ test("provider refresh recovers when its loading snapshot fails", async () => {
     providers: [
       {
         provider_id: model.provider,
-        display_name: "ResearchBox",
+        display_name: "rrbox",
         kind: "mock",
         models: [model],
       },

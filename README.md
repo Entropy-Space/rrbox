@@ -1,6 +1,6 @@
-# ResearchBox
+# rrbox
 
-ResearchBox is a browser-native workspace for Pi agents. Its viewer, protocol,
+rrbox is a browser-native workspace for Pi agents. Its viewer, protocol,
 agent runtime, model transport, and virtual filesystem are independent
 workspace packages. The browser remains a first-class runtime, and the same
 viewer and browser runtime now run in a Tauri 2 WebView composition targeting
@@ -209,7 +209,7 @@ and runs the shared browser/package test suites.
 ## Deployment policy
 
 Keep this repository local unless the user explicitly selects and authorizes a
-deployment target. Never publish ResearchBox to `chatgpt.site`.
+deployment target. Never publish rrbox to `chatgpt.site`.
 
 ## Storage
 
@@ -225,7 +225,7 @@ Existing chats retain their own model selection.
 
 Browser storage remains origin-local. Native storage is instead application
 private and independent of the WebView origin, so development and packaged
-native builds resolve the same host-managed store. ResearchBox currently
+native builds resolve the same host-managed store. rrbox currently
 performs no automatic browser-to-native migration. Native provider networking
 uses a separate typed Tauri boundary and does not change the viewer/core or
 canonical model-event protocols.

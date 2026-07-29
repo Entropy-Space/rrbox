@@ -164,7 +164,7 @@ function createMockResponse(request: ModelRequest): ModelStreamEvent[] {
         content: [
           "# Agent note",
           "",
-          "Created by the ResearchBox mock agent.",
+          "Created by the rrbox mock agent.",
           "",
           "- The agent core runs in a Web Worker.",
           "- Files live behind a portable virtual filesystem.",

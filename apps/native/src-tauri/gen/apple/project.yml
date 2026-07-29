@@ -1,6 +1,6 @@
 name: researchbox-native
 options:
-  bundleIdPrefix: com.researchbox.client
+  bundleIdPrefix: dev.tokn-ai.rrbox
   deploymentTarget:
     iOS: 15.0
 fileGroups: [../../src]
@@ -10,8 +10,8 @@ configs:
 settingGroups:
   app:
     base:
-      PRODUCT_NAME: ResearchBox
-      PRODUCT_BUNDLE_IDENTIFIER: com.researchbox.client
+      PRODUCT_NAME: rrbox
+      PRODUCT_BUNDLE_IDENTIFIER: dev.tokn-ai.rrbox
 targetTemplates:
   app:
     type: application

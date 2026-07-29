@@ -557,7 +557,7 @@ function deferred() {
 
 const defaultModel = {
   id: "researchbox-mock",
-  name: "ResearchBox Mock",
+  name: "rrbox Mock",
   api: "openai-completions",
   provider: "researchbox",
   baseUrl: "",
@@ -571,7 +571,7 @@ const defaultModel = {
 const providerDefinitions = [
   {
     provider_id: "researchbox",
-    display_name: "ResearchBox",
+    display_name: "rrbox",
     kind: "mock",
     models: [defaultModel],
   },

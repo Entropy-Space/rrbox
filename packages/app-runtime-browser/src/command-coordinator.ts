@@ -45,7 +45,7 @@ type CommandLockScope = {
  *
  * Requests are granted in FIFO cohorts: consecutive shared requests may run
  * together, while an exclusive request prevents later readers from bypassing
- * it. This matches the coordination guarantees ResearchBox needs without
+ * it. This matches the coordination guarantees rrbox needs without
  * pretending to coordinate separate workers or processes.
  */
 export class InMemoryCommandLockManager implements CommandLockManager {

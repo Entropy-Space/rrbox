@@ -26,7 +26,7 @@ const modelRequest = {
       role: "tool",
       tool_call_id: "previous-call",
       tool_name: "read_file",
-      content: "# ResearchBox",
+      content: "# rrbox",
       is_error: false,
     },
     { role: "user", content: "Summarize it." },
@@ -153,7 +153,7 @@ test("serializes the complete conversation and tool schemas", async () => {
       {
         role: "tool",
         tool_call_id: "previous-call",
-        content: "# ResearchBox",
+        content: "# rrbox",
       },
       { role: "user", content: "Summarize it." },
     ],
@@ -222,14 +222,14 @@ test("serializes text, tool, result, and next-turn reasoning in turn order", asy
         role: "tool",
         tool_call_id: "read-1",
         tool_name: "read_file",
-        content: "# ResearchBox",
+        content: "# rrbox",
         is_error: false,
       },
       {
         role: "assistant",
         content_blocks: [
           { type: "reasoning", reasoning: "The title is decisive." },
-          { type: "text", text: "This is ResearchBox." },
+          { type: "text", text: "This is rrbox." },
         ],
       },
       { role: "user", content: "Continue." },
@@ -257,11 +257,11 @@ test("serializes text, tool, result, and next-turn reasoning in turn order", asy
     {
       role: "tool",
       tool_call_id: "read-1",
-      content: "# ResearchBox",
+      content: "# rrbox",
     },
     {
       role: "assistant",
-      content: "This is ResearchBox.",
+      content: "This is rrbox.",
       reasoning_content: "The title is decisive.",
     },
     { role: "user", content: "Continue." },

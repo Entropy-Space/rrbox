@@ -130,7 +130,7 @@ export function createResearchBoxProviderDefinitions(options: {
   const providers: ModelProviderDefinition[] = [
     {
       provider_id: researchBoxMockModel.provider,
-      display_name: "ResearchBox",
+      display_name: "rrbox",
       kind: "mock",
       models: [researchBoxMockModel],
     },

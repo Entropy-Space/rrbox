@@ -115,14 +115,14 @@ test("preserves text, tool, result, and next-turn reasoning order", () => {
       role: "tool",
       tool_call_id: "read-1",
       tool_name: "read_file",
-      content: "# ResearchBox",
+      content: "# rrbox",
       is_error: false,
     },
     {
       role: "assistant",
       content_blocks: [
         { type: "reasoning", reasoning: "The title identifies the project." },
-        { type: "text", text: "This is the ResearchBox project." },
+        { type: "text", text: "This is the rrbox project." },
       ],
     },
   ];

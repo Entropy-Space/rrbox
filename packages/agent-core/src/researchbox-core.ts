@@ -170,7 +170,7 @@ export class ResearchBoxCore {
 
   async handle(command: ViewerCommand): Promise<void> {
     if (this.disposed) {
-      throw new Error("The ResearchBox core is closed.");
+      throw new Error("The rrbox core is closed.");
     }
     if (command.type === "workspace_export_cancel") {
       this.cancelWorkspaceExport(command);
@@ -206,7 +206,7 @@ export class ResearchBoxCore {
     }
     await this.ensureInitialized();
     if (this.disposed) {
-      throw new Error("The ResearchBox core is closed.");
+      throw new Error("The rrbox core is closed.");
     }
     switch (command.type) {
       case "bootstrap":
@@ -2185,7 +2185,7 @@ export class ResearchBoxCore {
   }
 
   private requireState(): ProjectStoreState {
-    if (!this.state) throw new Error("ResearchBox core is not initialized.");
+    if (!this.state) throw new Error("rrbox core is not initialized.");
     return this.state;
   }
 

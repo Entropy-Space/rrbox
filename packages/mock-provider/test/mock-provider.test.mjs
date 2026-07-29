@@ -206,7 +206,7 @@ test("creates a workspace note and continues from the write result", async () =>
       path: "/notes/agent-note.md",
     },
   );
-  assert.match(firstToolCall?.arguments.content, /ResearchBox mock agent/);
+  assert.match(firstToolCall?.arguments.content, /rrbox mock agent/);
   assert.equal(firstEvents.at(-1)?.stop_reason, "tool_use");
 
   const request = createModelRequest("Create a workspace note");

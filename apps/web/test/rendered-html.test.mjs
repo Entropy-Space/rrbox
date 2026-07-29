@@ -23,15 +23,15 @@ async function render() {
   );
 }
 
-test("server-renders the ResearchBox application shell", async () => {
+test("server-renders the rrbox application shell", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>ResearchBox<\/title>/);
+  assert.match(html, /<title>rrbox<\/title>/);
   assert.match(html, /What can I help you build\?/);
-  assert.match(html, /Message ResearchBox/);
+  assert.match(html, /Message rrbox/);
   assert.match(html, /Virtual filesystem/);
   assert.match(html, /Search the workspace/);
   assert.match(html, /Search chats/);

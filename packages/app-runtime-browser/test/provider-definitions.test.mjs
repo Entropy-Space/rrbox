@@ -53,7 +53,7 @@ test("returns fresh provider and model arrays for every consumer", () => {
 test("keeps the shared mock descriptor aligned with the core model", () => {
   assert.deepEqual(researchBoxMockModelDescriptor, {
     provider_id: researchBoxMockModel.provider,
-    provider_display_name: "ResearchBox",
+    provider_display_name: "rrbox",
     model_id: researchBoxMockModel.id,
     display_name: researchBoxMockModel.name,
     context_window: researchBoxMockModel.contextWindow,

@@ -1,4 +1,4 @@
-/** Cloudflare Worker entry point for the ResearchBox web application. */
+/** Cloudflare Worker entry point for the rrbox web application. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 

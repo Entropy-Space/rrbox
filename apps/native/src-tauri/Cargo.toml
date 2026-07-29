@@ -1,8 +1,8 @@
 [package]
 name = "researchbox-native"
 version = "0.1.0"
-description = "ResearchBox native application shell"
-authors = ["ResearchBox contributors"]
+description = "rrbox native application shell"
+authors = ["rrbox contributors"]
 edition = "2024"
 default-run = "researchbox-native"
 

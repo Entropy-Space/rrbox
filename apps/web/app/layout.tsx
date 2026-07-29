@@ -39,12 +39,12 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     metadataBase,
     title: {
-      default: "ResearchBox",
-      template: "%s · ResearchBox",
+      default: "rrbox",
+      template: "%s · rrbox",
     },
     description,
     openGraph: {
-      title: "ResearchBox",
+      title: "rrbox",
       description,
       type: "website",
       images: [
@@ -52,13 +52,13 @@ export async function generateMetadata(): Promise<Metadata> {
           url: new URL("/og.png", metadataBase).toString(),
           width: 1536,
           height: 1024,
-          alt: "ResearchBox browser-native Pi agent workspace",
+          alt: "rrbox browser-native Pi agent workspace",
         },
       ],
     },
     twitter: {
       card: "summary_large_image",
-      title: "ResearchBox",
+      title: "rrbox",
       description,
       images: [new URL("/og.png", metadataBase).toString()],
     },

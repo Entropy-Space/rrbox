@@ -170,8 +170,8 @@ test("keeps native tooling inside the Tauri composition root", async () => {
   assert.match(cargoManifest, /^tauri = \{ version = "2"/m);
 });
 
-test("uses ResearchBox casing in authored text files", async () => {
-  const legacyBrand = ["Research", "box"].join("");
+test("does not expose the retired product brand", async () => {
+  const retiredBrand = new RegExp(`\\b${["Research", "Box"].join("")}\\b`, "u");
   const authoredRoots = ["README.md", "ARCHITECTURE.md", "apps", "packages"];
   const files = [];
 
@@ -184,9 +184,9 @@ test("uses ResearchBox casing in authored text files", async () => {
   for (const file of files) {
     const content = await readFile(file, "utf8");
     assert.equal(
-      content.includes(legacyBrand),
+      retiredBrand.test(content),
       false,
-      `${path.relative(root, file)} uses the retired brand casing`,
+      `${path.relative(root, file)} exposes the retired product brand`,
     );
   }
 });

@@ -1,4 +1,4 @@
-# ResearchBox architecture
+# rrbox architecture
 
 ## Runtime flow
 
@@ -137,7 +137,7 @@ against same-origin code. Server-held credentials must remain on the server.
    active Pi session runtime and depends only on abstract model, project-store,
    and VFS contracts.
 8. `packages/runtime-browser` hosts compatible core and LLM handlers plus the
-   Web Worker transport; it does not construct ResearchBox, select providers,
+   Web Worker transport; it does not construct rrbox, select providers,
    or import Pi.
 9. `packages/storage-browser` owns concrete IndexedDB and OPFS adapters.
    `packages/storage-native` owns the typed native storage RPC client plus
@@ -240,7 +240,7 @@ executor adapters. The plugin is absent unless an application passes it to the
 core worker composition.
 
 Each call is stateless and starts a fresh RustPython interpreter. The Python
-surface has no ResearchBox workspace bridge or request API in this version.
+surface has no rrbox workspace bridge or request API in this version.
 Stdout, stderr, exceptions, execution time, source size, and combined output
 are bounded at the execution boundary.
 

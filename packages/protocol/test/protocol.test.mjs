@@ -9,7 +9,7 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v20 command", () => {
+test("round-trips every protocol-v21 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("bootstrap", {
@@ -77,6 +77,20 @@ test("round-trips every protocol-v20 command", () => {
           model_id: "gpt-5.4",
         },
         search_provider: null,
+        query_text: "",
+      },
+    }),
+    createCommand("summary_review_resolve", {
+      project_id: "p1",
+      session_id: "s1",
+      interaction_id: "review-2",
+      resolution: {
+        decision: "dismiss",
+        approved_text: "",
+        selected_section_ids: [],
+        feedback_text: "",
+        summary_model: null,
+        search_provider: "auto",
         query_text: "",
       },
     }),

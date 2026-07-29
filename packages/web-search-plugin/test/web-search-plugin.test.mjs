@@ -94,7 +94,7 @@ test("searches multiple angles and summarizes with the active model", async () =
         },
       },
       {
-        summary: "Searched 1 of 2 queries…",
+        summary: "Searching 1/2…",
         progress: {
           phase: "searching",
           completed_queries: 1,
@@ -102,7 +102,7 @@ test("searches multiple angles and summarizes with the active model", async () =
         },
       },
       {
-        summary: "Searched 2 of 2 queries…",
+        summary: "Searching 2/2…",
         progress: {
           phase: "searching",
           completed_queries: 2,
@@ -110,7 +110,7 @@ test("searches multiple angles and summarizes with the active model", async () =
         },
       },
       {
-        summary: "Generating cited summary…",
+        summary: "Summarizing…",
         progress: {
           phase: "generating-summary",
           completed_queries: 2,
@@ -441,7 +441,218 @@ test("active review interaction resets the idle deadline", async () => {
   );
 });
 
-test("summary draft deadline discards the unapproved model draft", async () => {
+test("dismissing during search continues with tool-card progress", async () => {
+  const updates = [];
+  const plugin = createWebSearchAgentPlugin({
+    async search(request) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return {
+        query: request.query,
+        provider: "exa",
+        answer: "Background evidence.",
+        sources: [{
+          title: "Example",
+          url: "https://example.com/",
+        }],
+      };
+    },
+    close() {},
+  }, {
+    maximum_results: 5,
+    maximum_output_bytes: 64 * 1024,
+    default_provider: "exa",
+    default_workflow: "summary-review",
+    summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
+    summary_grace_ms: 1_000,
+  });
+  const [tool] = plugin.createTools({
+    project_id: "project",
+    session_id: "session",
+    async complete_model() {
+      return {
+        text: "Background summary.",
+        provider_id: "openai",
+        model_id: "test-model",
+      };
+    },
+    open_summary_review() {
+      return {
+        resolution: Promise.resolve({
+          decision: "dismiss",
+          approved_text: "",
+          selected_section_ids: [],
+          feedback_text: "",
+          summary_model: null,
+          search_provider: "exa",
+          query_text: "",
+        }),
+        subscribe_activity() {
+          return () => undefined;
+        },
+        update() {},
+      };
+    },
+  });
+
+  const result = await tool.execute(
+    "call",
+    { query: "example" },
+    new AbortController().signal,
+    (update) => updates.push(update.details.summary),
+  );
+
+  assert.equal(result.content[0].text, "Background summary.");
+  assert.ok(updates.includes("Searching 1/1…"));
+  assert.ok(updates.includes("Summarizing…"));
+});
+
+test("dismissing during summarization submits as soon as it finishes", async () => {
+  let resolveReview;
+  const plugin = createWebSearchAgentPlugin({
+    async search(request) {
+      return {
+        query: request.query,
+        provider: "exa",
+        answer: "Summary evidence.",
+        sources: [{
+          title: "Example",
+          url: "https://example.com/",
+        }],
+      };
+    },
+    close() {},
+  }, {
+    maximum_results: 5,
+    maximum_output_bytes: 64 * 1024,
+    default_provider: "exa",
+    default_workflow: "summary-review",
+    summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
+    summary_grace_ms: 0,
+  });
+  const [tool] = plugin.createTools({
+    project_id: "project",
+    session_id: "session",
+    async complete_model() {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return {
+        text: "Finished background summary.",
+        provider_id: "openai",
+        model_id: "test-model",
+      };
+    },
+    open_summary_review() {
+      return {
+        resolution: new Promise((resolve) => {
+          resolveReview = resolve;
+        }),
+        subscribe_activity() {
+          return () => undefined;
+        },
+        update(request) {
+          if (request.loading_phase === "summary") {
+            resolveReview({
+              decision: "dismiss",
+              approved_text: "",
+              selected_section_ids: request.selected_section_ids,
+              feedback_text: "",
+              summary_model: null,
+              search_provider: "exa",
+              query_text: "",
+            });
+          }
+        },
+      };
+    },
+  });
+
+  const result = await tool.execute(
+    "call",
+    { query: "example" },
+    new AbortController().signal,
+    () => {},
+  );
+
+  assert.equal(result.content[0].text, "Finished background summary.");
+  assert.equal(result.details.synthesis.fallback_used, false);
+});
+
+test("summary grace keeps the dialog open before generation", async () => {
+  const phases = [];
+  let resolveReview;
+  const plugin = createWebSearchAgentPlugin({
+    async search(request) {
+      return {
+        query: request.query,
+        provider: "exa",
+        answer: "Grace-period evidence.",
+        sources: [{
+          title: "Example",
+          url: "https://example.com/",
+        }],
+      };
+    },
+    close() {},
+  }, {
+    maximum_results: 5,
+    maximum_output_bytes: 64 * 1024,
+    default_provider: "exa",
+    default_workflow: "summary-review",
+    summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
+    summary_grace_ms: 10,
+  });
+  const [tool] = plugin.createTools({
+    project_id: "project",
+    session_id: "session",
+    async complete_model() {
+      return {
+        text: "Grace-period summary.",
+        provider_id: "openai",
+        model_id: "test-model",
+      };
+    },
+    open_summary_review(initialRequest) {
+      phases.push(initialRequest.loading_phase);
+      return {
+        resolution: new Promise((resolve) => {
+          resolveReview = resolve;
+        }),
+        subscribe_activity() {
+          return () => undefined;
+        },
+        update(request) {
+          phases.push(request.loading_phase);
+          if (request.stage === "review-summary") {
+            resolveReview({
+              decision: "approve",
+              approved_text: request.draft_text,
+              selected_section_ids: request.selected_section_ids,
+              feedback_text: "",
+              summary_model: null,
+              search_provider: "exa",
+              query_text: "",
+            });
+          }
+        },
+      };
+    },
+  });
+
+  const result = await tool.execute(
+    "call",
+    { query: "example" },
+    new AbortController().signal,
+    () => {},
+  );
+
+  assert.equal(result.content[0].text, "Grace-period summary.");
+  assert.ok(phases.includes("summary-grace"));
+  assert.ok(phases.includes("summary"));
+});
+
+test("summary draft deadline auto-submits the generated draft", async () => {
   const plugin = createWebSearchAgentPlugin({
     async search(request) {
       return {
@@ -503,15 +714,8 @@ test("summary draft deadline discards the unapproved model draft", async () => {
   );
 
   assert.equal(reviewCount, 2);
-  assert.doesNotMatch(result.content[0].text, /Unapproved model draft/u);
-  assert.match(
-    result.content[0].text,
-    /Evidence retained after draft timeout/u,
-  );
-  assert.equal(
-    result.details.synthesis.fallback_reason,
-    "summary-review-timeout",
-  );
+  assert.equal(result.content[0].text, "Unapproved model draft");
+  assert.equal(result.details.synthesis.fallback_used, false);
 });
 
 test("summary-review returns only the user-approved synthesis", async () => {

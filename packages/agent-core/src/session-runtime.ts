@@ -254,11 +254,16 @@ export class SessionRuntime {
       throw new Error("The summary review is no longer pending.");
     }
     const allowedWhileLoading = pending.request.loading_phase === "search"
-      ? resolution.decision === "change-provider"
-      : pending.request.loading_phase === "summary"
       ? (
         resolution.decision === "change-provider" ||
-        resolution.decision === "add-search"
+        resolution.decision === "dismiss"
+      )
+      : pending.request.loading_phase === "summary-grace" ||
+          pending.request.loading_phase === "summary"
+      ? (
+        resolution.decision === "change-provider" ||
+        resolution.decision === "add-search" ||
+        resolution.decision === "dismiss"
       )
       : false;
     if (
@@ -418,6 +423,16 @@ export class SessionRuntime {
           pending.on_abort = () => {
             if (this.pendingSummaryReview !== pending) return;
             this.clearPendingSummaryReview();
+            if (this.activeRun) {
+              this.emit(
+                "summary_review_resolved",
+                {
+                  interaction_id: review.interaction_id,
+                  decision: "dismiss",
+                },
+                this.activeRun.request_id,
+              );
+            }
             reject(
               new DOMException(
                 "Summary review was cancelled.",

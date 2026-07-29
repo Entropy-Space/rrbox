@@ -118,7 +118,7 @@ export function createWebSearchPluginCatalogEntry(options: {
         configuration_key: "review_timeout_seconds",
         display_name: "Review idle timeout",
         description:
-          "Auto-submit a deterministic summary after this long without review activity.",
+          "Auto-submit the generated summary after this long without review activity.",
         default_value: DEFAULT_WEB_SEARCH_REVIEW_TIMEOUT_MS / 1_000,
         minimum: 5,
         maximum: MAX_WEB_SEARCH_REVIEW_TIMEOUT_MS / 1_000,

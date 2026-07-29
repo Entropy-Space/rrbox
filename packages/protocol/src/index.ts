@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 20 as const;
+export const PROTOCOL_VERSION = 21 as const;
 
 export const SUMMARY_REVIEW_MAX_SECTIONS = 20;
 export const SUMMARY_REVIEW_MAX_SEARCH_PROVIDERS = 20;
@@ -35,7 +35,7 @@ export type SummaryReviewRequest = {
   interaction_id: string;
   stage: "select-evidence" | "review-summary";
   is_loading: boolean;
-  loading_phase: "search" | "summary" | null;
+  loading_phase: "search" | "summary-grace" | "summary" | null;
   title: string;
   draft_text: string;
   summary_model: ModelSelection | null;
@@ -58,6 +58,7 @@ export type SummaryReviewResolution = {
     | "regenerate"
     | "back"
     | "approve"
+    | "dismiss"
     | "cancel";
   approved_text: string;
   selected_section_ids: string[];
@@ -1432,6 +1433,7 @@ function parseSummaryReviewResolution(
     decision !== "add-search" &&
     decision !== "rewrite-query" &&
     decision !== "change-provider" &&
+    decision !== "dismiss" &&
     selectedSectionIds.length === 0
   ) {
     throw new Error(
@@ -1498,6 +1500,7 @@ function parseSummaryReviewDecision(
     value !== "regenerate" &&
     value !== "back" &&
     value !== "approve" &&
+    value !== "dismiss" &&
     value !== "cancel"
   ) {
     throw new Error("Invalid summary review decision.");
@@ -1517,7 +1520,12 @@ function parseSummaryReviewStage(
 function parseSummaryReviewLoadingPhase(
   value: unknown,
 ): SummaryReviewRequest["loading_phase"] {
-  if (value === null || value === "search" || value === "summary") {
+  if (
+    value === null ||
+    value === "search" ||
+    value === "summary-grace" ||
+    value === "summary"
+  ) {
     return value;
   }
   throw new Error("Invalid summary review loading phase.");

@@ -84,6 +84,7 @@ function ActiveSummaryReviewDialog({
   const isSelecting = review.stage === "select-evidence";
   const isLoading = review.is_loading;
   const canAddSearchWhileLoading =
+    review.loading_phase === "summary-grace" ||
     review.loading_phase === "summary";
   const selectionChanged = !sameStringSet(
     selectedSectionIds,
@@ -153,6 +154,19 @@ function ActiveSummaryReviewDialog({
     });
   }
 
+  function dismiss() {
+    if (review.is_submitting) return;
+    onResolve({
+      decision: "dismiss",
+      approved_text: "",
+      selected_section_ids: selectedIds(),
+      feedback_text: "",
+      summary_model: selectedSummaryModel(),
+      search_provider: review.search_provider,
+      query_text: "",
+    });
+  }
+
   function reportActivity() {
     const now = Date.now();
     if (now - lastActivityAtRef.current < 1_000) return;
@@ -168,11 +182,10 @@ function ActiveSummaryReviewDialog({
       onClickCapture={reportActivity}
       onInputCapture={reportActivity}
       onKeyDownCapture={reportActivity}
-      onPointerMoveCapture={reportActivity}
       onScrollCapture={reportActivity}
       onCancel={(event) => {
         event.preventDefault();
-        cancel();
+        dismiss();
       }}
     >
       <section className="summary-review-panel">
@@ -273,9 +286,9 @@ function ActiveSummaryReviewDialog({
           <button
             className="icon-button"
             type="button"
-            aria-label="Cancel summary review"
+            aria-label="Dismiss summary review"
             disabled={review.is_submitting}
-            onClick={cancel}
+            onClick={dismiss}
           >
             <X size={18} />
           </button>
@@ -464,7 +477,10 @@ function ActiveSummaryReviewDialog({
             {review.error_message ??
               (isLoading
                 ? review.loading_phase === "summary"
-                  ? `Generating summary from ${review.sections.length} evidence sections…`
+                  ? `Summarizing ${review.sections.length} evidence sections…`
+                  : review.loading_phase === "summary-grace"
+                  ? review.query_notice ??
+                    "Waiting briefly before summarizing…"
                   : `Searching… ${review.sections.length} evidence sections received`
                 : `${selectedSectionIds.size} of ${review.sections.length} evidence sections selected`)}
           </span>

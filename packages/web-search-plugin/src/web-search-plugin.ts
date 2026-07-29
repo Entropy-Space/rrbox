@@ -15,6 +15,7 @@ export const MAX_WEB_SEARCH_QUERIES = 4;
 export const MAX_WEB_SEARCH_REVIEW_QUERIES = 20;
 export const MAX_WEB_SEARCH_REVIEW_SECTIONS = 20;
 export const MAX_WEB_SEARCH_DOMAIN_FILTERS = 20;
+export const DEFAULT_WEB_SEARCH_SUMMARY_GRACE_MS = 3_000;
 
 export type WebSearchRecency = "day" | "week" | "month" | "year";
 export type WebSearchWorkflow =
@@ -81,6 +82,7 @@ export type WebSearchPluginOptions = {
   default_workflow: WebSearchWorkflow;
   summary_timeout_ms: number;
   review_timeout_ms: number;
+  summary_grace_ms?: number;
 };
 
 type WebSearchToolDetails = {
@@ -285,6 +287,7 @@ export function createWebSearchAgentPlugin(
           let queryNotice: string | null = null;
           let selectedSectionIds: string[] = [];
           let approvedText: string | undefined;
+          let reviewDismissed = false;
           let pendingSelection:
             | Promise<SummaryReviewResolution | null>
             | null = null;
@@ -332,7 +335,7 @@ export function createWebSearchAgentPlugin(
                 partialResults.push(result);
                 reportProgress(
                   "searching",
-                  `Searched ${completedCount} of ${totalCount} queries…`,
+                  `Searching ${completedCount}/${totalCount}…`,
                   completedCount,
                   totalCount,
                 );
@@ -375,13 +378,18 @@ export function createWebSearchAgentPlugin(
               })),
             ]);
             if (liveOutcome.kind === "resolution") {
-              searchController.abort();
-              try {
-                await searches;
-              } catch (error) {
-                if (signal?.aborted) throw error;
+              if (liveOutcome.resolution.decision === "dismiss") {
+                reviewDismissed = true;
+                queryResults = await searches;
+              } else {
+                searchController.abort();
+                try {
+                  await searches;
+                } catch (error) {
+                  if (signal?.aborted) throw error;
+                }
+                queryResults = partialResults;
               }
-              queryResults = partialResults;
               reviewResults = createReviewResults(queryResults);
               recordProviderCoverage(
                 reviewResults,
@@ -404,7 +412,11 @@ export function createWebSearchAgentPlugin(
                   "Search review was cancelled by the user.",
                 );
               }
-              if (
+              if (reviewDismissed) {
+                selectedResults = reviewResults.filter(
+                  (result) => result.response,
+                );
+              } else if (
                 liveOutcome.resolution?.decision === "change-provider"
               ) {
                 pendingSelection = Promise.resolve(
@@ -413,7 +425,7 @@ export function createWebSearchAgentPlugin(
                 reviewed = true;
               } else if (liveOutcome.resolution !== null) {
                 throw new Error(
-                  "A loading search review may only change provider or cancel.",
+                  "A loading search review may only change provider, dismiss, or cancel.",
                 );
               } else {
                 synthesis = createReviewTimeoutSynthesis(
@@ -482,16 +494,23 @@ export function createWebSearchAgentPlugin(
                 );
               } else {
                 try {
+                  const summaryGraceMs = options.summary_grace_ms ?? 0;
                   liveReview.update({
                     stage: "select-evidence",
                     is_loading: true,
-                    loading_phase: "summary",
+                    loading_phase: summaryGraceMs > 0
+                      ? "summary-grace"
+                      : "summary",
                     title: "Select web search evidence",
                     draft_text: "",
                     summary_model: null,
                     draft_metadata: null,
                     query_draft: "",
-                    query_notice: "Generating the initial summary…",
+                    query_notice: summaryGraceMs > 0
+                      ? `Summarizing in ${
+                        Math.ceil(summaryGraceMs / 1_000)
+                      } seconds. You can add or change a search first.`
+                      : "Generating the initial summary…",
                     search_providers: searchProviders,
                     search_provider: activeSearchProvider,
                     sections,
@@ -511,86 +530,25 @@ export function createWebSearchAgentPlugin(
                     "The loading summary review resolved unexpectedly.",
                   );
                 }
-                const generationController = new AbortController();
-                reportProgress(
-                  "generating-summary",
-                  "Generating cited summary…",
-                  queries.length,
-                  queries.length,
-                );
-                const generationSignal = signal
-                  ? AbortSignal.any([signal, generationController.signal])
-                  : generationController.signal;
-                const generation = synthesizeResults(
-                  selectedResults,
-                  context.complete_model,
-                  options.summary_timeout_ms,
-                  options.maximum_output_bytes,
-                  generationSignal,
-                  summaryModel,
-                );
-                void generation.catch(() => undefined);
-                const generationOutcome = await Promise.race([
-                  generation.then((result) => ({
-                    kind: "generation" as const,
-                    result,
-                  })),
-                  liveReview.resolution.then((resolution) => ({
-                    kind: "resolution" as const,
-                    resolution,
-                  })),
-                ]);
-                if (generationOutcome.kind === "resolution") {
-                  generationController.abort();
-                  try {
-                    await generation;
-                  } catch (error) {
-                    if (signal?.aborted) throw error;
-                  }
-                  if (generationOutcome.resolution.decision === "cancel") {
-                    return createReviewErrorResult(
-                      queries.length,
-                      provider,
-                      workflow,
-                      "Search summary review was cancelled by the user.",
-                    );
-                  }
-                  if (
-                    generationOutcome.resolution.decision ===
-                      "change-provider" ||
-                    generationOutcome.resolution.decision ===
-                      "add-search"
-                  ) {
-                    pendingSelection = Promise.resolve(
-                      generationOutcome.resolution,
-                    );
-                    reviewed = true;
-                  } else {
-                    throw new Error(
-                      "A loading summary review may only mutate search or cancel.",
-                    );
-                  }
-                } else {
-                  synthesis = generationOutcome.result;
-                  try {
-                    liveReview.update({
-                      stage: "review-summary",
-                      is_loading: false,
-                      loading_phase: null,
-                      title: "Review web search summary",
-                      draft_text: synthesis.text,
-                      summary_model: summaryModel,
-                      draft_metadata: createDraftMetadata(synthesis),
-                      query_draft: "",
-                      query_notice: null,
-                      search_providers: searchProviders,
-                      search_provider: activeSearchProvider,
-                      sections,
-                      selected_section_ids: selectedSectionIds,
-                    });
-                  } catch {
-                    const resolution = await liveReview.resolution;
-                    if (resolution.decision === "cancel") {
+                const summaryGraceMs = options.summary_grace_ms ?? 0;
+                if (summaryGraceMs > 0) {
+                  reportProgress(
+                    "waiting-for-review",
+                    "Waiting briefly before summarizing…",
+                    queries.length,
+                    queries.length,
+                  );
+                  const graceOutcome = await Promise.race([
+                    waitForDelay(summaryGraceMs, signal).then(() => ({
+                      kind: "elapsed" as const,
+                    })),
+                    liveReview.resolution.then((resolution) => ({
+                      kind: "resolution" as const,
+                      resolution,
+                    })),
+                  ]);
+                  if (graceOutcome.kind === "resolution") {
+                    if (graceOutcome.resolution.decision === "cancel") {
                       return createReviewErrorResult(
                         queries.length,
                         provider,
@@ -598,27 +556,171 @@ export function createWebSearchAgentPlugin(
                         "Search summary review was cancelled by the user.",
                       );
                     }
-                    throw new Error(
-                      "The summary review resolved before its draft was ready.",
-                    );
+                    if (graceOutcome.resolution.decision === "dismiss") {
+                      reviewDismissed = true;
+                    } else if (
+                      graceOutcome.resolution.decision ===
+                        "change-provider" ||
+                      graceOutcome.resolution.decision === "add-search"
+                    ) {
+                      pendingSelection = Promise.resolve(
+                        graceOutcome.resolution,
+                      );
+                      reviewed = true;
+                    } else {
+                      throw new Error(
+                        "A summary grace period may only mutate search, dismiss, or cancel.",
+                      );
+                    }
+                  } else {
+                    liveReview.update({
+                      stage: "select-evidence",
+                      is_loading: true,
+                      loading_phase: "summary",
+                      title: "Select web search evidence",
+                      draft_text: "",
+                      summary_model: null,
+                      draft_metadata: null,
+                      query_draft: "",
+                      query_notice: "Generating the initial summary…",
+                      search_providers: searchProviders,
+                      search_provider: activeSearchProvider,
+                      sections,
+                      selected_section_ids: selectedSectionIds,
+                    });
                   }
-                  pendingDraftReview = waitForSummaryReviewWithDeadline(
-                    liveReview.resolution,
-                    reviewController,
-                    options.review_timeout_ms,
-                    signal,
-                    liveReview.subscribe_activity
-                      ? (listener) =>
-                        liveReview.subscribe_activity!(listener)
-                      : undefined,
-                  );
+                }
+                if (!pendingSelection) {
+                  const generationController = new AbortController();
                   reportProgress(
-                    "waiting-for-review",
-                    "Waiting for summary approval…",
+                    "generating-summary",
+                    "Summarizing…",
                     queries.length,
                     queries.length,
                   );
-                  reviewed = true;
+                  const generationSignal = signal
+                    ? AbortSignal.any([signal, generationController.signal])
+                    : generationController.signal;
+                  const generation = synthesizeResults(
+                    selectedResults,
+                    context.complete_model,
+                    options.summary_timeout_ms,
+                    options.maximum_output_bytes,
+                    generationSignal,
+                    summaryModel,
+                  );
+                  void generation.catch(() => undefined);
+                  const generationOutcome = reviewDismissed
+                    ? {
+                        kind: "generation" as const,
+                        result: await generation,
+                      }
+                    : await Promise.race([
+                      generation.then((result) => ({
+                        kind: "generation" as const,
+                        result,
+                      })),
+                      liveReview.resolution.then((resolution) => ({
+                        kind: "resolution" as const,
+                        resolution,
+                      })),
+                    ]);
+                  if (generationOutcome.kind === "resolution") {
+                    if (generationOutcome.resolution.decision === "cancel") {
+                      generationController.abort();
+                      return createReviewErrorResult(
+                        queries.length,
+                        provider,
+                        workflow,
+                        "Search summary review was cancelled by the user.",
+                      );
+                    }
+                    if (generationOutcome.resolution.decision === "dismiss") {
+                      reviewDismissed = true;
+                      synthesis = await generation;
+                      approvedText = synthesis.text;
+                      reviewed = true;
+                    } else {
+                      generationController.abort();
+                      try {
+                        await generation;
+                      } catch (error) {
+                        if (signal?.aborted) throw error;
+                      }
+                    }
+                    if (
+                      !reviewDismissed &&
+                      (
+                        generationOutcome.resolution.decision ===
+                          "change-provider" ||
+                        generationOutcome.resolution.decision ===
+                          "add-search"
+                      )
+                    ) {
+                      pendingSelection = Promise.resolve(
+                        generationOutcome.resolution,
+                      );
+                      reviewed = true;
+                    } else if (!reviewDismissed) {
+                      throw new Error(
+                        "A loading summary review may only mutate search, dismiss, or cancel.",
+                      );
+                    }
+                  } else {
+                    synthesis = generationOutcome.result;
+                    if (reviewDismissed) {
+                      approvedText = synthesis.text;
+                      reviewed = true;
+                    } else {
+                      try {
+                        liveReview.update({
+                          stage: "review-summary",
+                          is_loading: false,
+                          loading_phase: null,
+                          title: "Review web search summary",
+                          draft_text: synthesis.text,
+                          summary_model: summaryModel,
+                          draft_metadata: createDraftMetadata(synthesis),
+                          query_draft: "",
+                          query_notice: null,
+                          search_providers: searchProviders,
+                          search_provider: activeSearchProvider,
+                          sections,
+                          selected_section_ids: selectedSectionIds,
+                        });
+                      } catch {
+                        const resolution = await liveReview.resolution;
+                        if (resolution.decision === "cancel") {
+                          return createReviewErrorResult(
+                            queries.length,
+                            provider,
+                            workflow,
+                            "Search summary review was cancelled by the user.",
+                          );
+                        }
+                        throw new Error(
+                          "The summary review resolved before its draft was ready.",
+                        );
+                      }
+                      pendingDraftReview = waitForSummaryReviewWithDeadline(
+                        liveReview.resolution,
+                        reviewController,
+                        options.review_timeout_ms,
+                        signal,
+                        liveReview.subscribe_activity
+                          ? (listener) =>
+                            liveReview.subscribe_activity!(listener)
+                          : undefined,
+                      );
+                      reportProgress(
+                        "waiting-for-review",
+                        "Waiting for summary approval…",
+                        queries.length,
+                        queries.length,
+                      );
+                      reviewed = true;
+                    }
+                  }
                 }
               }
             }
@@ -631,7 +733,7 @@ export function createWebSearchAgentPlugin(
               (_result, completedCount, totalCount) =>
                 reportProgress(
                   "searching",
-                  `Searched ${completedCount} of ${totalCount} queries…`,
+                  `Searching ${completedCount}/${totalCount}…`,
                   completedCount,
                   totalCount,
                 ),
@@ -645,7 +747,34 @@ export function createWebSearchAgentPlugin(
             selectedResults = queryResults;
             selectedSectionIds = selectableSectionIds(reviewResults);
           }
-          if (workflow === "summary-review") {
+          if (
+            workflow === "summary-review" &&
+            reviewDismissed &&
+            approvedText === undefined
+          ) {
+            reportProgress(
+              "generating-summary",
+              "Summarizing…",
+              queries.length,
+              queries.length,
+            );
+            synthesis = selectedResults.length > 0
+              ? await synthesizeResults(
+                selectedResults,
+                context.complete_model,
+                options.summary_timeout_ms,
+                options.maximum_output_bytes,
+                signal,
+                summaryModel,
+              )
+              : createReviewTimeoutSynthesis(
+                reviewResults,
+                options.maximum_output_bytes,
+              );
+            approvedText = synthesis.text;
+            reviewed = true;
+          }
+          if (workflow === "summary-review" && !reviewDismissed) {
             selectionLoop:
             while (approvedText === undefined) {
               const sections = createReviewSections(reviewResults);
@@ -711,6 +840,30 @@ export function createWebSearchAgentPlugin(
                     workflow,
                     "Search review was cancelled by the user.",
                   );
+                }
+                if (selection.decision === "dismiss") {
+                  selectedResults = selectedSectionIds.length > 0
+                    ? selectQueryResults(
+                      reviewResults,
+                      selectedSectionIds,
+                    )
+                    : reviewResults.filter((result) => result.response);
+                  synthesis = selectedResults.length > 0
+                    ? await synthesizeResults(
+                      selectedResults,
+                      context.complete_model,
+                      options.summary_timeout_ms,
+                      options.maximum_output_bytes,
+                      signal,
+                      summaryModel,
+                    )
+                    : createReviewTimeoutSynthesis(
+                      reviewResults,
+                      options.maximum_output_bytes,
+                    );
+                  approvedText = synthesis.text;
+                  reviewed = true;
+                  break;
                 }
                 const requestedSearchProvider =
                   resolveReviewSearchProvider(
@@ -909,7 +1062,7 @@ export function createWebSearchAgentPlugin(
 
                 reportProgress(
                   "generating-summary",
-                  "Generating cited summary…",
+                  "Summarizing…",
                   queries.length,
                   queries.length,
                 );
@@ -956,11 +1109,7 @@ export function createWebSearchAgentPlugin(
                   );
                 nextDraftResolution = null;
                 if (resolution === null) {
-                  synthesis = createReviewTimeoutSynthesis(
-                    selectedResults,
-                    options.maximum_output_bytes,
-                  );
-                  approvedText = synthesis.text;
+                  approvedText = synthesis!.text;
                   reviewed = true;
                   break selectionLoop;
                 }
@@ -971,6 +1120,11 @@ export function createWebSearchAgentPlugin(
                     workflow,
                     "Search summary review was cancelled by the user.",
                   );
+                }
+                if (resolution.decision === "dismiss") {
+                  approvedText = synthesis!.text;
+                  reviewed = true;
+                  break selectionLoop;
                 }
                 if (resolution.decision === "back") {
                   if (resolution.selected_section_ids.length > 0) {
@@ -988,7 +1142,7 @@ export function createWebSearchAgentPlugin(
                   );
                   reportProgress(
                     "generating-summary",
-                    "Regenerating cited summary…",
+                    "Summarizing again…",
                     queries.length,
                     queries.length,
                   );
@@ -1023,7 +1177,7 @@ export function createWebSearchAgentPlugin(
             selectedResults = reviewResults;
             reportProgress(
               "generating-summary",
-              "Generating cited summary…",
+              "Summarizing…",
               queries.length,
               queries.length,
             );
@@ -1535,6 +1689,26 @@ async function waitForSummaryReviewWithDeadline(
       signal.removeEventListener("abort", rejectCallerAbort);
     }
   }
+}
+
+function waitForDelay(
+  delayMs: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) return Promise.reject(createAbortError());
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(finish, delayMs);
+    const onAbort = () => {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+      reject(createAbortError());
+    };
+    function finish() {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 async function synthesizeResults(

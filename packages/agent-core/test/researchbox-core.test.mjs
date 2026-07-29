@@ -607,6 +607,19 @@ test("a local review deadline clears the interaction without aborting the run", 
       entry.tool_name === "review_timeout_test",
   );
   assert.equal(result.content, "Deterministic timeout fallback");
+  assert.deepEqual(
+    events.findLast(
+      (event) =>
+        event.type === "summary_review_resolved" &&
+        event.payload.interaction_id === review.payload.interaction_id,
+    )?.payload,
+    {
+      project_id: review.payload.project_id,
+      session_id: review.payload.session_id,
+      interaction_id: review.payload.interaction_id,
+      decision: "dismiss",
+    },
+  );
   assert.equal(
     events.findLast((event) => event.type === "run_state")
       .payload.is_running,

@@ -419,9 +419,20 @@ export function useAgentSession(
             );
           } else if (event.type === "summary_review_resolved") {
             pendingSummaryReviewResolutionRef.current = null;
+            const closesDialog =
+              event.payload.decision === "approve" ||
+              event.payload.decision === "raw" ||
+              event.payload.decision === "dismiss" ||
+              event.payload.decision === "cancel";
             setSummaryReview((current) =>
               current?.interaction_id === event.payload.interaction_id
-                ? null
+                ? closesDialog
+                  ? null
+                  : {
+                      ...current,
+                      is_submitting: false,
+                      error_message: null,
+                    }
                 : current
             );
           } else if (

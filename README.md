@@ -177,13 +177,22 @@ in-process mock and the fixed OpenAI-compatible endpoint at
 `http://127.0.0.1:4141/v1`; Rust owns its bounded HTTP streaming and
 cancellation.
 
-Tauri's generated Android and iOS projects are intentionally not checked in
-yet. Initialize them from `apps/native` only on a machine with the relevant
-mobile toolchain:
+The generated iOS project is checked in at
+`apps/native/src-tauri/gen/apple`; its build products, Rust library, and
+per-user Xcode state remain ignored. The generated Android project is not
+checked in yet. Initialize Android only on a machine with the relevant
+toolchain:
 
 ```bash
 pnpm --filter @researchbox/native tauri android init
-pnpm --filter @researchbox/native tauri ios init
+```
+
+Build or run the Apple Silicon iOS Simulator target after installing Xcode's
+iOS Simulator runtime:
+
+```bash
+pnpm build:native:ios-sim
+pnpm dev:native:ios
 ```
 
 ## Validation

@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:ios": "tauri ios dev",
     "build": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && vite build",
+    "build:ios-sim": "tauri ios build --target aarch64-sim --debug",
     "preview": "vite preview",
     "tauri": "tauri"
   },

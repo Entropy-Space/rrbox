@@ -76,10 +76,51 @@ and runs the native SQLite backend through the same 30-case workspace and
 durability conformance suites as the browser backends. The line-oriented
 harness binary is feature-gated and is not included in normal native builds.
 
-Initialize generated mobile projects only on a development machine with the
-relevant platform SDK:
+## iOS
+
+The generated Xcode project is committed at `src-tauri/gen/apple`. ResearchBox
+targets iOS 15 and newer on arm64 devices and Apple Silicon simulators. The
+project was generated and tested with Xcode 16.3 and XcodeGen 2.45.4. Build
+products, the linked Rust library, and per-user Xcode state are ignored by the
+generated project.
+
+Install the Apple toolchain once on each development machine:
+
+```bash
+xcodebuild -runFirstLaunch
+xcodebuild -downloadPlatform iOS
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+```
+
+Tauri's Apple tooling also expects `xcodegen`, `libimobiledevice`, and
+CocoaPods on `PATH`. With Homebrew they can be installed with:
+
+```bash
+brew install xcodegen libimobiledevice cocoapods
+```
+
+Build the debug app for an Apple Silicon simulator or start it interactively:
+
+```bash
+pnpm build:native:ios-sim
+pnpm dev:native:ios
+```
+
+Physical-device and App Store builds require an Apple development team,
+certificate, and provisioning profile. Supply the shared team through the
+local or CI `APPLE_DEVELOPMENT_TEAM` environment variable; do not commit a
+personal team identifier.
+
+Regenerate the checked-in Xcode project only when the Tauri configuration or
+mobile project template changes, then review the generated diff:
+
+```bash
+pnpm --filter @researchbox/native tauri ios init
+```
+
+The Android project remains uninitialized. Initialize it separately on a
+machine with the Android SDK:
 
 ```bash
 pnpm --filter @researchbox/native tauri android init
-pnpm --filter @researchbox/native tauri ios init
 ```

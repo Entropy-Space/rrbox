@@ -896,6 +896,109 @@ test("all-provider review keeps provider evidence independently selectable", asy
   assert.equal(result.details.total_results, 1);
 });
 
+test("summary review can add evidence from another search provider", async () => {
+  const calls = [];
+  const plugin = createWebSearchAgentPlugin({
+    provider_ids: ["exa", "anysearch"],
+    async search(request) {
+      calls.push({
+        query: request.query,
+        provider: request.provider,
+      });
+      return {
+        query: request.query,
+        provider: request.provider,
+        answer: `${request.provider} evidence`,
+        sources: [{
+          title: `${request.provider} source`,
+          url: `https://example.com/${request.provider}`,
+        }],
+      };
+    },
+    close() {},
+  }, {
+    maximum_results: 5,
+    maximum_output_bytes: 64 * 1024,
+    default_provider: "exa",
+    default_workflow: "summary-review",
+    summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
+  });
+  let reviewCount = 0;
+  const [tool] = plugin.createTools({
+    project_id: "project",
+    session_id: "session",
+    async request_summary_review(request) {
+      reviewCount += 1;
+      assert.deepEqual(request.search_providers, [{
+        provider_id: "auto",
+        display_name: "Automatic",
+      }, {
+        provider_id: "all",
+        display_name: "All available",
+      }, {
+        provider_id: "exa",
+        display_name: "Exa",
+      }, {
+        provider_id: "anysearch",
+        display_name: "AnySearch",
+      }]);
+      if (reviewCount === 1) {
+        assert.equal(request.search_provider, "exa");
+        assert.deepEqual(
+          request.sections.map((section) => section.title),
+          ["example · Exa"],
+        );
+        return {
+          decision: "change-provider",
+          approved_text: "",
+          selected_section_ids: ["0"],
+          feedback_text: "",
+          summary_model: null,
+          search_provider: "anysearch",
+          query_text: "",
+        };
+      }
+      assert.equal(request.search_provider, "anysearch");
+      assert.deepEqual(
+        request.sections.map((section) => section.title),
+        ["example · Exa", "example · AnySearch"],
+      );
+      assert.deepEqual(request.selected_section_ids, ["0", "1"]);
+      assert.match(request.query_notice, /evidence added and selected/u);
+      return {
+        decision: "raw",
+        approved_text: "",
+        selected_section_ids: ["0", "1"],
+        feedback_text: "",
+        summary_model: null,
+        search_provider: "anysearch",
+        query_text: "",
+      };
+    },
+  });
+
+  const result = await tool.execute(
+    "call",
+    { query: "example", provider: "exa" },
+    new AbortController().signal,
+    () => {},
+  );
+
+  assert.deepEqual(calls, [{
+    query: "example",
+    provider: "exa",
+  }, {
+    query: "example",
+    provider: "anysearch",
+  }]);
+  assert.equal(reviewCount, 2);
+  assert.match(result.content[0].text, /## Query: example · Exa/u);
+  assert.match(result.content[0].text, /## Query: example · AnySearch/u);
+  assert.equal(result.details.selected_query_count, 1);
+  assert.equal(result.details.total_results, 2);
+});
+
 test("all-provider review preserves each provider failure", async () => {
   const plugin = createWebSearchAgentPlugin({
     async search() {

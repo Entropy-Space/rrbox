@@ -55,6 +55,7 @@ export type WebSearchProviderFailure = {
 };
 
 export type WebSearchExecutor = {
+  readonly provider_ids?: readonly WebSearchResolvedProviderId[];
   search(
     request: WebSearchRequest,
     signal?: AbortSignal,
@@ -194,6 +195,13 @@ export function createWebSearchAgentPlugin(
         execute: async (_toolCallId, params, signal) => {
           const queries = normalizeQueries(params.query, params.queries);
           const provider = params.provider ?? options.default_provider;
+          let activeSearchProvider = provider;
+          const searchProviders = createSearchProviderOptions(
+            executor,
+            provider,
+          );
+          const providerCoverage =
+            new Map<WebSearchProviderId, Set<string>>();
           const workflow = params.workflow ?? options.default_workflow;
           const searchOptions: Omit<WebSearchRequest, "query"> = {
             num_results:
@@ -271,6 +279,8 @@ export function createWebSearchAgentPlugin(
                 query_draft: "",
                 query_notice:
                   `Searching 0 of ${queries.length} queries…`,
+                search_providers: searchProviders,
+                search_provider: activeSearchProvider,
                 sections: [],
                 selected_section_ids: [],
               },
@@ -300,6 +310,8 @@ export function createWebSearchAgentPlugin(
                     query_draft: "",
                     query_notice:
                       `Searching ${completedCount} of ${totalCount} queries…`,
+                    search_providers: searchProviders,
+                    search_provider: activeSearchProvider,
                     sections: createReviewSections(partialReviewResults),
                     selected_section_ids: selectableSectionIds(
                       partialReviewResults,
@@ -358,6 +370,11 @@ export function createWebSearchAgentPlugin(
             } else {
               queryResults = liveOutcome.results;
               reviewResults = createReviewResults(queryResults);
+              recordProviderCoverage(
+                reviewResults,
+                providerCoverage,
+              );
+              markProviderCoverage(providerCoverage, provider, queries);
               selectedSectionIds = selectableSectionIds(reviewResults);
               selectedResults = reviewResults.filter(
                 (result) => result.response,
@@ -375,6 +392,8 @@ export function createWebSearchAgentPlugin(
                     query_draft: "",
                     query_notice:
                       "No successful evidence is available to summarize.",
+                    search_providers: searchProviders,
+                    search_provider: activeSearchProvider,
                     sections,
                     selected_section_ids: [],
                   });
@@ -409,6 +428,8 @@ export function createWebSearchAgentPlugin(
                     draft_metadata: null,
                     query_draft: "",
                     query_notice: "Generating the initial summary…",
+                    search_providers: searchProviders,
+                    search_provider: activeSearchProvider,
                     sections,
                     selected_section_ids: selectedSectionIds,
                   });
@@ -479,6 +500,8 @@ export function createWebSearchAgentPlugin(
                     draft_metadata: createDraftMetadata(synthesis),
                     query_draft: "",
                     query_notice: null,
+                    search_providers: searchProviders,
+                    search_provider: activeSearchProvider,
                     sections,
                     selected_section_ids: selectedSectionIds,
                   });
@@ -513,6 +536,11 @@ export function createWebSearchAgentPlugin(
               signal,
             );
             reviewResults = createReviewResults(queryResults);
+            recordProviderCoverage(
+              reviewResults,
+              providerCoverage,
+            );
+            markProviderCoverage(providerCoverage, provider, queries);
             selectedResults = queryResults;
             selectedSectionIds = selectableSectionIds(reviewResults);
           }
@@ -535,6 +563,8 @@ export function createWebSearchAgentPlugin(
                       draft_metadata: null,
                       query_draft: queryDraft,
                       query_notice: queryNotice,
+                      search_providers: searchProviders,
+                      search_provider: activeSearchProvider,
                       sections,
                       selected_section_ids: selectedSectionIds,
                     },
@@ -573,6 +603,83 @@ export function createWebSearchAgentPlugin(
                     "Search review was cancelled by the user.",
                   );
                 }
+                const requestedSearchProvider =
+                  resolveReviewSearchProvider(
+                    selection.search_provider,
+                    searchProviders,
+                    activeSearchProvider,
+                  );
+                if (selection.decision === "change-provider") {
+                  activeSearchProvider = requestedSearchProvider;
+                  const uncoveredQueries = queries.filter(
+                    (query) =>
+                      !providerCoverage
+                        .get(activeSearchProvider)
+                        ?.has(query),
+                  );
+                  if (uncoveredQueries.length === 0) {
+                    queryNotice =
+                      `${searchProviderLabel(activeSearchProvider)} evidence is already available.`;
+                    continue;
+                  }
+                  const availableSectionCount =
+                    MAX_WEB_SEARCH_REVIEW_SECTIONS - reviewResults.length;
+                  if (availableSectionCount <= 0) {
+                    queryNotice =
+                      `A review can contain at most ${MAX_WEB_SEARCH_REVIEW_SECTIONS} evidence cards.`;
+                    continue;
+                  }
+                  const searchedQueries = uncoveredQueries.slice(
+                    0,
+                    availableSectionCount,
+                  );
+                  const previousReviewResultCount = reviewResults.length;
+                  const providerResults = await executeQueries(
+                    executor,
+                    searchedQueries,
+                    {
+                      ...searchOptions,
+                      provider: activeSearchProvider,
+                    },
+                    signal,
+                  );
+                  queryResults.push(...providerResults);
+                  reviewResults = createReviewResults(queryResults);
+                  markProviderCoverage(
+                    providerCoverage,
+                    activeSearchProvider,
+                    searchedQueries,
+                  );
+                  recordProviderCoverage(
+                    reviewResults,
+                    providerCoverage,
+                  );
+                  const addedSectionIds = reviewResults.flatMap(
+                    (result, index) =>
+                      index >= previousReviewResultCount && result.response
+                        ? [String(index)]
+                        : [],
+                  );
+                  selectedSectionIds = [
+                    ...new Set([
+                      ...selectedSectionIds,
+                      ...addedSectionIds,
+                    ]),
+                  ];
+                  const evidenceWasLimited =
+                    searchedQueries.length < uncoveredQueries.length ||
+                    reviewResults.length - previousReviewResultCount <
+                      createReviewResults(providerResults).length;
+                  queryNotice = reviewResults.length ===
+                      previousReviewResultCount
+                    ? "The provider returned no additional evidence cards."
+                    : evidenceWasLimited
+                    ? `${searchProviderLabel(activeSearchProvider)} evidence added; the review limit prevented searching every query.`
+                    : `${searchProviderLabel(activeSearchProvider)} evidence added and selected.`;
+                  reviewed = true;
+                  continue;
+                }
+                activeSearchProvider = requestedSearchProvider;
                 selectedSectionIds = selection.selected_section_ids;
                 summaryModel = selection.summary_model;
                 if (selection.decision === "rewrite-query") {
@@ -604,7 +711,7 @@ export function createWebSearchAgentPlugin(
                     continue;
                   }
                   if (
-                    queryResults.length >= MAX_WEB_SEARCH_REVIEW_QUERIES ||
+                    queries.length >= MAX_WEB_SEARCH_REVIEW_QUERIES ||
                     reviewResults.length >= MAX_WEB_SEARCH_REVIEW_SECTIONS
                   ) {
                     queryNotice =
@@ -614,7 +721,10 @@ export function createWebSearchAgentPlugin(
                   const [addedResult] = await executeQueries(
                     executor,
                     [addedQuery],
-                    searchOptions,
+                    {
+                      ...searchOptions,
+                      provider: activeSearchProvider,
+                    },
                     signal,
                   );
                   const previousReviewResultCount = reviewResults.length;
@@ -623,6 +733,15 @@ export function createWebSearchAgentPlugin(
                   queries.push(addedQuery);
                   queryResults.push(addedResult);
                   reviewResults = createReviewResults(queryResults);
+                  markProviderCoverage(
+                    providerCoverage,
+                    activeSearchProvider,
+                    [addedQuery],
+                  );
+                  recordProviderCoverage(
+                    createReviewResults([addedResult]),
+                    providerCoverage,
+                  );
                   const addedSectionIds = reviewResults.flatMap(
                     (result, index) =>
                       index >= previousReviewResultCount && result.response
@@ -686,6 +805,8 @@ export function createWebSearchAgentPlugin(
                       draft_metadata: createDraftMetadata(synthesis!),
                       query_draft: "",
                       query_notice: null,
+                      search_providers: searchProviders,
+                      search_provider: activeSearchProvider,
                       sections,
                       selected_section_ids: selectedSectionIds,
                     },
@@ -833,6 +954,27 @@ function selectableSectionIds(results: QueryResult[]): string[] {
   );
 }
 
+function recordProviderCoverage(
+  results: QueryResult[],
+  coverage: Map<WebSearchProviderId, Set<string>>,
+): void {
+  for (const result of results) {
+    if (result.provider) {
+      markProviderCoverage(coverage, result.provider, [result.query]);
+    }
+  }
+}
+
+function markProviderCoverage(
+  coverage: Map<WebSearchProviderId, Set<string>>,
+  provider: WebSearchProviderId,
+  queries: readonly string[],
+): void {
+  const coveredQueries = coverage.get(provider) ?? new Set<string>();
+  for (const query of queries) coveredQueries.add(query);
+  coverage.set(provider, coveredQueries);
+}
+
 function createReviewResults(results: QueryResult[]): QueryResult[] {
   return results.flatMap((result): QueryResult[] => {
     if (!result.response) {
@@ -902,6 +1044,41 @@ function providerLabel(
 ): string {
   if (provider === "anysearch") return "AnySearch";
   return provider.charAt(0).toUpperCase() + provider.slice(1);
+}
+
+function searchProviderLabel(provider: WebSearchProviderId): string {
+  return provider === "auto" ? "Automatic" : providerLabel(provider);
+}
+
+function createSearchProviderOptions(
+  executor: WebSearchExecutor,
+  activeProvider: WebSearchProviderId,
+) {
+  const providerIds = [...new Set(executor.provider_ids ?? [])];
+  const ids: WebSearchProviderId[] = [
+    "auto",
+    ...(providerIds.length > 1 ? ["all" as const] : []),
+    ...providerIds,
+  ];
+  if (!ids.includes(activeProvider)) ids.push(activeProvider);
+  return ids.map((providerId) => ({
+    provider_id: providerId,
+    display_name: providerId === "all"
+      ? "All available"
+      : searchProviderLabel(providerId),
+  }));
+}
+
+function resolveReviewSearchProvider(
+  requestedProvider: string | null | undefined,
+  providers: ReturnType<typeof createSearchProviderOptions>,
+  fallback: WebSearchProviderId,
+): WebSearchProviderId {
+  return providers.some(
+      (provider) => provider.provider_id === requestedProvider,
+    )
+    ? requestedProvider as WebSearchProviderId
+    : fallback;
 }
 
 function createReviewErrorResult(

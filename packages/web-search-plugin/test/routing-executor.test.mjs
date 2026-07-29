@@ -31,6 +31,7 @@ test("routes auto searches through an explicit configured provider", async () =>
 
   const result = await executor.search(request);
 
+  assert.deepEqual(executor.provider_ids, ["exa"]);
   assert.equal(result.provider, "exa");
   assert.equal(requests[0].provider, "exa");
   await executor.close();
@@ -65,6 +66,7 @@ test("auto routing skips unavailable providers and retries classified failures",
 
   const result = await executor.search(request);
 
+  assert.deepEqual(executor.provider_ids, ["exa", "anysearch"]);
   assert.equal(result.provider, "anysearch");
   assert.deepEqual(calls, [
     "exa:available",

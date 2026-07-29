@@ -140,6 +140,7 @@ function ActiveSummaryReviewDialog({
       selected_section_ids: [],
       feedback_text: "",
       summary_model: selectedSummaryModel(),
+      search_provider: review.search_provider,
       query_text: "",
     });
   }
@@ -167,6 +168,35 @@ function ActiveSummaryReviewDialog({
                 : "Edit, preview, or regenerate the synthesis before approval."}
             </p>
             <div className="summary-review-models">
+              {isSelecting && review.search_providers.length > 1 && (
+                <label>
+                  <span>Search provider</span>
+                  <select
+                    value={review.search_provider ?? ""}
+                    disabled={review.is_submitting || isLoading}
+                    onChange={(event) => {
+                      onResolve({
+                        decision: "change-provider",
+                        approved_text: "",
+                        selected_section_ids: selectedIds(),
+                        feedback_text: "",
+                        summary_model: selectedSummaryModel(),
+                        search_provider: event.target.value,
+                        query_text: "",
+                      });
+                    }}
+                  >
+                    {review.search_providers.map((provider) => (
+                      <option
+                        key={provider.provider_id}
+                        value={provider.provider_id}
+                      >
+                        {provider.display_name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <label>
                 <span>Summary provider</span>
                 <select
@@ -326,6 +356,7 @@ function ActiveSummaryReviewDialog({
                         selected_section_ids: selectedIds(),
                         feedback_text: "",
                         summary_model: selectedSummaryModel(),
+                        search_provider: review.search_provider,
                         query_text: queryText.trim(),
                       });
                     }}
@@ -348,6 +379,7 @@ function ActiveSummaryReviewDialog({
                         selected_section_ids: selectedIds(),
                         feedback_text: "",
                         summary_model: selectedSummaryModel(),
+                        search_provider: review.search_provider,
                         query_text: queryText.trim(),
                       });
                     }}
@@ -439,6 +471,7 @@ function ActiveSummaryReviewDialog({
                           selected_section_ids: selectedIds(),
                           feedback_text: "",
                           summary_model: selectedSummaryModel(),
+                          search_provider: review.search_provider,
                           query_text: "",
                         });
                       }}
@@ -461,6 +494,7 @@ function ActiveSummaryReviewDialog({
                           selected_section_ids: selectedIds(),
                           feedback_text: "",
                           summary_model: selectedSummaryModel(),
+                          search_provider: review.search_provider,
                           query_text: "",
                         });
                       }}
@@ -482,6 +516,7 @@ function ActiveSummaryReviewDialog({
                           selected_section_ids: selectedIds(),
                           feedback_text: "",
                           summary_model: selectedSummaryModel(),
+                          search_provider: review.search_provider,
                           query_text: "",
                         });
                       }}
@@ -502,6 +537,7 @@ function ActiveSummaryReviewDialog({
                           selected_section_ids: selectedIds(),
                           feedback_text: feedbackText.trim(),
                           summary_model: selectedSummaryModel(),
+                          search_provider: review.search_provider,
                           query_text: "",
                         });
                       }}
@@ -528,6 +564,7 @@ function ActiveSummaryReviewDialog({
                           selected_section_ids: selectedIds(),
                           feedback_text: "",
                           summary_model: selectedSummaryModel(),
+                          search_provider: review.search_provider,
                           query_text: "",
                         });
                       }}

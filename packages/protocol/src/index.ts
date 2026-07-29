@@ -1,6 +1,7 @@
-export const PROTOCOL_VERSION = 16 as const;
+export const PROTOCOL_VERSION = 17 as const;
 
 export const SUMMARY_REVIEW_MAX_SECTIONS = 20;
+export const SUMMARY_REVIEW_MAX_SEARCH_PROVIDERS = 20;
 export const SUMMARY_REVIEW_MAX_TEXT_LENGTH = 256 * 1024;
 export const SUMMARY_REVIEW_MAX_QUERY_LENGTH = 4 * 1024;
 
@@ -25,6 +26,11 @@ export type SummaryReviewDraftMetadata = {
   fallback_reason: string | null;
 };
 
+export type SummaryReviewSearchProvider = {
+  provider_id: string;
+  display_name: string;
+};
+
 export type SummaryReviewRequest = {
   interaction_id: string;
   stage: "select-evidence" | "review-summary";
@@ -35,6 +41,8 @@ export type SummaryReviewRequest = {
   draft_metadata: SummaryReviewDraftMetadata | null;
   query_draft: string;
   query_notice: string | null;
+  search_providers: SummaryReviewSearchProvider[];
+  search_provider: string | null;
   sections: SummaryReviewSection[];
   selected_section_ids: string[];
 };
@@ -45,6 +53,7 @@ export type SummaryReviewResolution = {
     | "raw"
     | "add-search"
     | "rewrite-query"
+    | "change-provider"
     | "regenerate"
     | "back"
     | "approve"
@@ -53,6 +62,7 @@ export type SummaryReviewResolution = {
   selected_section_ids: string[];
   feedback_text: string;
   summary_model: ModelSelection | null;
+  search_provider: string | null;
   query_text: string;
 };
 
@@ -1127,6 +1137,8 @@ function parseSummaryReviewRequest(
       "draft_metadata",
       "query_draft",
       "query_notice",
+      "search_providers",
+      "search_provider",
       "sections",
       "selected_section_ids",
     ],
@@ -1189,6 +1201,45 @@ function parseSummaryReviewRequest(
   const queryNotice = value.query_notice === null
     ? null
     : requireBoundedString(value, "query_notice", 300);
+  const searchProviders = requireArray(value, "search_providers");
+  if (searchProviders.length > SUMMARY_REVIEW_MAX_SEARCH_PROVIDERS) {
+    throw new Error("Summary review search providers are out of bounds.");
+  }
+  const parsedSearchProviders = searchProviders.map((provider) => {
+    if (!isRecord(provider)) {
+      throw new Error("Summary review search provider must be an object.");
+    }
+    assertExactKeys(
+      provider,
+      ["provider_id", "display_name"],
+      "summary review search provider",
+    );
+    return {
+      provider_id: requireBoundedString(provider, "provider_id", 100),
+      display_name: requireBoundedString(
+        provider,
+        "display_name",
+        100,
+      ),
+    };
+  });
+  const searchProviderIds = new Set(
+    parsedSearchProviders.map((provider) => provider.provider_id),
+  );
+  if (searchProviderIds.size !== parsedSearchProviders.length) {
+    throw new Error("Summary review search providers must be unique.");
+  }
+  const searchProvider = value.search_provider === null
+    ? null
+    : requireBoundedString(value, "search_provider", 100);
+  if (
+    (searchProvider === null) !== (parsedSearchProviders.length === 0) ||
+    (searchProvider !== null && !searchProviderIds.has(searchProvider))
+  ) {
+    throw new Error(
+      "Summary review search provider must reference an available provider.",
+    );
+  }
   return {
     interaction_id: requireString(value, "interaction_id"),
     stage,
@@ -1204,6 +1255,8 @@ function parseSummaryReviewRequest(
       true,
     ),
     query_notice: queryNotice,
+    search_providers: parsedSearchProviders,
+    search_provider: searchProvider,
     sections: parsedSections,
     selected_section_ids: selectedSectionIds,
   };
@@ -1319,6 +1372,7 @@ function parseSummaryReviewResolution(
       "selected_section_ids",
       "feedback_text",
       "summary_model",
+      "search_provider",
       "query_text",
     ],
     "summary review resolution",
@@ -1351,6 +1405,7 @@ function parseSummaryReviewResolution(
     decision !== "back" &&
     decision !== "add-search" &&
     decision !== "rewrite-query" &&
+    decision !== "change-provider" &&
     selectedSectionIds.length === 0
   ) {
     throw new Error(
@@ -1366,6 +1421,14 @@ function parseSummaryReviewResolution(
   ) {
     throw new Error("Query curation decisions require query text.");
   }
+  const searchProvider = value.search_provider === null
+    ? null
+    : requireBoundedString(value, "search_provider", 100);
+  if (decision === "change-provider" && searchProvider === null) {
+    throw new Error(
+      "Provider changes require a selected search provider.",
+    );
+  }
   return {
     decision,
     approved_text: approvedText,
@@ -1374,6 +1437,7 @@ function parseSummaryReviewResolution(
     summary_model: parseNullableSummaryModelSelection(
       value.summary_model,
     ),
+    search_provider: searchProvider,
     query_text: queryText,
   };
 }
@@ -1404,6 +1468,7 @@ function parseSummaryReviewDecision(
     value !== "raw" &&
     value !== "add-search" &&
     value !== "rewrite-query" &&
+    value !== "change-provider" &&
     value !== "regenerate" &&
     value !== "back" &&
     value !== "approve" &&

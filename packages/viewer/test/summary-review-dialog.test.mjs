@@ -27,8 +27,12 @@ test("summary review is a modal approval boundary with editable output", () => {
   assert.match(dialogSource, /decision: "back"/u);
   assert.match(dialogSource, /decision: "rewrite-query"/u);
   assert.match(dialogSource, /decision: "add-search"/u);
+  assert.match(dialogSource, /decision: "change-provider"/u);
   assert.match(dialogSource, /Add another search/u);
   assert.match(dialogSource, /Improve query/u);
+  assert.match(dialogSource, /Search provider/u);
+  assert.match(dialogSource, /review\.search_providers/u);
+  assert.match(dialogSource, /search_provider: review\.search_provider/u);
   assert.match(dialogSource, /query_notice/u);
   assert.match(dialogSource, /<MarkdownContent/u);
   assert.match(dialogSource, /Summary regeneration feedback/u);

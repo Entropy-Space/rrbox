@@ -115,6 +115,8 @@ function cloneSummaryReviewRequest(
       : null,
     query_draft: request.query_draft,
     query_notice: request.query_notice,
+    search_providers: structuredClone(request.search_providers),
+    search_provider: request.search_provider,
     sections: structuredClone(request.sections),
     selected_section_ids: [...request.selected_section_ids],
   };
@@ -265,6 +267,27 @@ export class SessionRuntime {
         .filter((section) => section.is_selectable)
         .map((section) => section.section_id),
     );
+    const searchProviderIds = new Set(
+      pending.request.search_providers.map(
+        (provider) => provider.provider_id,
+      ),
+    );
+    if (
+      resolution.search_provider !== null &&
+      !searchProviderIds.has(resolution.search_provider)
+    ) {
+      throw new Error(
+        "The summary review selected an unavailable search provider.",
+      );
+    }
+    if (
+      resolution.decision === "change-provider" &&
+      resolution.search_provider === null
+    ) {
+      throw new Error(
+        "The summary review requires a search provider.",
+      );
+    }
     if (
       resolution.selected_section_ids.some(
         (sectionId) =>
@@ -280,7 +303,8 @@ export class SessionRuntime {
       pending.request.stage !== "select-evidence" &&
       (
         resolution.decision === "add-search" ||
-        resolution.decision === "rewrite-query"
+        resolution.decision === "rewrite-query" ||
+        resolution.decision === "change-provider"
       )
     ) {
       throw new Error(

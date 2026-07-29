@@ -80,6 +80,14 @@ test("summary review pauses a tool until the viewer approves it", async () => {
                 draft_metadata: null,
                 query_draft: "",
                 query_notice: "Searching…",
+                search_providers: [{
+                  provider_id: "auto",
+                  display_name: "Automatic",
+                }, {
+                  provider_id: "exa",
+                  display_name: "Exa",
+                }],
+                search_provider: "auto",
                 sections: [],
                 selected_section_ids: [],
               }, signal);
@@ -93,6 +101,14 @@ test("summary review pauses a tool until the viewer approves it", async () => {
                 draft_metadata: null,
                 query_draft: "",
                 query_notice: null,
+                search_providers: [{
+                  provider_id: "auto",
+                  display_name: "Automatic",
+                }, {
+                  provider_id: "exa",
+                  display_name: "Exa",
+                }],
+                search_provider: "auto",
                 sections: [{
                   section_id: "0",
                   title: "Query",
@@ -151,6 +167,7 @@ test("summary review pauses a tool until the viewer approves it", async () => {
       selected_section_ids: [],
       feedback_text: "",
       summary_model: null,
+      search_provider: "auto",
       query_text: "",
     },
   }));
@@ -179,9 +196,29 @@ test("summary review pauses a tool until the viewer approves it", async () => {
     resolution: {
       decision: "summarize",
       approved_text: "",
+      selected_section_ids: ["0"],
+      feedback_text: "",
+      summary_model: null,
+      search_provider: "missing",
+      query_text: "",
+    },
+  }));
+  assert.match(
+    events.findLast((event) => event.type === "error").payload.message,
+    /unavailable search provider/u,
+  );
+
+  await core.handle(createCommand("summary_review_resolve", {
+    project_id: review.payload.project_id,
+    session_id: review.payload.session_id,
+    interaction_id: review.payload.interaction_id,
+    resolution: {
+      decision: "summarize",
+      approved_text: "",
       selected_section_ids: ["1"],
       feedback_text: "",
       summary_model: null,
+      search_provider: "auto",
       query_text: "",
     },
   }));
@@ -200,6 +237,7 @@ test("summary review pauses a tool until the viewer approves it", async () => {
       selected_section_ids: ["0"],
       feedback_text: "",
       summary_model: null,
+      search_provider: "auto",
       query_text: "",
     },
   }));
@@ -265,6 +303,11 @@ test("a local review deadline clears the interaction without aborting the run", 
                   draft_metadata: null,
                   query_draft: "",
                   query_notice: null,
+                  search_providers: [{
+                    provider_id: "auto",
+                    display_name: "Automatic",
+                  }],
+                  search_provider: "auto",
                   sections: [{
                     section_id: "0",
                     title: "Query",
@@ -338,6 +381,7 @@ test("a local review deadline clears the interaction without aborting the run", 
       selected_section_ids: ["0"],
       feedback_text: "",
       summary_model: null,
+      search_provider: "auto",
       query_text: "",
     },
   }));

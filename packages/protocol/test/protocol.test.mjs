@@ -9,7 +9,7 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v16 command", () => {
+test("round-trips every protocol-v17 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("bootstrap", {
@@ -76,6 +76,7 @@ test("round-trips every protocol-v16 command", () => {
           provider_id: "local-openai",
           model_id: "gpt-5.4",
         },
+        search_provider: null,
         query_text: "",
       },
     }),
@@ -390,6 +391,11 @@ test("round-trips every normalized timeline core event", () => {
         },
         query_draft: "",
         query_notice: null,
+        search_providers: [{
+          provider_id: "auto",
+          display_name: "Automatic",
+        }],
+        search_provider: "auto",
         sections: [{
           section_id: "0",
           title: "Query",
@@ -417,6 +423,11 @@ test("round-trips every normalized timeline core event", () => {
         draft_metadata: null,
         query_draft: "",
         query_notice: "Searching 0 of 2 queries…",
+        search_providers: [{
+          provider_id: "auto",
+          display_name: "Automatic",
+        }],
+        search_provider: "auto",
         sections: [],
         selected_section_ids: [],
       },
@@ -572,6 +583,14 @@ test("validates summary model selections and draft metadata", () => {
       },
       query_draft: "new angle",
       query_notice: "Review the improved query.",
+      search_providers: [{
+        provider_id: "auto",
+        display_name: "Automatic",
+      }, {
+        provider_id: "exa",
+        display_name: "Exa",
+      }],
+      search_provider: "auto",
       sections: [{
         section_id: "0",
         title: "Query",
@@ -635,6 +654,14 @@ test("bounds query curation and permits empty evidence selection", () => {
       draft_metadata: null,
       query_draft: "another research angle",
       query_notice: null,
+      search_providers: [{
+        provider_id: "auto",
+        display_name: "Automatic",
+      }, {
+        provider_id: "exa",
+        display_name: "Exa",
+      }],
+      search_provider: "auto",
       sections: [{
         section_id: "0",
         title: "Initial query",
@@ -681,6 +708,23 @@ test("bounds query curation and permits empty evidence selection", () => {
     /reference available sections/,
   );
 
+  const unavailableProvider = structuredClone(selectionRequest);
+  unavailableProvider.payload.search_provider = "missing";
+  assert.throws(
+    () => parseCoreEvent(unavailableProvider),
+    /reference an available provider/,
+  );
+
+  const duplicateProvider = structuredClone(selectionRequest);
+  duplicateProvider.payload.search_providers.push({
+    provider_id: "auto",
+    display_name: "Duplicate",
+  });
+  assert.throws(
+    () => parseCoreEvent(duplicateProvider),
+    /must be unique/,
+  );
+
   const addSearch = createCommand("summary_review_resolve", {
     project_id: "project-1",
     session_id: "session-1",
@@ -691,10 +735,33 @@ test("bounds query curation and permits empty evidence selection", () => {
       selected_section_ids: [],
       feedback_text: "",
       summary_model: null,
+      search_provider: "auto",
       query_text: "another research angle",
     },
   });
   assert.deepEqual(parseViewerCommand(addSearch), addSearch);
+
+  const changeProvider = structuredClone(addSearch);
+  changeProvider.payload.resolution = {
+    decision: "change-provider",
+    approved_text: "",
+    selected_section_ids: [],
+    feedback_text: "",
+    summary_model: null,
+    search_provider: "exa",
+    query_text: "",
+  };
+  assert.deepEqual(
+    parseViewerCommand(changeProvider),
+    changeProvider,
+  );
+
+  const missingProvider = structuredClone(changeProvider);
+  missingProvider.payload.resolution.search_provider = null;
+  assert.throws(
+    () => parseViewerCommand(missingProvider),
+    /require a selected search provider/,
+  );
 
   const emptyQuery = structuredClone(addSearch);
   emptyQuery.payload.resolution.query_text = " ";
@@ -884,6 +951,11 @@ test("requires request correlation for commands and interactive results", () => 
       draft_metadata: null,
       query_draft: "",
       query_notice: null,
+      search_providers: [{
+        provider_id: "auto",
+        display_name: "Automatic",
+      }],
+      search_provider: "auto",
       sections: [{
         section_id: "0",
         title: "Query",

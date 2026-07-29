@@ -66,6 +66,7 @@ export class WebSearchAggregateError extends Error {
 }
 
 export class RoutingWebSearchExecutor implements WebSearchExecutor {
+  readonly provider_ids: readonly WebSearchResolvedProviderId[];
   private readonly providers: ReadonlyMap<
     WebSearchResolvedProviderId,
     WebSearchProvider
@@ -94,6 +95,7 @@ export class RoutingWebSearchExecutor implements WebSearchExecutor {
       }
       providers.set(provider.id, provider);
     }
+    this.provider_ids = [...providers.keys()];
     const routing = options.routing ?? {
       providers: [...providers.keys()],
       fallback_on: ["transient", "quota", "network"],

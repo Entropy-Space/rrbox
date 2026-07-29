@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 20 as const;
+export const PROTOCOL_VERSION = 22 as const;
 
 export const SUMMARY_REVIEW_MAX_SECTIONS = 20;
 export const SUMMARY_REVIEW_MAX_SEARCH_PROVIDERS = 20;
@@ -35,7 +35,7 @@ export type SummaryReviewRequest = {
   interaction_id: string;
   stage: "select-evidence" | "review-summary";
   is_loading: boolean;
-  loading_phase: "search" | "summary" | null;
+  loading_phase: "search" | "summary-grace" | "summary" | null;
   title: string;
   draft_text: string;
   summary_model: ModelSelection | null;
@@ -58,6 +58,7 @@ export type SummaryReviewResolution = {
     | "regenerate"
     | "back"
     | "approve"
+    | "dismiss"
     | "cancel";
   approved_text: string;
   selected_section_ids: string[];
@@ -337,6 +338,13 @@ export type ViewerCommand =
   | CommandEnvelope<
       "summary_review_touch",
       SessionScope & { interaction_id: string }
+    >
+  | CommandEnvelope<
+      "summary_review_visibility",
+      SessionScope & {
+        interaction_id: string;
+        is_visible: boolean;
+      }
     >
   | CommandEnvelope<"workspace_export", { project_id: string }>
   | CommandEnvelope<
@@ -648,6 +656,17 @@ export function parseViewerCommand(value: unknown): ViewerCommand {
       return commandEnvelope("summary_review_touch", requestId, {
         ...parseSessionScope(payload),
         interaction_id: requireString(payload, "interaction_id"),
+      });
+    case "summary_review_visibility":
+      assertExactKeys(
+        payload,
+        ["project_id", "session_id", "interaction_id", "is_visible"],
+        "summary_review_visibility payload",
+      );
+      return commandEnvelope("summary_review_visibility", requestId, {
+        ...parseSessionScope(payload),
+        interaction_id: requireString(payload, "interaction_id"),
+        is_visible: requireBoolean(payload, "is_visible"),
       });
     case "workspace_export":
       assertExactKeys(
@@ -1432,6 +1451,7 @@ function parseSummaryReviewResolution(
     decision !== "add-search" &&
     decision !== "rewrite-query" &&
     decision !== "change-provider" &&
+    decision !== "dismiss" &&
     selectedSectionIds.length === 0
   ) {
     throw new Error(
@@ -1498,6 +1518,7 @@ function parseSummaryReviewDecision(
     value !== "regenerate" &&
     value !== "back" &&
     value !== "approve" &&
+    value !== "dismiss" &&
     value !== "cancel"
   ) {
     throw new Error("Invalid summary review decision.");
@@ -1517,7 +1538,12 @@ function parseSummaryReviewStage(
 function parseSummaryReviewLoadingPhase(
   value: unknown,
 ): SummaryReviewRequest["loading_phase"] {
-  if (value === null || value === "search" || value === "summary") {
+  if (
+    value === null ||
+    value === "search" ||
+    value === "summary-grace" ||
+    value === "summary"
+  ) {
     return value;
   }
   throw new Error("Invalid summary review loading phase.");

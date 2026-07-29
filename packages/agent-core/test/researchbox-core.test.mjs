@@ -126,6 +126,7 @@ test("tool execution updates reach the running tool card", async () => {
 test("summary review pauses a tool until the viewer approves it", async () => {
   const events = [];
   let reviewActivityCount = 0;
+  const reviewVisibilityStates = [];
   let publishReviewResults;
   const reviewResultsReady = new Promise((resolve) => {
     publishReviewResults = resolve;
@@ -190,6 +191,11 @@ test("summary review pauses a tool until the viewer approves it", async () => {
                   reviewActivityCount += 1;
                 },
               );
+              reviewVisibilityStates.push(interaction.is_visible());
+              const unsubscribeVisibility =
+                interaction.subscribe_visibility((isVisible) => {
+                  reviewVisibilityStates.push(isVisible);
+                });
               await reviewResultsReady;
               interaction.update({
                 stage: "review-summary",
@@ -229,6 +235,7 @@ test("summary review pauses a tool until the viewer approves it", async () => {
               });
               const resolution = await interaction.resolution;
               unsubscribeActivity();
+              unsubscribeVisibility();
               return {
                 content: [{
                   type: "text",
@@ -264,6 +271,19 @@ test("summary review pauses a tool until the viewer approves it", async () => {
     interaction_id: review.payload.interaction_id,
   }));
   assert.equal(reviewActivityCount, 1);
+  await core.handle(createCommand("summary_review_visibility", {
+    project_id: review.payload.project_id,
+    session_id: review.payload.session_id,
+    interaction_id: review.payload.interaction_id,
+    is_visible: false,
+  }));
+  await core.handle(createCommand("summary_review_visibility", {
+    project_id: review.payload.project_id,
+    session_id: review.payload.session_id,
+    interaction_id: review.payload.interaction_id,
+    is_visible: true,
+  }));
+  assert.deepEqual(reviewVisibilityStates, [true, false, true]);
   await core.handle(createCommand("summary_review_resolve", {
     project_id: review.payload.project_id,
     session_id: review.payload.session_id,
@@ -607,6 +627,19 @@ test("a local review deadline clears the interaction without aborting the run", 
       entry.tool_name === "review_timeout_test",
   );
   assert.equal(result.content, "Deterministic timeout fallback");
+  assert.deepEqual(
+    events.findLast(
+      (event) =>
+        event.type === "summary_review_resolved" &&
+        event.payload.interaction_id === review.payload.interaction_id,
+    )?.payload,
+    {
+      project_id: review.payload.project_id,
+      session_id: review.payload.session_id,
+      interaction_id: review.payload.interaction_id,
+      decision: "dismiss",
+    },
+  );
   assert.equal(
     events.findLast((event) => event.type === "run_state")
       .payload.is_running,

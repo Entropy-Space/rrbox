@@ -213,6 +213,8 @@ export function useAgentSession(
   );
   const [summaryReview, setSummaryReview] =
     useState<SummaryReviewView | null>(null);
+  const [isSummaryReviewVisible, setSummaryReviewVisible] =
+    useState(false);
   const transportRef = useRef<CoreTransport | null>(null);
   const pendingManagementRequestRef = useRef<string | null>(null);
   const pendingProviderRefreshRequestRef = useRef(new Map<string, string>());
@@ -391,6 +393,7 @@ export function useAgentSession(
       pendingProviderRefreshRequestRef.current.clear();
       pendingSummaryReviewResolutionRef.current = null;
       setSummaryReview(null);
+      setSummaryReviewVisible(false);
       workspaceTransferRequestsRef.current?.rejectAll(new Error(message));
       workspaceChangeRequestsRef.current?.rejectAll(new Error(message));
       setRefreshingProviderIds(new Set());
@@ -407,6 +410,7 @@ export function useAgentSession(
               is_submitting: false,
               error_message: null,
             });
+            setSummaryReviewVisible(true);
           } else if (event.type === "summary_review_updated") {
             setSummaryReview((current) =>
               current?.interaction_id === event.payload.interaction_id
@@ -419,9 +423,21 @@ export function useAgentSession(
             );
           } else if (event.type === "summary_review_resolved") {
             pendingSummaryReviewResolutionRef.current = null;
+            const closesDialog =
+              event.payload.decision === "approve" ||
+              event.payload.decision === "raw" ||
+              event.payload.decision === "dismiss" ||
+              event.payload.decision === "cancel";
+            if (closesDialog) setSummaryReviewVisible(false);
             setSummaryReview((current) =>
               current?.interaction_id === event.payload.interaction_id
-                ? null
+                ? closesDialog
+                  ? null
+                  : {
+                      ...current,
+                      is_submitting: false,
+                      error_message: null,
+                    }
                 : current
             );
           } else if (
@@ -429,6 +445,7 @@ export function useAgentSession(
             !event.payload.is_running
           ) {
             pendingSummaryReviewResolutionRef.current = null;
+            setSummaryReviewVisible(false);
             setSummaryReview((current) =>
               current?.project_id === event.payload.project_id &&
                 current.session_id === event.payload.session_id
@@ -533,6 +550,7 @@ export function useAgentSession(
       if (transportRef.current === transport) transportRef.current = null;
       pendingSummaryReviewResolutionRef.current = null;
       setSummaryReview(null);
+      setSummaryReviewVisible(false);
     };
   }, [createTransport, transport_lifecycle_key]);
 
@@ -886,6 +904,35 @@ export function useAgentSession(
     }
   }, [summaryReview]);
 
+  const setSummaryReviewVisibility = useCallback(
+    (isVisible: boolean): void => {
+      const review = summaryReview;
+      if (!review || review.is_submitting) return;
+      setSummaryReviewVisible(isVisible);
+      const transport = transportRef.current;
+      if (!transport) return;
+      try {
+        transport.send(createCommand("summary_review_visibility", {
+          project_id: review.project_id,
+          session_id: review.session_id,
+          interaction_id: review.interaction_id,
+          is_visible: isVisible,
+        }));
+      } catch {
+        // Visibility is local-first; run completion clears stale reviews.
+      }
+    },
+    [summaryReview],
+  );
+  const dismissSummaryReview = useCallback(
+    () => setSummaryReviewVisibility(false),
+    [setSummaryReviewVisibility],
+  );
+  const reopenSummaryReview = useCallback(
+    () => setSummaryReviewVisibility(true),
+    [setSummaryReviewVisibility],
+  );
+
   const openFile = useCallback(
     (entry: FileEntry) => {
       if (!coreState.active_project_id) return;
@@ -936,8 +983,11 @@ export function useAgentSession(
     isActiveModelReady,
     refreshingProviderIds,
     summaryReview,
+    isSummaryReviewVisible,
     resolveSummaryReview,
     touchSummaryReview,
+    dismissSummaryReview,
+    reopenSummaryReview,
     submitPrompt,
     updateInputDraft,
     createProject,

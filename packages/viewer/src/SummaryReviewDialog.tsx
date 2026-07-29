@@ -20,18 +20,22 @@ import type { SummaryReviewView } from "./use-agent-session.ts";
 
 export function SummaryReviewDialog({
   review,
+  isOpen,
   providers,
   active_model,
   onResolve,
+  onDismiss,
   onActivity,
 }: {
   review: SummaryReviewView | null;
+  isOpen: boolean;
   providers: ProviderSummary[];
   active_model: ModelSelection;
   onResolve(resolution: SummaryReviewResolution): void;
+  onDismiss(): void;
   onActivity(): void;
 }) {
-  return review
+  return review && isOpen
     ? (
         <ActiveSummaryReviewDialog
           key={review.interaction_id}
@@ -39,6 +43,7 @@ export function SummaryReviewDialog({
           providers={providers}
           active_model={active_model}
           onResolve={onResolve}
+          onDismiss={onDismiss}
           onActivity={onActivity}
         />
       )
@@ -50,12 +55,14 @@ function ActiveSummaryReviewDialog({
   providers,
   active_model,
   onResolve,
+  onDismiss,
   onActivity,
 }: {
   review: SummaryReviewView;
   providers: ProviderSummary[];
   active_model: ModelSelection;
   onResolve(resolution: SummaryReviewResolution): void;
+  onDismiss(): void;
   onActivity(): void;
 }) {
   const dialogRef = useRef<HTMLDialogElement | null>(null);
@@ -84,6 +91,7 @@ function ActiveSummaryReviewDialog({
   const isSelecting = review.stage === "select-evidence";
   const isLoading = review.is_loading;
   const canAddSearchWhileLoading =
+    review.loading_phase === "summary-grace" ||
     review.loading_phase === "summary";
   const selectionChanged = !sameStringSet(
     selectedSectionIds,
@@ -168,11 +176,10 @@ function ActiveSummaryReviewDialog({
       onClickCapture={reportActivity}
       onInputCapture={reportActivity}
       onKeyDownCapture={reportActivity}
-      onPointerMoveCapture={reportActivity}
       onScrollCapture={reportActivity}
       onCancel={(event) => {
         event.preventDefault();
-        cancel();
+        onDismiss();
       }}
     >
       <section className="summary-review-panel">
@@ -273,9 +280,9 @@ function ActiveSummaryReviewDialog({
           <button
             className="icon-button"
             type="button"
-            aria-label="Cancel summary review"
+            aria-label="Dismiss summary review"
             disabled={review.is_submitting}
-            onClick={cancel}
+            onClick={onDismiss}
           >
             <X size={18} />
           </button>
@@ -464,7 +471,10 @@ function ActiveSummaryReviewDialog({
             {review.error_message ??
               (isLoading
                 ? review.loading_phase === "summary"
-                  ? `Generating summary from ${review.sections.length} evidence sections…`
+                  ? `Summarizing ${review.sections.length} evidence sections…`
+                  : review.loading_phase === "summary-grace"
+                  ? review.query_notice ??
+                    "Waiting briefly before summarizing…"
                   : `Searching… ${review.sections.length} evidence sections received`
                 : `${selectedSectionIds.size} of ${review.sections.length} evidence sections selected`)}
           </span>

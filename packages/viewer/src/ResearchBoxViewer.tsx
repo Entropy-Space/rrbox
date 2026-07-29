@@ -164,8 +164,11 @@ export function ResearchBoxViewer({
     isActiveModelReady,
     refreshingProviderIds,
     summaryReview,
+    isSummaryReviewVisible,
     resolveSummaryReview,
     touchSummaryReview,
+    dismissSummaryReview,
+    reopenSummaryReview,
     submitPrompt,
     updateInputDraft,
     createProject,
@@ -513,9 +516,11 @@ export function ResearchBoxViewer({
 
       <SummaryReviewDialog
         review={summaryReview}
+        isOpen={isSummaryReviewVisible}
         providers={coreState.providers}
         active_model={coreState.active_model}
         onResolve={resolveSummaryReview}
+        onDismiss={dismissSummaryReview}
         onActivity={touchSummaryReview}
       />
 
@@ -532,7 +537,11 @@ export function ResearchBoxViewer({
       <section
         className="chat-surface"
         hidden={activePage !== "chat"}
-        inert={modalNavigationOpen || summaryReview ? true : undefined}
+        inert={
+          modalNavigationOpen || isSummaryReviewVisible
+            ? true
+            : undefined
+        }
       >
         <header className="topbar">
           <div className="topbar-leading">
@@ -627,6 +636,11 @@ export function ResearchBoxViewer({
                         isRunActive={row.run_id === activeRunId}
                         onReviewWorkspaceChange={
                           openWorkspaceChangeReview
+                        }
+                        onReopenSummaryReview={
+                          summaryReview && !isSummaryReviewVisible
+                            ? reopenSummaryReview
+                            : undefined
                         }
                       />
                     ),
@@ -812,10 +826,12 @@ function AssistantRunRow({
   entries,
   isRunActive,
   onReviewWorkspaceChange,
+  onReopenSummaryReview,
 }: {
   entries: Array<AssistantMessageEntry | ToolResultEntry>;
   isRunActive: boolean;
   onReviewWorkspaceChange: WorkspaceChangeReviewHandler;
+  onReopenSummaryReview?: () => void;
 }) {
   const turns = buildAssistantRunPresentation(entries, isRunActive);
 
@@ -829,6 +845,7 @@ function AssistantRunRow({
             turn={turn}
             isRunActive={isRunActive}
             onReviewWorkspaceChange={onReviewWorkspaceChange}
+            onReopenSummaryReview={onReopenSummaryReview}
           />
         ))}
       </div>
@@ -840,10 +857,12 @@ function AssistantTurn({
   turn,
   isRunActive,
   onReviewWorkspaceChange,
+  onReopenSummaryReview,
 }: {
   turn: AssistantTurnPresentation;
   isRunActive: boolean;
   onReviewWorkspaceChange: WorkspaceChangeReviewHandler;
+  onReopenSummaryReview?: () => void;
 }) {
   const { entry } = turn;
 
@@ -858,6 +877,7 @@ function AssistantTurn({
           isRunActive={isRunActive}
           toolResult={tool_result}
           onReviewWorkspaceChange={onReviewWorkspaceChange}
+          onReopenSummaryReview={onReopenSummaryReview}
         />
       ))}
       {turn.waiting_state === "thinking" && <ThinkingDots />}
@@ -883,6 +903,7 @@ function AssistantBlockView({
   isRunActive,
   toolResult,
   onReviewWorkspaceChange,
+  onReopenSummaryReview,
 }: {
   block: AssistantBlock;
   entryStatus: AssistantMessageEntry["status"];
@@ -890,6 +911,7 @@ function AssistantBlockView({
   isRunActive: boolean;
   toolResult?: ToolResultEntry;
   onReviewWorkspaceChange: WorkspaceChangeReviewHandler;
+  onReopenSummaryReview?: () => void;
 }) {
   switch (block.type) {
     case "assistant_text":
@@ -940,6 +962,7 @@ function AssistantBlockView({
           result={toolResult}
           isRunActive={isRunActive}
           onReviewWorkspaceChange={onReviewWorkspaceChange}
+          onReopenSummaryReview={onReopenSummaryReview}
         />
       );
   }
@@ -950,11 +973,13 @@ function ToolCallCard({
   result,
   isRunActive,
   onReviewWorkspaceChange,
+  onReopenSummaryReview,
 }: {
   block: ToolCallBlock;
   result?: ToolResultEntry;
   isRunActive: boolean;
   onReviewWorkspaceChange: WorkspaceChangeReviewHandler;
+  onReopenSummaryReview?: () => void;
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const status = result
@@ -977,6 +1002,10 @@ function ToolCallCard({
         : "Tool failed";
   const label = block.label ?? formatToolName(block.tool_name);
   const fileChange = result?.file_change;
+  const canReopenSummaryReview =
+    status === "running" &&
+    block.tool_name === "web_search" &&
+    onReopenSummaryReview !== undefined;
 
   return (
     <div
@@ -984,46 +1013,59 @@ function ToolCallCard({
       aria-busy={status === "running"}
       data-expanded={isExpanded}
     >
-      <button
-        type="button"
-        className="tool-card-summary"
-        aria-expanded={isExpanded}
-        onClick={() => setIsExpanded((expanded) => !expanded)}
-      >
-        <span className="visually-hidden" role="status" aria-live="polite">
-          {statusLabel}: {label}
-        </span>
-        <span className={`tool-icon ${status}`} aria-hidden="true">
-          {status === "running" ? (
-            <LoaderCircle size={15} className="spin" />
-          ) : status === "complete" ? (
-            <Check size={14} />
-          ) : (
-            <X size={14} />
-          )}
-        </span>
-        <span className="tool-copy">
-          <strong>{label}</strong>
-          {!block.label && path && <small>{path}</small>}
-          {!result && block.progress_summary && (
-            <small>{block.progress_summary}</small>
-          )}
-          {resultCopy.summary && <small>{resultCopy.summary}</small>}
-          {resultCopy.error_detail && (
-            <small className="tool-error-detail">
-              {resultCopy.error_detail}
-            </small>
-          )}
-          {!result && !isRunActive && (
-            <small>The tool did not return a result.</small>
-          )}
-        </span>
-        <ChevronRight
-          size={14}
-          className="tool-card-chevron"
-          aria-hidden="true"
-        />
-      </button>
+      <div className="tool-card-header">
+        <button
+          type="button"
+          className="tool-card-summary"
+          aria-expanded={isExpanded}
+          onClick={() => setIsExpanded((expanded) => !expanded)}
+        >
+          <span className="visually-hidden" role="status" aria-live="polite">
+            {statusLabel}: {label}
+          </span>
+          <span className={`tool-icon ${status}`} aria-hidden="true">
+            {status === "running" ? (
+              <LoaderCircle size={15} className="spin" />
+            ) : status === "complete" ? (
+              <Check size={14} />
+            ) : (
+              <X size={14} />
+            )}
+          </span>
+          <span className="tool-copy">
+            <strong>{label}</strong>
+            {!block.label && path && <small>{path}</small>}
+            {!result && block.progress_summary && (
+              <small>{block.progress_summary}</small>
+            )}
+            {resultCopy.summary && <small>{resultCopy.summary}</small>}
+            {resultCopy.error_detail && (
+              <small className="tool-error-detail">
+                {resultCopy.error_detail}
+              </small>
+            )}
+            {!result && !isRunActive && (
+              <small>The tool did not return a result.</small>
+            )}
+          </span>
+          <ChevronRight
+            size={14}
+            className="tool-card-chevron"
+            aria-hidden="true"
+          />
+        </button>
+        {canReopenSummaryReview && (
+          <button
+            type="button"
+            className="tool-card-reopen-review"
+            aria-label="Reopen web search details"
+            title="Reopen web search details"
+            onClick={onReopenSummaryReview}
+          >
+            <PanelRight size={14} aria-hidden="true" />
+          </button>
+        )}
+      </div>
       {isExpanded && (
         <div className="tool-card-details">
           <ToolCallPayload

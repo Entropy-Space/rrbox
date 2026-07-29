@@ -87,6 +87,8 @@ type ActiveRun = {
 type PendingSummaryReview = {
   request: SummaryReviewRequest;
   activity_listeners: Set<() => void>;
+  visibility_listeners: Set<(isVisible: boolean) => void>;
+  is_visible: boolean;
   signal?: AbortSignal;
   on_abort?: () => void;
   resolve(resolution: SummaryReviewResolution): void;
@@ -254,11 +256,16 @@ export class SessionRuntime {
       throw new Error("The summary review is no longer pending.");
     }
     const allowedWhileLoading = pending.request.loading_phase === "search"
-      ? resolution.decision === "change-provider"
-      : pending.request.loading_phase === "summary"
       ? (
         resolution.decision === "change-provider" ||
-        resolution.decision === "add-search"
+        resolution.decision === "dismiss"
+      )
+      : pending.request.loading_phase === "summary-grace" ||
+          pending.request.loading_phase === "summary"
+      ? (
+        resolution.decision === "change-provider" ||
+        resolution.decision === "add-search" ||
+        resolution.decision === "dismiss"
       )
       : false;
     if (
@@ -341,6 +348,26 @@ export class SessionRuntime {
     return true;
   }
 
+  setSummaryReviewVisibility(
+    interactionId: string,
+    isVisible: boolean,
+  ): boolean {
+    const pending = this.pendingSummaryReview;
+    if (!pending || pending.request.interaction_id !== interactionId) {
+      return false;
+    }
+    if (pending.is_visible === isVisible) return true;
+    pending.is_visible = isVisible;
+    for (const listener of [...pending.visibility_listeners]) {
+      try {
+        listener(isVisible);
+      } catch {
+        // Plugin visibility observers must not break core command handling.
+      }
+    }
+    return true;
+  }
+
   private async executePrompt(text: string, requestId: string): Promise<void> {
     const timelineLength = this.document.timeline.length;
     const previousInputDraft = this.document.input_draft;
@@ -410,6 +437,8 @@ export class SessionRuntime {
         const pending: PendingSummaryReview = {
           request: review,
           activity_listeners: new Set(),
+          visibility_listeners: new Set(),
+          is_visible: true,
           signal,
           resolve,
           reject,
@@ -418,6 +447,16 @@ export class SessionRuntime {
           pending.on_abort = () => {
             if (this.pendingSummaryReview !== pending) return;
             this.clearPendingSummaryReview();
+            if (this.activeRun) {
+              this.emit(
+                "summary_review_resolved",
+                {
+                  interaction_id: review.interaction_id,
+                  decision: "dismiss",
+                },
+                this.activeRun.request_id,
+              );
+            }
             reject(
               new DOMException(
                 "Summary review was cancelled.",
@@ -439,6 +478,12 @@ export class SessionRuntime {
     );
     return {
       resolution,
+      is_visible: () => {
+        const pending = this.pendingSummaryReview;
+        return pending?.request.interaction_id === interactionId
+          ? pending.is_visible
+          : false;
+      },
       subscribe_activity: (listener) => {
         const pending = this.pendingSummaryReview;
         if (
@@ -450,6 +495,19 @@ export class SessionRuntime {
         pending.activity_listeners.add(listener);
         return () => {
           pending.activity_listeners.delete(listener);
+        };
+      },
+      subscribe_visibility: (listener) => {
+        const pending = this.pendingSummaryReview;
+        if (
+          !pending ||
+          pending.request.interaction_id !== interactionId
+        ) {
+          return () => undefined;
+        }
+        pending.visibility_listeners.add(listener);
+        return () => {
+          pending.visibility_listeners.delete(listener);
         };
       },
       update: (updatedRequest) => {
@@ -489,6 +547,7 @@ export class SessionRuntime {
       pending.signal.removeEventListener("abort", pending.on_abort);
     }
     pending.activity_listeners.clear();
+    pending.visibility_listeners.clear();
     this.pendingSummaryReview = null;
   }
 

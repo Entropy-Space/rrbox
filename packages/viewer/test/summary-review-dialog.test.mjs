@@ -25,6 +25,7 @@ test("summary review is a modal approval boundary with editable output", () => {
   assert.match(dialogSource, /type="checkbox"/u);
   assert.match(dialogSource, /<textarea/u);
   assert.match(dialogSource, /decision: "approve"/u);
+  assert.match(dialogSource, /onDismiss/u);
   assert.match(dialogSource, /decision: "cancel"/u);
   assert.match(dialogSource, /decision: "raw"/u);
   assert.match(dialogSource, /decision: "summarize"/u);
@@ -53,16 +54,29 @@ test("summary review is a modal approval boundary with editable output", () => {
   assert.match(dialogSource, /review\.loading_phase === "summary"/u);
   assert.match(dialogSource, /canAddSearchWhileLoading/u);
   assert.match(dialogSource, /lastActivityAtRef/u);
-  assert.match(dialogSource, /onPointerMoveCapture=\{reportActivity\}/u);
+  assert.doesNotMatch(
+    dialogSource,
+    /onPointerMoveCapture=\{reportActivity\}/u,
+  );
+  assert.match(dialogSource, /aria-label="Dismiss summary review"/u);
   assert.match(dialogSource, /Searching for evidence/u);
   assert.match(dialogSource, /rel="noreferrer"/u);
   assert.match(viewerSource, /<SummaryReviewDialog/u);
   assert.match(viewerSource, /onActivity=\{touchSummaryReview\}/u);
+  assert.match(viewerSource, /onDismiss=\{dismissSummaryReview\}/u);
+  assert.match(viewerSource, /onReopenSummaryReview/u);
   assert.match(sessionSource, /createCommand\("summary_review_touch"/u);
   assert.match(
-    viewerSource,
-    /inert=\{modalNavigationOpen \|\| summaryReview \? true : undefined\}/u,
+    sessionSource,
+    /createCommand\("summary_review_visibility"/u,
   );
+  assert.match(sessionSource, /event\.payload\.decision === "dismiss"/u);
+  assert.match(
+    viewerSource,
+    /inert=\{\s*modalNavigationOpen \|\| isSummaryReviewVisible/u,
+  );
+  assert.match(viewerSource, /aria-label="Reopen web search details"/u);
+  assert.match(stylesSource, /\.tool-card-reopen-review \{/u);
 });
 
 test("summary review bounds evidence and editor layout", () => {

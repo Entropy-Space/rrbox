@@ -9,7 +9,10 @@ import {
   BrowserPythonExecutor,
 } from "@researchbox/python-plugin/browser";
 import { createPythonAgentPlugin } from "@researchbox/python-plugin";
-import { createWebSearchAgentPlugin } from "@researchbox/web-search-plugin";
+import {
+  DEFAULT_WEB_SEARCH_SUMMARY_GRACE_MS,
+  createWebSearchAgentPlugin,
+} from "@researchbox/web-search-plugin";
 import {
   RoutingWebSearchExecutor,
 } from "@researchbox/web-search-plugin/executor";
@@ -73,6 +76,7 @@ host.onmessage = (event) => {
               initialization.web_search_plugin.summary_timeout_ms,
             review_timeout_ms:
               initialization.web_search_plugin.review_timeout_ms,
+            summary_grace_ms: DEFAULT_WEB_SEARCH_SUMMARY_GRACE_MS,
           },
         )]
       : []),

@@ -9,7 +9,7 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v20 command", () => {
+test("round-trips every protocol-v22 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("bootstrap", {
@@ -80,10 +80,30 @@ test("round-trips every protocol-v20 command", () => {
         query_text: "",
       },
     }),
+    createCommand("summary_review_resolve", {
+      project_id: "p1",
+      session_id: "s1",
+      interaction_id: "review-2",
+      resolution: {
+        decision: "dismiss",
+        approved_text: "",
+        selected_section_ids: [],
+        feedback_text: "",
+        summary_model: null,
+        search_provider: "auto",
+        query_text: "",
+      },
+    }),
     createCommand("summary_review_touch", {
       project_id: "p1",
       session_id: "s1",
       interaction_id: "review-1",
+    }),
+    createCommand("summary_review_visibility", {
+      project_id: "p1",
+      session_id: "s1",
+      interaction_id: "review-1",
+      is_visible: false,
     }),
     createCommand("workspace_export", { project_id: "p1" }),
     createCommand("workspace_export_cancel", {

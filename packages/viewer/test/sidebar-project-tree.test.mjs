@@ -61,7 +61,7 @@ test("groups sessions by project without changing input order or inputs", () => 
   );
 });
 
-test("the active new-chat draft uses the live input as its authority", () => {
+test("the active virtual chat stays visible while its input changes", () => {
   const activeProject = project("project-1", true);
 
   assert.equal(
@@ -69,16 +69,14 @@ test("the active new-chat draft uses the live input as its authority", () => {
       project: activeProject,
       activeProjectId: "project-1",
       activeSessionId: null,
-      inputDraft: "",
     }),
-    false,
+    true,
   );
   assert.equal(
     isProjectDraftVisible({
       project: project("project-1", false),
       activeProjectId: "project-1",
       activeSessionId: null,
-      inputDraft: "   ",
     }),
     true,
   );
@@ -87,7 +85,6 @@ test("the active new-chat draft uses the live input as its authority", () => {
       project: activeProject,
       activeProjectId: "project-1",
       activeSessionId: "session-1",
-      inputDraft: "unsent session text",
     }),
     false,
   );
@@ -103,7 +100,6 @@ test("inactive projects use their persisted draft summary", () => {
         project: project("project-2", hasDraft),
         activeProjectId: "project-1",
         activeSessionId: null,
-        inputDraft: "live draft for another project",
       }),
       expected,
     );
@@ -112,7 +108,6 @@ test("inactive projects use their persisted draft summary", () => {
         project: project("project-2", hasDraft),
         activeProjectId: null,
         activeSessionId: null,
-        inputDraft: "",
       }),
       expected,
     );
@@ -125,7 +120,6 @@ test("inactive projects use their persisted draft summary", () => {
       project: legacyProject,
       activeProjectId: "project-1",
       activeSessionId: null,
-      inputDraft: "",
     }),
     false,
   );

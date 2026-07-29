@@ -115,6 +115,37 @@ const suggestions = [
   },
 ];
 
+function getPluginSaveBlockedReason({
+  isCoreReady,
+  isRunning,
+  isManagementPending,
+  isInputDraftPending,
+  hasPendingPrompt,
+  isWorkspaceTransferPending,
+}: {
+  isCoreReady: boolean;
+  isRunning: boolean;
+  isManagementPending: boolean;
+  isInputDraftPending: boolean;
+  hasPendingPrompt: boolean;
+  isWorkspaceTransferPending: boolean;
+}): string | null {
+  if (!isCoreReady) return "Wait for the local core to finish starting.";
+  if (isRunning || hasPendingPrompt) {
+    return "Wait for the current response to finish.";
+  }
+  if (isManagementPending) {
+    return "Wait for the current project or chat change to finish.";
+  }
+  if (isWorkspaceTransferPending) {
+    return "Wait for the workspace transfer to finish.";
+  }
+  if (isInputDraftPending) {
+    return "Your current message is still being saved.";
+  }
+  return null;
+}
+
 export function ResearchBoxViewer({
   createTransport,
   plugins = [],
@@ -213,12 +244,6 @@ export function ResearchBoxViewer({
     return () => mediaQuery.removeEventListener("change", syncViewport);
   }, []);
 
-  const submitDraft = useCallback(
-    (prompt: string) => {
-      submitPrompt(prompt);
-    },
-    [submitPrompt],
-  );
   const selectNewChatAndFocus = useCallback(
     (projectId?: string) => {
       selectNewChat(projectId);
@@ -277,13 +302,8 @@ export function ResearchBoxViewer({
   const isWorkspaceTransferDisabled =
     !coreState.is_ready ||
     isManagementPending ||
-    isInputDraftPending ||
     coreState.is_running ||
-    coreState.pending_prompt !== null ||
-    coreState.pending_fs_list !== null ||
-    coreState.pending_fs_read !== null ||
-    coreState.pending_workspace_refresh !== null ||
-    refreshingProviderIds.size > 0;
+    coreState.pending_prompt !== null;
   const {
     notice: workspaceTransferNotice,
     isPending: isWorkspaceTransferPending,
@@ -299,10 +319,32 @@ export function ResearchBoxViewer({
   });
   const isSidebarPending =
     isManagementPending ||
-    isInputDraftPending ||
     coreState.is_running ||
     coreState.pending_prompt !== null ||
     isWorkspaceTransferPending;
+  const canSubmitDraft =
+    coreState.is_ready &&
+    coreState.active_project_id !== null &&
+    isActiveModelReady &&
+    !isManagementPending &&
+    !isWorkspaceTransferPending &&
+    !coreState.is_running &&
+    coreState.pending_prompt === null;
+  const submitDraft = useCallback(
+    (prompt: string) => {
+      if (!canSubmitDraft || prompt.trim().length === 0) return;
+      submitPrompt(prompt);
+    },
+    [canSubmitDraft, submitPrompt],
+  );
+  const pluginSaveBlockedReason = getPluginSaveBlockedReason({
+    isCoreReady: coreState.is_ready,
+    isRunning: coreState.is_running,
+    isManagementPending,
+    isInputDraftPending,
+    hasPendingPrompt: coreState.pending_prompt !== null,
+    isWorkspaceTransferPending,
+  });
   const openChatSearch = useCallback(() => {
     if (!isSidebarPending) setChatSearchOpen(true);
   }, [isSidebarPending]);
@@ -391,7 +433,10 @@ export function ResearchBoxViewer({
   }
 
   const hasConversation = coreState.timeline.length > 0;
-  const visibleError = transportError ?? coreState.error_message;
+  const visibleError =
+    transportError ??
+    coreState.error_message ??
+    coreState.input_draft_error_message;
   const visibleCoreStatus =
     !coreState.is_ready &&
     (coreState.core_lifecycle === "waiting_for_writer" ||
@@ -427,7 +472,6 @@ export function ResearchBoxViewer({
         sessions={coreState.sessions}
         activeProjectId={coreState.active_project_id}
         activeSessionId={coreState.active_session_id}
-        inputDraft={coreState.input_draft}
         isPending={isSidebarPending}
         isWorkspaceTransferDisabled={
           isWorkspaceTransferDisabled || isWorkspaceTransferPending
@@ -479,16 +523,9 @@ export function ResearchBoxViewer({
         <PluginsPage
           plugins={plugins}
           settings={pluginSettings}
-          is_disabled={
-            !coreState.is_ready ||
-            coreState.is_running ||
-            isManagementPending ||
-            isInputDraftPending ||
-            coreState.pending_prompt !== null ||
-            isWorkspaceTransferPending
-          }
-          on_close={closePlugins}
-          on_save={savePlugin}
+          saveBlockedReason={pluginSaveBlockedReason}
+          onClose={closePlugins}
+          onSave={savePlugin}
         />
       )}
 
@@ -554,11 +591,7 @@ export function ResearchBoxViewer({
           <div className="conversation-column">
             {!hasConversation ? (
               <EmptyConversation
-                isReady={
-                  coreState.is_ready &&
-                  isActiveModelReady &&
-                  !isWorkspaceTransferPending
-                }
+                canSubmit={canSubmitDraft}
                 onSelectPrompt={submitDraft}
               />
             ) : (
@@ -644,8 +677,7 @@ export function ResearchBoxViewer({
                   placeholder="Message ResearchBox"
                   disabled={
                     !coreState.is_ready ||
-                    isManagementPending ||
-                    isWorkspaceTransferPending
+                    coreState.active_project_id === null
                   }
                   onChange={(event) => updateInputDraft(event.target.value)}
                   onKeyDown={handleComposerKeyDown}
@@ -683,11 +715,7 @@ export function ResearchBoxViewer({
                         aria-label="Send message"
                         disabled={
                           !coreState.input_draft.trim() ||
-                          !coreState.is_ready ||
-                          !isActiveModelReady ||
-                          isManagementPending ||
-                          isWorkspaceTransferPending ||
-                          coreState.pending_prompt !== null
+                          !canSubmitDraft
                         }
                       >
                         <ArrowUp size={18} strokeWidth={2.5} />
@@ -733,10 +761,10 @@ export function ResearchBoxViewer({
 }
 
 function EmptyConversation({
-  isReady,
+  canSubmit,
   onSelectPrompt,
 }: {
-  isReady: boolean;
+  canSubmit: boolean;
   onSelectPrompt: (prompt: string) => void;
 }) {
   return (
@@ -754,7 +782,7 @@ function EmptyConversation({
           <button
             key={label}
             type="button"
-            disabled={!isReady}
+            disabled={!canSubmit}
             onClick={() => onSelectPrompt(prompt)}
           >
             <Icon size={18} />

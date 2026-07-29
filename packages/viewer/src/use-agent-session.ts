@@ -70,6 +70,7 @@ export type AgentSessionState = {
   is_ready: boolean;
   is_running: boolean;
   error_message: string | null;
+  input_draft_error_message: string | null;
   pending_fs_list: PendingFileSystemRequest | null;
   pending_fs_read: PendingFileSystemRequest | null;
   pending_workspace_refresh: PendingWorkspaceRefresh | null;
@@ -106,6 +107,7 @@ export const initialAgentSessionState: AgentSessionState = {
   is_ready: false,
   is_running: false,
   error_message: null,
+  input_draft_error_message: null,
   pending_fs_list: null,
   pending_fs_read: null,
   pending_workspace_refresh: null,
@@ -539,6 +541,7 @@ export function useAgentSession(
       const text = prompt.trim();
       if (
         !text ||
+        !coreState.is_ready ||
         !coreState.active_project_id ||
         coreState.is_running ||
         coreState.pending_prompt !== null ||
@@ -567,6 +570,7 @@ export function useAgentSession(
       coreState.active_project_id,
       coreState.active_session_id,
       coreState.input_draft_generation,
+      coreState.is_ready,
       coreState.is_running,
       coreState.pending_prompt,
       isManagementPending,
@@ -1157,7 +1161,6 @@ export function coreReducer(
         pending_input_draft_request_id: event.request_id,
         input_draft_needs_sync: false,
         input_draft_retry_count: 0,
-        error_message: null,
       };
     case "input_draft_sync_started":
       if (
@@ -1187,6 +1190,7 @@ export function coreReducer(
           input_draft_generation: event.input_draft_generation,
         },
         error_message: null,
+        input_draft_error_message: null,
       };
     case "fs_list_requested":
       return {
@@ -1254,6 +1258,7 @@ export function coreReducer(
         is_ready: false,
         is_running: false,
         error_message: event.message,
+        input_draft_error_message: null,
         pending_input_draft_request_id: null,
         input_draft_needs_sync: false,
         input_draft_retry_count: 0,
@@ -1459,17 +1464,17 @@ export function coreReducer(
         ...state,
         pending_input_draft_request_id: null,
         input_draft_retry_count: 0,
-        error_message: null,
+        input_draft_error_message: null,
       };
     case "error": {
+      const isInputDraftPersistenceFailure =
+        event.payload.code === "persistence_failed" &&
+        event.request_id === state.pending_input_draft_request_id;
       let nextState =
         event.request_id === state.pending_prompt?.request_id
           ? { ...state, pending_prompt: null }
           : state;
-      if (
-        event.payload.code === "persistence_failed" &&
-        event.request_id === state.pending_input_draft_request_id
-      ) {
+      if (isInputDraftPersistenceFailure) {
         nextState = {
           ...nextState,
           pending_input_draft_request_id: null,
@@ -1495,7 +1500,12 @@ export function coreReducer(
       }
       return {
         ...nextState,
-        error_message: event.payload.message,
+        error_message: isInputDraftPersistenceFailure
+          ? nextState.error_message
+          : event.payload.message,
+        input_draft_error_message: isInputDraftPersistenceFailure
+          ? event.payload.message
+          : nextState.input_draft_error_message,
         pending_fs_list:
           event.payload.code === "fs_list_failed"
             ? null
@@ -1598,6 +1608,9 @@ function applySnapshot(
     is_ready: true,
     is_running: snapshot.is_running,
     error_message: null,
+    input_draft_error_message: scopeChanged
+      ? null
+      : state.input_draft_error_message,
     pending_fs_list: preserveWorkspace
       ? invalidateStaleFileSystemRequest(
           state.pending_fs_list,

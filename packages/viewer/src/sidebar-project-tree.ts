@@ -17,7 +17,6 @@ export type ProjectDraftVisibilityOptions = {
   project: ProjectSummary;
   activeProjectId: string | null;
   activeSessionId: string | null;
-  inputDraft: string;
 };
 
 export function buildSidebarProjectNodes(
@@ -43,7 +42,7 @@ export function isProjectDraftVisible(
   if (options.project.project_id !== options.activeProjectId) {
     return options.project.has_new_chat_draft === true;
   }
-  return options.activeSessionId === null && options.inputDraft !== "";
+  return options.activeSessionId === null;
 }
 
 export function revealExpandedProject(

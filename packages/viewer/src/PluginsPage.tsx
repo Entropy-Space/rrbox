@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, Puzzle, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import {
   resolvePluginSetting,
   type PluginCatalogEntry,
@@ -12,15 +12,15 @@ import {
 export function PluginsPage({
   plugins,
   settings,
-  is_disabled,
-  on_close,
-  on_save,
+  saveBlockedReason,
+  onClose,
+  onSave,
 }: {
   plugins: readonly PluginCatalogEntry[];
   settings: PluginSettingsDocument;
-  is_disabled: boolean;
-  on_close(): void;
-  on_save(plugin_id: string, setting: PluginSetting): string | null;
+  saveBlockedReason: string | null;
+  onClose(): void;
+  onSave(plugin_id: string, setting: PluginSetting): string | null;
 }) {
   return (
     <section className="plugins-page" aria-labelledby="plugins-page-title">
@@ -37,7 +37,7 @@ export function PluginsPage({
           className="icon-button"
           type="button"
           aria-label="Close plugins"
-          onClick={on_close}
+          onClick={onClose}
         >
           <X size={19} />
         </button>
@@ -49,8 +49,8 @@ export function PluginsPage({
             key={plugin.plugin_id}
             plugin={plugin}
             persisted={resolvePluginSetting(settings, plugin)}
-            is_disabled={is_disabled}
-            on_save={on_save}
+            saveBlockedReason={saveBlockedReason}
+            onSave={onSave}
           />
         ))}
       </div>
@@ -61,14 +61,15 @@ export function PluginsPage({
 function PluginCard({
   plugin,
   persisted,
-  is_disabled,
-  on_save,
+  saveBlockedReason,
+  onSave,
 }: {
   plugin: PluginCatalogEntry;
   persisted: PluginSetting;
-  is_disabled: boolean;
-  on_save(plugin_id: string, setting: PluginSetting): string | null;
+  saveBlockedReason: string | null;
+  onSave(plugin_id: string, setting: PluginSetting): string | null;
 }) {
+  const noticeId = useId();
   const [draft, setDraft] = useState(persisted);
   const [notice, setNotice] = useState<{
     kind: "success" | "error";
@@ -86,10 +87,12 @@ function PluginCard({
         draft.configuration[field.configuration_key] !==
         persisted.configuration[field.configuration_key],
     );
+  const isSaveUnavailable =
+    !isDirty || validationError !== null || saveBlockedReason !== null;
 
   function save() {
-    if (validationError) return;
-    const error = on_save(plugin.plugin_id, draft);
+    if (isSaveUnavailable) return;
+    const error = onSave(plugin.plugin_id, draft);
     setNotice(
       error
         ? { kind: "error", message: error }
@@ -127,7 +130,6 @@ function PluginCard({
         <input
           type="checkbox"
           checked={draft.enabled}
-          disabled={is_disabled}
           onChange={(event) => {
             setDraft((current) => ({
               ...current,
@@ -169,7 +171,6 @@ function PluginCard({
                             field.configuration_key
                           ] ?? field.default_value,
                         )}
-                        disabled={is_disabled}
                         aria-invalid={validationError !== null}
                         onChange={(event) =>
                           updateValue(event.target.valueAsNumber)}
@@ -183,7 +184,6 @@ function PluginCard({
                         draft.configuration[field.configuration_key] ??
                           field.default_value,
                       )}
-                      disabled={is_disabled}
                       aria-invalid={validationError !== null}
                       onChange={(event) =>
                         updateValue(event.target.value)}
@@ -202,6 +202,7 @@ function PluginCard({
 
       <footer className="plugin-card-footer">
         <span
+          id={noticeId}
           className={
             notice?.kind === "error" || validationError
               ? "plugin-notice error"
@@ -211,14 +212,17 @@ function PluginCard({
         >
           {validationError ??
             notice?.message ??
-            (is_disabled
-              ? "Finish the active operation before changing plugins."
+            (saveBlockedReason
+              ? `You can keep editing. ${saveBlockedReason}`
               : "")}
         </span>
         <button
           className="primary"
           type="button"
-          disabled={is_disabled || !isDirty || validationError !== null}
+          aria-disabled={isSaveUnavailable}
+          aria-describedby={
+            validationError || saveBlockedReason ? noticeId : undefined
+          }
           onClick={save}
         >
           <Check size={16} />

@@ -221,7 +221,7 @@ function ActiveSummaryReviewDialog({
                 <span>Summary provider</span>
                 <select
                   value={summaryProviderId}
-                  disabled={review.is_submitting || isLoading}
+                  disabled={review.is_submitting}
                   onChange={(event) => {
                     const providerId = event.target.value;
                     const provider = readyProviders.find(
@@ -251,7 +251,6 @@ function ActiveSummaryReviewDialog({
                   value={summaryModelId}
                   disabled={
                     review.is_submitting ||
-                    isLoading ||
                     summaryProviderId === ""
                   }
                   onChange={(event) =>
@@ -306,7 +305,8 @@ function ActiveSummaryReviewDialog({
                       checked={selected}
                       disabled={
                         review.is_submitting ||
-                        isLoading ||
+                        (isLoading &&
+                          review.loading_phase !== "summary") ||
                         !section.is_selectable
                       }
                       onChange={(event) => {
@@ -354,10 +354,7 @@ function ActiveSummaryReviewDialog({
                   type="text"
                   value={queryText}
                   maxLength={4 * 1024}
-                  disabled={
-                    review.is_submitting ||
-                    (isLoading && !canAddSearchWhileLoading)
-                  }
+                  disabled={review.is_submitting}
                   placeholder="Enter another research angle"
                   onChange={(event) => setQueryText(event.target.value)}
                 />

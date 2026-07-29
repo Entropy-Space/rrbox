@@ -12,6 +12,13 @@
   --accent: #10a37f;
   --accent-soft: #e9f7f3;
   --danger: #c43b3b;
+  --focus-ring: #626262;
+  --focus-ring-soft: rgba(13, 13, 13, 0.14);
+}
+
+:where(button, input, textarea, select):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .app-shell {
@@ -532,9 +539,8 @@
   font: inherit;
 }
 
-.summary-review-models select:focus {
-  border-color: var(--accent);
-  outline: 2px solid color-mix(in srgb, var(--accent) 18%, transparent);
+.summary-review-models select:focus-visible {
+  border-color: var(--focus-ring);
 }
 
 .summary-review-icon {
@@ -674,9 +680,8 @@
   color: white;
 }
 
-.summary-review-query-curation > input:focus {
-  border-color: var(--accent);
-  outline: 2px solid color-mix(in srgb, var(--accent) 18%, transparent);
+.summary-review-query-curation > input:focus-visible {
+  border-color: var(--focus-ring);
 }
 
 .summary-review-editor {
@@ -731,9 +736,9 @@
   padding: 14px;
 }
 
-.summary-review-editor textarea:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+.summary-review-editor textarea:focus-visible {
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 2px var(--focus-ring-soft);
 }
 
 .summary-review-footer {
@@ -827,8 +832,12 @@
 }
 
 .chat-search-field:focus-within {
-  border-color: #2f7ff7;
-  box-shadow: 0 0 0 1px #2f7ff7;
+  border-color: var(--line-strong);
+}
+
+.chat-search-field:has(input:focus-visible) {
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 2px var(--focus-ring-soft);
 }
 
 .chat-search-field input {
@@ -1225,10 +1234,9 @@
   width: 168px;
 }
 
-.plugin-number-input input:focus,
-.plugin-field select:focus {
-  border-color: var(--accent);
-  outline: 2px solid color-mix(in srgb, var(--accent) 20%, transparent);
+.plugin-number-input input:focus-visible,
+.plugin-field select:focus-visible {
+  border-color: var(--focus-ring);
 }
 
 .plugin-card-footer {
@@ -1264,10 +1272,7 @@
   font-weight: 620;
 }
 
-.plugin-card-footer button:disabled,
-.plugin-toggle input:disabled,
-.plugin-number-input input:disabled,
-.plugin-field select:disabled {
+.plugin-card-footer button[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.5;
 }
@@ -1811,7 +1816,7 @@
 }
 
 .message-list:focus-visible {
-  outline: 2px solid #2f7ff7;
+  outline: 2px solid var(--focus-ring);
   outline-offset: -3px;
 }
 
@@ -2502,6 +2507,13 @@
     0 8px 24px rgba(0, 0, 0, 0.085);
 }
 
+.composer:has(textarea:focus-visible) {
+  border-color: var(--focus-ring);
+  box-shadow:
+    0 0 0 2px var(--focus-ring-soft),
+    0 8px 24px rgba(0, 0, 0, 0.085);
+}
+
 .composer textarea {
   display: block;
   width: 100%;
@@ -2633,7 +2645,7 @@
 }
 
 .sidebar .status-banner:focus-visible {
-  outline: 2px solid #2f7ff7;
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -2724,7 +2736,7 @@
 
 .workspace-header h2:focus-visible,
 .workspace-change-review-shell:focus-visible {
-  outline: 2px solid #2f7ff7;
+  outline: 2px solid var(--focus-ring);
   outline-offset: 3px;
 }
 
@@ -3161,7 +3173,7 @@
 }
 
 .workspace-change-diff:focus-visible {
-  outline: 2px solid #2f7ff7;
+  outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }
 

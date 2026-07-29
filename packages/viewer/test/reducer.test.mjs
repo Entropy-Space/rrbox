@@ -1606,6 +1606,48 @@ test("draft acknowledgements are scoped and only confirm the latest exact value"
   assert.equal(state.pending_input_draft_request_id, null);
 });
 
+test("draft persistence events preserve unrelated errors", () => {
+  let state = coreReducer(
+    initialAgentSessionState,
+    event("ready", { state: snapshot("p1", null, 1) }),
+  );
+  state = coreReducer(
+    state,
+    event(
+      "error",
+      {
+        code: "command_failed",
+        message: "Keep this error visible.",
+        project_id: "p1",
+        session_id: null,
+      },
+      "other-request",
+    ),
+  );
+  state = coreReducer(state, {
+    type: "input_draft_changed",
+    request_id: "draft-1",
+    project_id: "p1",
+    session_id: null,
+    input_draft: "typing",
+  });
+
+  assert.equal(state.error_message, "Keep this error visible.");
+  state = coreReducer(
+    state,
+    event(
+      "input_draft_saved",
+      {
+        project_id: "p1",
+        session_id: null,
+        input_draft: "typing",
+      },
+      "draft-1",
+    ),
+  );
+  assert.equal(state.error_message, "Keep this error visible.");
+});
+
 test("a failed draft save stays local and is scheduled for retry", () => {
   let state = coreReducer(
     initialAgentSessionState,
@@ -1636,6 +1678,8 @@ test("a failed draft save stays local and is scheduled for retry", () => {
   assert.equal(state.pending_input_draft_request_id, null);
   assert.equal(state.input_draft_needs_sync, true);
   assert.equal(state.input_draft_retry_count, 1);
+  assert.equal(state.error_message, null);
+  assert.equal(state.input_draft_error_message, "Disk unavailable");
 
   state = coreReducer(state, {
     type: "input_draft_sync_started",
@@ -1659,6 +1703,7 @@ test("a failed draft save stays local and is scheduled for retry", () => {
   assert.equal(state.input_draft_needs_sync, false);
   assert.equal(state.pending_input_draft_request_id, null);
   assert.equal(state.input_draft_retry_count, 0);
+  assert.equal(state.input_draft_error_message, null);
 });
 
 test("switching between virtual and persisted chats never leaks drafts", () => {

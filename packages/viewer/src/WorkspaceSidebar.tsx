@@ -35,7 +35,6 @@ export function WorkspaceSidebar({
   sessions,
   activeProjectId,
   activeSessionId,
-  inputDraft,
   isPending,
   isWorkspaceTransferDisabled,
   onClose,
@@ -60,7 +59,6 @@ export function WorkspaceSidebar({
   sessions: SessionSummary[];
   activeProjectId: string | null;
   activeSessionId: string | null;
-  inputDraft: string;
   isPending: boolean;
   isWorkspaceTransferDisabled: boolean;
   onClose: () => void;
@@ -490,7 +488,6 @@ export function WorkspaceSidebar({
                   project,
                   activeProjectId,
                   activeSessionId,
-                  inputDraft,
                 });
                 return (
                   <div

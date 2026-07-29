@@ -274,17 +274,20 @@ test("keeps transfer guards separate from project and chat navigation", async ()
   const sidebarGuard = requireSourceBlock(
     viewer,
     "const isSidebarPending =",
-    "useEffect(",
+    "const canSubmitDraft =",
   );
 
   assert.match(
     transferGuard,
-    /pending_fs_list|pending_fs_read|pending_workspace_refresh/,
+    /!coreState\.is_ready[\s\S]*isManagementPending[\s\S]*coreState\.is_running[\s\S]*coreState\.pending_prompt/u,
   );
-  assert.match(transferGuard, /refreshingProviderIds/);
+  assert.doesNotMatch(
+    transferGuard,
+    /isInputDraftPending|pending_fs_list|pending_fs_read|pending_workspace_refresh|refreshingProviderIds/u,
+  );
   assert.doesNotMatch(
     sidebarGuard,
-    /pending_fs_list|pending_fs_read|pending_workspace_refresh|refreshingProviderIds/,
+    /isInputDraftPending|pending_fs_list|pending_fs_read|pending_workspace_refresh|refreshingProviderIds/u,
   );
   assert.match(viewer, /isPending=\{isSidebarPending\}/);
   assert.match(

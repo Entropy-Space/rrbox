@@ -447,7 +447,10 @@ export function createWebSearchAgentPlugin(
                   reviewController,
                   options.review_timeout_ms,
                   signal,
-                  liveReview.subscribe_activity,
+                  liveReview.subscribe_activity
+                    ? (listener) =>
+                      liveReview.subscribe_activity!(listener)
+                    : undefined,
                 );
               } else {
                 try {
@@ -570,7 +573,10 @@ export function createWebSearchAgentPlugin(
                     reviewController,
                     options.review_timeout_ms,
                     signal,
-                    liveReview.subscribe_activity,
+                    liveReview.subscribe_activity
+                      ? (listener) =>
+                        liveReview.subscribe_activity!(listener)
+                      : undefined,
                   );
                   reviewed = true;
                 }
@@ -1346,7 +1352,9 @@ function openSummaryReviewWithDeadline(
       timeoutController,
       timeoutMs,
       signal,
-      interaction.subscribe_activity,
+      interaction.subscribe_activity
+        ? (listener) => interaction.subscribe_activity!(listener)
+        : undefined,
     ),
   };
 }

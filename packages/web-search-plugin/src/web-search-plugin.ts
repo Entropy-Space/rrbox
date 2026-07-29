@@ -56,11 +56,19 @@ export type WebSearchProviderFailure = {
 
 export type WebSearchExecutor = {
   readonly provider_ids?: readonly WebSearchResolvedProviderId[];
+  list_available_providers?(
+    signal?: AbortSignal,
+  ): Promise<readonly WebSearchProviderOption[]>;
   search(
     request: WebSearchRequest,
     signal?: AbortSignal,
   ): Promise<WebSearchResponse>;
   close(): void | Promise<void>;
+};
+
+export type WebSearchProviderOption = {
+  provider_id: WebSearchResolvedProviderId;
+  include_in_all: boolean;
 };
 
 export type WebSearchPluginOptions = {
@@ -172,7 +180,7 @@ export function createWebSearchAgentPlugin(
           Type.Literal("anysearch"),
         ], {
           description:
-            "Search provider. Omit to use the configured provider.",
+            "Search provider. Omit to use the configured provider; all searches aggregate-eligible providers and excludes explicit-only AnySearch.",
         })),
         workflow: Type.Optional(Type.Union([
           Type.Literal("none"),
@@ -195,14 +203,17 @@ export function createWebSearchAgentPlugin(
         execute: async (_toolCallId, params, signal) => {
           const queries = normalizeQueries(params.query, params.queries);
           const provider = params.provider ?? options.default_provider;
+          const workflow = params.workflow ?? options.default_workflow;
           let activeSearchProvider = provider;
-          const searchProviders = createSearchProviderOptions(
-            executor,
-            provider,
-          );
+          const searchProviders = workflow === "summary-review"
+            ? await createSearchProviderOptions(
+              executor,
+              provider,
+              signal,
+            )
+            : [];
           const providerCoverage =
             new Map<WebSearchProviderId, Set<string>>();
-          const workflow = params.workflow ?? options.default_workflow;
           const searchOptions: Omit<WebSearchRequest, "query"> = {
             num_results:
               params.num_results ?? Math.min(5, options.maximum_results),
@@ -1050,28 +1061,45 @@ function searchProviderLabel(provider: WebSearchProviderId): string {
   return provider === "auto" ? "Automatic" : providerLabel(provider);
 }
 
-function createSearchProviderOptions(
+async function createSearchProviderOptions(
   executor: WebSearchExecutor,
   activeProvider: WebSearchProviderId,
+  signal?: AbortSignal,
 ) {
-  const providerIds = [...new Set(executor.provider_ids ?? [])];
+  let availableProviders: readonly WebSearchProviderOption[];
+  if (executor.list_available_providers) {
+    availableProviders = await executor.list_available_providers(signal);
+  } else {
+    availableProviders = [...new Set(executor.provider_ids ?? [])].map(
+      (providerId) => ({
+        provider_id: providerId,
+        include_in_all: true,
+      }),
+    );
+  }
+  const providerIds = [...new Set(
+    availableProviders.map((provider) => provider.provider_id),
+  )];
+  const supportsAll = availableProviders.some(
+    (provider) => provider.include_in_all,
+  );
   const ids: WebSearchProviderId[] = [
     "auto",
-    ...(providerIds.length > 1 ? ["all" as const] : []),
+    ...(supportsAll ? ["all" as const] : []),
     ...providerIds,
   ];
   if (!ids.includes(activeProvider)) ids.push(activeProvider);
   return ids.map((providerId) => ({
     provider_id: providerId,
     display_name: providerId === "all"
-      ? "All available"
+      ? "All eligible"
       : searchProviderLabel(providerId),
   }));
 }
 
 function resolveReviewSearchProvider(
   requestedProvider: string | null | undefined,
-  providers: ReturnType<typeof createSearchProviderOptions>,
+  providers: Awaited<ReturnType<typeof createSearchProviderOptions>>,
   fallback: WebSearchProviderId,
 ): WebSearchProviderId {
   return providers.some(

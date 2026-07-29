@@ -24,6 +24,7 @@ type PendingRequest = {
 export class NativeAnySearchWebSearchProvider
   implements WebSearchProvider {
   readonly id = "anysearch" as const;
+  readonly include_in_all = false;
   private readonly port: MessagePort;
   private readonly timeoutMs: number;
   private readonly pending = new Map<string, PendingRequest>();

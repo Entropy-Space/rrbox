@@ -24,6 +24,7 @@ export type WebSearchRoutingConfiguration = {
 
 export type WebSearchProvider = {
   id: WebSearchResolvedProviderId;
+  include_in_all?: boolean;
   is_available?(): boolean | Promise<boolean>;
   search(
     request: WebSearchRequest,
@@ -135,6 +136,35 @@ export class RoutingWebSearchExecutor implements WebSearchExecutor {
     return this.searchWithFallback(request, signal);
   }
 
+  async list_available_providers(
+    signal?: AbortSignal,
+  ): Promise<readonly {
+    provider_id: WebSearchResolvedProviderId;
+    include_in_all: boolean;
+  }[]> {
+    if (this.closed) {
+      throw new Error("The web search executor is closed.");
+    }
+    const routingProviderIds = new Set(this.routing.providers);
+    const availability = await Promise.all(
+      [...this.providers.values()].map(async (provider) => ({
+        provider,
+        available: await providerIsAvailable(provider),
+      })),
+    );
+    throwIfAborted(signal);
+    return availability.flatMap(({ provider, available }) =>
+      available
+        ? [{
+            provider_id: provider.id,
+            include_in_all:
+              routingProviderIds.has(provider.id) &&
+              provider.include_in_all !== false,
+          }]
+        : []
+    );
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -196,7 +226,9 @@ export class RoutingWebSearchExecutor implements WebSearchExecutor {
         const provider = this.providers.get(providerId)!;
         return {
           provider,
-          available: await providerIsAvailable(provider),
+          available:
+            provider.include_in_all !== false &&
+            await providerIsAvailable(provider),
         };
       }),
     );

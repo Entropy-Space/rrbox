@@ -168,8 +168,9 @@ provider-independent routing executor, and provider adapters used by both
 browser and native core Workers. Exa MCP is available in both applications.
 The native application also exposes anonymous AnySearch through a dedicated
 MessagePort and a fixed-endpoint Rust service because the REST endpoint is not
-a browser-CORS boundary. The plugin is absent unless application composition
-enables it.
+a browser-CORS boundary. AnySearch is explicit-only and is not included by the
+`all` route, matching the upstream provider contract. The plugin is absent
+unless application composition enables it.
 
 The tool supports a single query or a bounded batch of varied queries, domain
 and recency filters, larger inline excerpts, explicit provider selection, and
@@ -189,7 +190,7 @@ reports the actual model, duration, token estimate, and fallback reason, and
 allows editing, Markdown preview, regeneration with feedback, changing models,
 returning to evidence selection, approval, or cancellation. Only selected
 evidence reaches later regeneration. During evidence selection,
-the viewer can switch among available search providers to add independently
+the viewer can switch among currently available search providers to add independently
 selectable evidence for the current query set, improve a bounded query with
 the selected summary model, or add another bounded search with the active
 search provider; neither query drafts nor results persist after the tool

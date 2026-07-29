@@ -900,6 +900,15 @@ test("summary review can add evidence from another search provider", async () =>
   const calls = [];
   const plugin = createWebSearchAgentPlugin({
     provider_ids: ["exa", "anysearch"],
+    async list_available_providers() {
+      return [{
+        provider_id: "exa",
+        include_in_all: true,
+      }, {
+        provider_id: "anysearch",
+        include_in_all: false,
+      }];
+    },
     async search(request) {
       calls.push({
         query: request.query,
@@ -935,7 +944,7 @@ test("summary review can add evidence from another search provider", async () =>
         display_name: "Automatic",
       }, {
         provider_id: "all",
-        display_name: "All available",
+        display_name: "All eligible",
       }, {
         provider_id: "exa",
         display_name: "Exa",

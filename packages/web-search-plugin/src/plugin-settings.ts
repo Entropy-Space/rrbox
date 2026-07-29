@@ -28,7 +28,7 @@ export function createWebSearchPluginCatalogEntry(options: {
 }) {
   const providerOptions = [
     { value: "auto", display_name: "Automatic" },
-    { value: "all", display_name: "All available" },
+    { value: "all", display_name: "All eligible" },
     { value: "exa", display_name: "Exa" },
     ...(options.include_anysearch
       ? [{ value: "anysearch", display_name: "AnySearch" }]

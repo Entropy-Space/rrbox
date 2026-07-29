@@ -74,6 +74,45 @@ test("auto routing skips unavailable providers and retries classified failures",
   ]);
 });
 
+test("reports available providers with their all-routing eligibility", async () => {
+  const executor = new RoutingWebSearchExecutor({
+    default_provider: "auto",
+    providers: [
+      provider("exa", async () => response("exa")),
+      {
+        ...provider("anysearch", async () => response("anysearch")),
+        include_in_all: false,
+      },
+    ],
+  });
+
+  assert.deepEqual(await executor.list_available_providers(), [{
+    provider_id: "exa",
+    include_in_all: true,
+  }, {
+    provider_id: "anysearch",
+    include_in_all: false,
+  }]);
+});
+
+test("omits unavailable providers from review choices", async () => {
+  const executor = new RoutingWebSearchExecutor({
+    default_provider: "auto",
+    providers: [{
+      ...provider("exa", async () => response("exa")),
+      is_available: () => false,
+    }, {
+      ...provider("anysearch", async () => response("anysearch")),
+      include_in_all: false,
+    }],
+  });
+
+  assert.deepEqual(await executor.list_available_providers(), [{
+    provider_id: "anysearch",
+    include_in_all: false,
+  }]);
+});
+
 test("auto routing falls through transient errors but stops on permanent errors", async () => {
   const calls = [];
   const transientExecutor = new RoutingWebSearchExecutor({
@@ -216,6 +255,38 @@ test("all routing combines providers in configured order and respects the result
     ["exa", "anysearch"],
   );
   assert.deepEqual(result.provider_errors, []);
+});
+
+test("all routing excludes providers marked explicit-only", async () => {
+  const calls = [];
+  const executor = new RoutingWebSearchExecutor({
+    default_provider: "all",
+    providers: [
+      provider("exa", async () => {
+        calls.push("exa");
+        return response("exa", "Exa answer");
+      }),
+      {
+        ...provider("anysearch", async () => {
+          calls.push("anysearch");
+          return response("anysearch", "AnySearch answer");
+        }),
+        include_in_all: false,
+      },
+    ],
+  });
+
+  const result = await executor.search({
+    ...request,
+    provider: "all",
+  });
+
+  assert.deepEqual(calls, ["exa"]);
+  assert.deepEqual(
+    result.provider_responses.map((entry) => entry.provider),
+    ["exa"],
+  );
+  assert.doesNotMatch(result.answer, /AnySearch/u);
 });
 
 test("all routing reports every provider failure", async () => {

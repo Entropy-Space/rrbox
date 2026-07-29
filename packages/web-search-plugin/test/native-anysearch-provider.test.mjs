@@ -31,6 +31,7 @@ test("searches AnySearch over the native port", async () => {
     { timeout_ms: 20_000 },
   );
 
+  assert.equal(provider.include_in_all, false);
   const result = await provider.search({
     query: "rust wasm",
     num_results: 5,

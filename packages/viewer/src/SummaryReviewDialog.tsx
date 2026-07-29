@@ -20,18 +20,22 @@ import type { SummaryReviewView } from "./use-agent-session.ts";
 
 export function SummaryReviewDialog({
   review,
+  isOpen,
   providers,
   active_model,
   onResolve,
+  onDismiss,
   onActivity,
 }: {
   review: SummaryReviewView | null;
+  isOpen: boolean;
   providers: ProviderSummary[];
   active_model: ModelSelection;
   onResolve(resolution: SummaryReviewResolution): void;
+  onDismiss(): void;
   onActivity(): void;
 }) {
-  return review
+  return review && isOpen
     ? (
         <ActiveSummaryReviewDialog
           key={review.interaction_id}
@@ -39,6 +43,7 @@ export function SummaryReviewDialog({
           providers={providers}
           active_model={active_model}
           onResolve={onResolve}
+          onDismiss={onDismiss}
           onActivity={onActivity}
         />
       )
@@ -50,12 +55,14 @@ function ActiveSummaryReviewDialog({
   providers,
   active_model,
   onResolve,
+  onDismiss,
   onActivity,
 }: {
   review: SummaryReviewView;
   providers: ProviderSummary[];
   active_model: ModelSelection;
   onResolve(resolution: SummaryReviewResolution): void;
+  onDismiss(): void;
   onActivity(): void;
 }) {
   const dialogRef = useRef<HTMLDialogElement | null>(null);
@@ -154,19 +161,6 @@ function ActiveSummaryReviewDialog({
     });
   }
 
-  function dismiss() {
-    if (review.is_submitting) return;
-    onResolve({
-      decision: "dismiss",
-      approved_text: "",
-      selected_section_ids: selectedIds(),
-      feedback_text: "",
-      summary_model: selectedSummaryModel(),
-      search_provider: review.search_provider,
-      query_text: "",
-    });
-  }
-
   function reportActivity() {
     const now = Date.now();
     if (now - lastActivityAtRef.current < 1_000) return;
@@ -185,7 +179,7 @@ function ActiveSummaryReviewDialog({
       onScrollCapture={reportActivity}
       onCancel={(event) => {
         event.preventDefault();
-        dismiss();
+        onDismiss();
       }}
     >
       <section className="summary-review-panel">
@@ -288,7 +282,7 @@ function ActiveSummaryReviewDialog({
             type="button"
             aria-label="Dismiss summary review"
             disabled={review.is_submitting}
-            onClick={dismiss}
+            onClick={onDismiss}
           >
             <X size={18} />
           </button>

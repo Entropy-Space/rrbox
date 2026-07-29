@@ -338,6 +338,7 @@ function commandLockScopes(
     case "abort":
     case "summary_review_resolve":
     case "summary_review_touch":
+    case "summary_review_visibility":
     case "workspace_export_cancel":
       return [];
   }

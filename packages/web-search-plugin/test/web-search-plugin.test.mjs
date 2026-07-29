@@ -441,7 +441,7 @@ test("active review interaction resets the idle deadline", async () => {
   );
 });
 
-test("dismissing during search continues with tool-card progress", async () => {
+test("hiding during search continues with tool-card progress", async () => {
   const updates = [];
   const plugin = createWebSearchAgentPlugin({
     async search(request) {
@@ -476,18 +476,20 @@ test("dismissing during search continues with tool-card progress", async () => {
         model_id: "test-model",
       };
     },
-    open_summary_review() {
+    open_summary_review(_request, signal) {
       return {
-        resolution: Promise.resolve({
-          decision: "dismiss",
-          approved_text: "",
-          selected_section_ids: [],
-          feedback_text: "",
-          summary_model: null,
-          search_provider: "exa",
-          query_text: "",
+        resolution: new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            reject(new Error("Review closed."));
+          }, { once: true });
         }),
+        is_visible() {
+          return false;
+        },
         subscribe_activity() {
+          return () => undefined;
+        },
+        subscribe_visibility() {
           return () => undefined;
         },
         update() {},
@@ -507,8 +509,9 @@ test("dismissing during search continues with tool-card progress", async () => {
   assert.ok(updates.includes("Summarizing…"));
 });
 
-test("dismissing during summarization submits as soon as it finishes", async () => {
-  let resolveReview;
+test("hiding during summarization submits as soon as it finishes", async () => {
+  let isVisible = true;
+  const visibilityListeners = new Set();
   const plugin = createWebSearchAgentPlugin({
     async search(request) {
       return {
@@ -542,25 +545,27 @@ test("dismissing during summarization submits as soon as it finishes", async () 
         model_id: "test-model",
       };
     },
-    open_summary_review() {
+    open_summary_review(_request, signal) {
       return {
-        resolution: new Promise((resolve) => {
-          resolveReview = resolve;
+        resolution: new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            reject(new Error("Review closed."));
+          }, { once: true });
         }),
+        is_visible() {
+          return isVisible;
+        },
         subscribe_activity() {
           return () => undefined;
         },
+        subscribe_visibility(listener) {
+          visibilityListeners.add(listener);
+          return () => visibilityListeners.delete(listener);
+        },
         update(request) {
           if (request.loading_phase === "summary") {
-            resolveReview({
-              decision: "dismiss",
-              approved_text: "",
-              selected_section_ids: request.selected_section_ids,
-              feedback_text: "",
-              summary_model: null,
-              search_provider: "exa",
-              query_text: "",
-            });
+            isVisible = false;
+            for (const listener of visibilityListeners) listener(false);
           }
         },
       };
@@ -576,6 +581,98 @@ test("dismissing during summarization submits as soon as it finishes", async () 
 
   assert.equal(result.content[0].text, "Finished background summary.");
   assert.equal(result.details.synthesis.fallback_used, false);
+});
+
+test("reopening during summarization restores summary review", async () => {
+  let isVisible = true;
+  const visibilityListeners = new Set();
+  let resolveReview;
+  const reviewUpdates = [];
+  const plugin = createWebSearchAgentPlugin({
+    async search(request) {
+      return {
+        query: request.query,
+        provider: "exa",
+        answer: "Reopened evidence.",
+        sources: [{
+          title: "Example",
+          url: "https://example.com/",
+        }],
+      };
+    },
+    close() {},
+  }, {
+    maximum_results: 5,
+    maximum_output_bytes: 64 * 1024,
+    default_provider: "exa",
+    default_workflow: "summary-review",
+    summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
+    summary_grace_ms: 0,
+  });
+  const [tool] = plugin.createTools({
+    project_id: "project",
+    session_id: "session",
+    async complete_model() {
+      isVisible = true;
+      for (const listener of visibilityListeners) listener(true);
+      return {
+        text: "Reopened draft summary.",
+        provider_id: "openai",
+        model_id: "test-model",
+      };
+    },
+    open_summary_review(_request, signal) {
+      return {
+        resolution: new Promise((resolve, reject) => {
+          resolveReview = resolve;
+          signal.addEventListener("abort", () => {
+            reject(new Error("Review closed."));
+          }, { once: true });
+        }),
+        is_visible() {
+          return isVisible;
+        },
+        subscribe_activity() {
+          return () => undefined;
+        },
+        subscribe_visibility(listener) {
+          visibilityListeners.add(listener);
+          return () => visibilityListeners.delete(listener);
+        },
+        update(request) {
+          reviewUpdates.push(request);
+          if (request.loading_phase === "summary") {
+            isVisible = false;
+            for (const listener of visibilityListeners) listener(false);
+          }
+          if (request.stage === "review-summary") {
+            resolveReview({
+              decision: "approve",
+              approved_text: "Approved after reopening.",
+              selected_section_ids: request.selected_section_ids,
+              feedback_text: "",
+              summary_model: request.summary_model,
+              search_provider: request.search_provider,
+              query_text: "",
+            });
+          }
+        },
+      };
+    },
+  });
+
+  const result = await tool.execute(
+    "call",
+    { query: "example" },
+    new AbortController().signal,
+    () => {},
+  );
+
+  assert.ok(
+    reviewUpdates.some((request) => request.stage === "review-summary"),
+  );
+  assert.equal(result.content[0].text, "Approved after reopening.");
 });
 
 test("summary grace keeps the dialog open before generation", async () => {

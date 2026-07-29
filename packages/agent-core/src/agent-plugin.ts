@@ -9,7 +9,11 @@ export type { ModelSelection };
 
 export type SummaryReviewInteraction = {
   resolution: Promise<SummaryReviewResolution>;
+  is_visible(): boolean;
   subscribe_activity(listener: () => void): () => void;
+  subscribe_visibility(
+    listener: (isVisible: boolean) => void,
+  ): () => void;
   update(
     request: Omit<SummaryReviewRequest, "interaction_id">,
   ): void;

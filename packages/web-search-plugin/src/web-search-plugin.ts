@@ -326,6 +326,11 @@ export function createWebSearchAgentPlugin(
                 : reviewController.signal,
             );
             void liveReview.resolution.catch(() => undefined);
+            let isLiveReviewVisible =
+              liveReview.is_visible?.() ?? true;
+            liveReview.subscribe_visibility?.((isVisible) => {
+              isLiveReviewVisible = isVisible;
+            });
             const searches = executeQueries(
               executor,
               queries,
@@ -494,7 +499,9 @@ export function createWebSearchAgentPlugin(
                 );
               } else {
                 try {
-                  const summaryGraceMs = options.summary_grace_ms ?? 0;
+                  const summaryGraceMs = isLiveReviewVisible
+                    ? options.summary_grace_ms ?? 0
+                    : 0;
                   liveReview.update({
                     stage: "select-evidence",
                     is_loading: true,
@@ -530,7 +537,9 @@ export function createWebSearchAgentPlugin(
                     "The loading summary review resolved unexpectedly.",
                   );
                 }
-                const summaryGraceMs = options.summary_grace_ms ?? 0;
+                const summaryGraceMs = isLiveReviewVisible
+                  ? options.summary_grace_ms ?? 0
+                  : 0;
                 if (summaryGraceMs > 0) {
                   reportProgress(
                     "waiting-for-review",
@@ -668,9 +677,10 @@ export function createWebSearchAgentPlugin(
                     }
                   } else {
                     synthesis = generationOutcome.result;
-                    if (reviewDismissed) {
+                    if (reviewDismissed || !isLiveReviewVisible) {
                       approvedText = synthesis.text;
                       reviewed = true;
+                      reviewController.abort();
                     } else {
                       try {
                         liveReview.update({
@@ -710,6 +720,13 @@ export function createWebSearchAgentPlugin(
                         liveReview.subscribe_activity
                           ? (listener) =>
                             liveReview.subscribe_activity!(listener)
+                          : undefined,
+                        liveReview.is_visible
+                          ? () => liveReview.is_visible!()
+                          : undefined,
+                        liveReview.subscribe_visibility
+                          ? (listener) =>
+                            liveReview.subscribe_visibility!(listener)
                           : undefined,
                       );
                       reportProgress(
@@ -1596,7 +1613,13 @@ async function requestSummaryReviewWithDeadline(
   return openSummaryReviewWithDeadline(
     (initialRequest, reviewSignal) => ({
       resolution: requestReview(initialRequest, reviewSignal),
+      is_visible() {
+        return true;
+      },
       subscribe_activity() {
+        return () => undefined;
+      },
+      subscribe_visibility() {
         return () => undefined;
       },
       update() {
@@ -1646,8 +1669,15 @@ async function waitForSummaryReviewWithDeadline(
   timeoutMs: number,
   signal?: AbortSignal,
   subscribeActivity?: SummaryReviewInteraction["subscribe_activity"],
+  isVisible?: SummaryReviewInteraction["is_visible"],
+  subscribeVisibility?: SummaryReviewInteraction["subscribe_visibility"],
 ): Promise<SummaryReviewResolution | null> {
+  if (isVisible?.() === false) {
+    timeoutController.abort();
+    return null;
+  }
   const timeoutMarker = Symbol("summary-review-timeout");
+  const hiddenMarker = Symbol("summary-review-hidden");
   let resolveTimeout!: () => void;
   const timeoutPromise = new Promise<typeof timeoutMarker>((resolve) => {
     resolveTimeout = () => resolve(timeoutMarker);
@@ -1662,6 +1692,15 @@ async function waitForSummaryReviewWithDeadline(
   };
   resetTimeout();
   const unsubscribeActivity = subscribeActivity?.(resetTimeout);
+  let resolveHidden!: () => void;
+  const hiddenPromise = new Promise<typeof hiddenMarker>((resolve) => {
+    resolveHidden = () => resolve(hiddenMarker);
+  });
+  const unsubscribeVisibility = subscribeVisibility?.((visible) => {
+    if (visible) return;
+    timeoutController.abort();
+    resolveHidden();
+  });
   let rejectCallerAbort: (() => void) | undefined;
   const callerAbortPromise = signal
     ? new Promise<never>((_resolve, reject) => {
@@ -1675,9 +1714,12 @@ async function waitForSummaryReviewWithDeadline(
     const outcome = await Promise.race([
       reviewPromise,
       timeoutPromise,
+      hiddenPromise,
       ...(callerAbortPromise ? [callerAbortPromise] : []),
     ]);
-    return outcome === timeoutMarker ? null : outcome;
+    return outcome === timeoutMarker || outcome === hiddenMarker
+      ? null
+      : outcome;
   } catch (error) {
     if (signal?.aborted) throw createAbortError();
     if (timeoutController.signal.aborted) return null;
@@ -1685,6 +1727,7 @@ async function waitForSummaryReviewWithDeadline(
   } finally {
     if (timeout) clearTimeout(timeout);
     unsubscribeActivity?.();
+    unsubscribeVisibility?.();
     if (signal && rejectCallerAbort) {
       signal.removeEventListener("abort", rejectCallerAbort);
     }

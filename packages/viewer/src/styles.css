@@ -2131,6 +2131,11 @@
   background: #fcfcfc;
 }
 
+.tool-card-header {
+  display: flex;
+  align-items: stretch;
+}
+
 .tool-card-summary {
   display: flex;
   width: 100%;
@@ -2146,9 +2151,27 @@
   text-align: left;
 }
 
-.tool-card-summary:focus-visible {
+.tool-card-summary:focus-visible,
+.tool-card-reopen-review:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
   outline-offset: -2px;
+}
+
+.tool-card-reopen-review {
+  display: grid;
+  width: 36px;
+  flex: 0 0 36px;
+  cursor: pointer;
+  place-items: center;
+  border: 0;
+  border-left: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+}
+
+.tool-card-reopen-review:hover {
+  background: var(--soft);
+  color: var(--ink);
 }
 
 .tool-card-chevron {

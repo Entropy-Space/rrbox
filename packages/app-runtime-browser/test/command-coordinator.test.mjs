@@ -178,6 +178,17 @@ test("project deletion waits while run controls remain lock-free", async () => {
       started.push("review-touch");
     },
   );
+  const reviewVisibility = coordinator.run(
+    createCommand("summary_review_visibility", {
+      project_id: "project-1",
+      session_id: "session-1",
+      interaction_id: "review-1",
+      is_visible: false,
+    }),
+    async () => {
+      started.push("review-visibility");
+    },
+  );
 
   await waitForCondition(
     () =>
@@ -185,6 +196,7 @@ test("project deletion waits while run controls remain lock-free", async () => {
       started.includes("abort") &&
       started.includes("review") &&
       started.includes("review-touch") &&
+      started.includes("review-visibility") &&
       lockManager.requests.some(
         (request) =>
           request.name === projectCommandLock("project-1") &&
@@ -194,7 +206,14 @@ test("project deletion waits while run controls remain lock-free", async () => {
   assert.equal(started.includes("delete"), false);
 
   promptGate.resolve();
-  await Promise.all([prompt, deletion, abort, review, reviewTouch]);
+  await Promise.all([
+    prompt,
+    deletion,
+    abort,
+    review,
+    reviewTouch,
+    reviewVisibility,
+  ]);
   assert.equal(started.includes("delete"), true);
   assert.equal(started.indexOf("delete") > started.indexOf("prompt"), true);
 });

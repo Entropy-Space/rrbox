@@ -45,6 +45,8 @@ test("summary review is a modal approval boundary with editable output", () => {
   assert.match(dialogSource, /selected_section_ids/u);
   assert.match(dialogSource, /!section\.is_selectable/u);
   assert.match(dialogSource, /review\.is_loading/u);
+  assert.match(dialogSource, /review\.loading_phase === "summary"/u);
+  assert.match(dialogSource, /canAddSearchWhileLoading/u);
   assert.match(dialogSource, /Searching for evidence/u);
   assert.match(dialogSource, /rel="noreferrer"/u);
   assert.match(viewerSource, /<SummaryReviewDialog/u);

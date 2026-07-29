@@ -92,7 +92,7 @@ packages/viewer → browser workspace adapter → browser/archive.worker.ts
 The viewer depends on `CoreTransport`, not on `Worker`. Both applications
 construct `WorkerCoreTransport`, which validates all incoming protocol values,
 isolates subscribers, and owns worker teardown. The viewer and core worker
-exchange only protocol-v17 JSON values. Transport shutdown uses a separate
+exchange only protocol-v18 JSON values. Transport shutdown uses a separate
 versioned control envelope: it asks the worker to abort and drain the core,
 waits for disposal acknowledgement, and force-terminates after a bounded
 timeout if cleanup cannot finish. A
@@ -186,7 +186,11 @@ updateable interaction before retrieval; completed query/provider results
 stream into that interaction while submission controls remain unavailable.
 After retrieval, the plugin automatically generates an initial draft from all
 successful cards and updates the same interaction into summary review. It
-reports the actual model, duration, token estimate, and fallback reason, and
+distinguishes active retrieval from active synthesis on the protocol boundary:
+provider changes may supersede retrieval, while provider changes or added
+searches may abort and supersede draft generation without discarding completed
+evidence.
+It reports the actual model, duration, token estimate, and fallback reason, and
 allows editing, Markdown preview, regeneration with feedback, changing models,
 returning to evidence selection, approval, or cancellation. Only selected
 evidence reaches later regeneration. During evidence selection,

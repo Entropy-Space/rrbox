@@ -283,6 +283,7 @@ export function createWebSearchAgentPlugin(
               {
                 stage: "select-evidence",
                 is_loading: true,
+                loading_phase: "search",
                 title: "Select web search evidence",
                 draft_text: "",
                 summary_model: null,
@@ -314,6 +315,7 @@ export function createWebSearchAgentPlugin(
                   liveReview.update({
                     stage: "select-evidence",
                     is_loading: true,
+                    loading_phase: "search",
                     title: "Select web search evidence",
                     draft_text: "",
                     summary_model: null,
@@ -353,6 +355,15 @@ export function createWebSearchAgentPlugin(
               }
               queryResults = partialResults;
               reviewResults = createReviewResults(queryResults);
+              recordProviderCoverage(
+                reviewResults,
+                providerCoverage,
+              );
+              markProviderCoverage(
+                providerCoverage,
+                provider,
+                queryResults.map((result) => result.query),
+              );
               selectedSectionIds = selectableSectionIds(reviewResults);
               selectedResults = reviewResults.filter(
                 (result) => result.response,
@@ -365,19 +376,27 @@ export function createWebSearchAgentPlugin(
                   "Search review was cancelled by the user.",
                 );
               }
-              if (liveOutcome.resolution !== null) {
-                throw new Error(
-                  "A loading search review may only be cancelled.",
+              if (
+                liveOutcome.resolution?.decision === "change-provider"
+              ) {
+                pendingSelection = Promise.resolve(
+                  liveOutcome.resolution,
                 );
+                reviewed = true;
+              } else if (liveOutcome.resolution !== null) {
+                throw new Error(
+                  "A loading search review may only change provider or cancel.",
+                );
+              } else {
+                synthesis = createReviewTimeoutSynthesis(
+                  selectedResults.length > 0
+                    ? selectedResults
+                    : reviewResults,
+                  options.maximum_output_bytes,
+                );
+                approvedText = synthesis.text;
+                reviewed = true;
               }
-              synthesis = createReviewTimeoutSynthesis(
-                selectedResults.length > 0
-                  ? selectedResults
-                  : reviewResults,
-                options.maximum_output_bytes,
-              );
-              approvedText = synthesis.text;
-              reviewed = true;
             } else {
               queryResults = liveOutcome.results;
               reviewResults = createReviewResults(queryResults);
@@ -396,6 +415,7 @@ export function createWebSearchAgentPlugin(
                   liveReview.update({
                     stage: "select-evidence",
                     is_loading: false,
+                    loading_phase: null,
                     title: "Select web search evidence",
                     draft_text: "",
                     summary_model: null,
@@ -433,6 +453,7 @@ export function createWebSearchAgentPlugin(
                   liveReview.update({
                     stage: "select-evidence",
                     is_loading: true,
+                    loading_phase: "summary",
                     title: "Select web search evidence",
                     draft_text: "",
                     summary_model: null,
@@ -496,47 +517,61 @@ export function createWebSearchAgentPlugin(
                       "Search summary review was cancelled by the user.",
                     );
                   }
-                  throw new Error(
-                    "A loading summary review may only be cancelled.",
-                  );
-                }
-                synthesis = generationOutcome.result;
-                try {
-                  liveReview.update({
-                    stage: "review-summary",
-                    is_loading: false,
-                    title: "Review web search summary",
-                    draft_text: synthesis.text,
-                    summary_model: summaryModel,
-                    draft_metadata: createDraftMetadata(synthesis),
-                    query_draft: "",
-                    query_notice: null,
-                    search_providers: searchProviders,
-                    search_provider: activeSearchProvider,
-                    sections,
-                    selected_section_ids: selectedSectionIds,
-                  });
-                } catch {
-                  const resolution = await liveReview.resolution;
-                  if (resolution.decision === "cancel") {
-                    return createReviewErrorResult(
-                      queries.length,
-                      provider,
-                      workflow,
-                      "Search summary review was cancelled by the user.",
+                  if (
+                    generationOutcome.resolution.decision ===
+                      "change-provider" ||
+                    generationOutcome.resolution.decision ===
+                      "add-search"
+                  ) {
+                    pendingSelection = Promise.resolve(
+                      generationOutcome.resolution,
+                    );
+                    reviewed = true;
+                  } else {
+                    throw new Error(
+                      "A loading summary review may only mutate search or cancel.",
                     );
                   }
-                  throw new Error(
-                    "The summary review resolved before its draft was ready.",
+                } else {
+                  synthesis = generationOutcome.result;
+                  try {
+                    liveReview.update({
+                      stage: "review-summary",
+                      is_loading: false,
+                      loading_phase: null,
+                      title: "Review web search summary",
+                      draft_text: synthesis.text,
+                      summary_model: summaryModel,
+                      draft_metadata: createDraftMetadata(synthesis),
+                      query_draft: "",
+                      query_notice: null,
+                      search_providers: searchProviders,
+                      search_provider: activeSearchProvider,
+                      sections,
+                      selected_section_ids: selectedSectionIds,
+                    });
+                  } catch {
+                    const resolution = await liveReview.resolution;
+                    if (resolution.decision === "cancel") {
+                      return createReviewErrorResult(
+                        queries.length,
+                        provider,
+                        workflow,
+                        "Search summary review was cancelled by the user.",
+                      );
+                    }
+                    throw new Error(
+                      "The summary review resolved before its draft was ready.",
+                    );
+                  }
+                  pendingDraftReview = waitForSummaryReviewWithDeadline(
+                    liveReview.resolution,
+                    reviewController,
+                    options.review_timeout_ms,
+                    signal,
                   );
+                  reviewed = true;
                 }
-                pendingDraftReview = waitForSummaryReviewWithDeadline(
-                  liveReview.resolution,
-                  reviewController,
-                  options.review_timeout_ms,
-                  signal,
-                );
-                reviewed = true;
               }
             }
           } else {
@@ -568,6 +603,7 @@ export function createWebSearchAgentPlugin(
                     {
                       stage: "select-evidence",
                       is_loading: false,
+                      loading_phase: null,
                       title: "Select web search evidence",
                       draft_text: "",
                       summary_model: summaryModel,
@@ -810,6 +846,7 @@ export function createWebSearchAgentPlugin(
                     {
                       stage: "review-summary",
                       is_loading: false,
+                      loading_phase: null,
                       title: "Review web search summary",
                       draft_text: synthesis!.text,
                       summary_model: summaryModel,

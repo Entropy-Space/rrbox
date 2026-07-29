@@ -611,27 +611,32 @@ test("summary-review streams initial searches into one open review", async () =>
     selectionUpdates.map((request) => ({
       stage: request.stage,
       is_loading: request.is_loading,
+      loading_phase: request.loading_phase,
       section_count: request.sections.length,
       selected_section_ids: request.selected_section_ids,
     })),
     [{
       stage: "select-evidence",
       is_loading: true,
+      loading_phase: "search",
       section_count: 1,
       selected_section_ids: ["0"],
     }, {
       stage: "select-evidence",
       is_loading: true,
+      loading_phase: "search",
       section_count: 2,
       selected_section_ids: ["0", "1"],
     }, {
       stage: "select-evidence",
       is_loading: true,
+      loading_phase: "summary",
       section_count: 2,
       selected_section_ids: ["0", "1"],
     }, {
       stage: "review-summary",
       is_loading: false,
+      loading_phase: null,
       section_count: 2,
       selected_section_ids: ["0", "1"],
     }],
@@ -687,6 +692,213 @@ test("cancelling a loading review aborts its active search", async () => {
   assert.equal(searchAborted, true);
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /cancelled by the user/u);
+});
+
+test("switching provider supersedes an active search", async () => {
+  const calls = [];
+  let initialSearchAborted = false;
+  const plugin = createWebSearchAgentPlugin({
+    provider_ids: ["exa", "anysearch"],
+    async search(request, signal) {
+      calls.push(request.provider);
+      if (request.provider === "exa") {
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            initialSearchAborted = true;
+            reject(new DOMException("Superseded", "AbortError"));
+          }, { once: true });
+        });
+      }
+      return {
+        query: request.query,
+        provider: "anysearch",
+        answer: "AnySearch evidence",
+        sources: [{
+          title: "AnySearch",
+          url: "https://example.com/anysearch",
+        }],
+      };
+    },
+    close() {},
+  }, {
+    maximum_results: 5,
+    maximum_output_bytes: 64 * 1024,
+    default_provider: "exa",
+    default_workflow: "summary-review",
+    summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
+  });
+  let reviewCount = 0;
+  const [tool] = plugin.createTools({
+    project_id: "project",
+    session_id: "session",
+    open_summary_review(request) {
+      reviewCount += 1;
+      if (reviewCount === 1) {
+        assert.equal(request.loading_phase, "search");
+        return {
+          resolution: Promise.resolve({
+            decision: "change-provider",
+            approved_text: "",
+            selected_section_ids: [],
+            feedback_text: "",
+            summary_model: null,
+            search_provider: "anysearch",
+            query_text: "",
+          }),
+          update() {},
+        };
+      }
+      assert.equal(request.loading_phase, null);
+      assert.equal(request.search_provider, "anysearch");
+      assert.deepEqual(
+        request.sections.map((section) => section.title),
+        ["example · AnySearch"],
+      );
+      return {
+        resolution: Promise.resolve({
+          decision: "raw",
+          approved_text: "",
+          selected_section_ids: ["0"],
+          feedback_text: "",
+          summary_model: null,
+          search_provider: "anysearch",
+          query_text: "",
+        }),
+        update() {},
+      };
+    },
+  });
+
+  const result = await tool.execute(
+    "call",
+    { query: "example", provider: "exa" },
+    new AbortController().signal,
+    () => {},
+  );
+
+  assert.equal(initialSearchAborted, true);
+  assert.deepEqual(calls, ["exa", "anysearch"]);
+  assert.match(result.content[0].text, /AnySearch evidence/u);
+});
+
+test("adding a search supersedes initial summary generation", async () => {
+  const searchQueries = [];
+  const plugin = createWebSearchAgentPlugin({
+    async search(request) {
+      searchQueries.push(request.query);
+      return {
+        query: request.query,
+        provider: "exa",
+        answer: `Evidence for ${request.query}`,
+        sources: [{
+          title: request.query,
+          url: `https://example.com/${searchQueries.length}`,
+        }],
+      };
+    },
+    close() {},
+  }, {
+    maximum_results: 5,
+    maximum_output_bytes: 64 * 1024,
+    default_provider: "exa",
+    default_workflow: "summary-review",
+    summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
+  });
+  let completionCount = 0;
+  let initialGenerationAborted = false;
+  let reviewCount = 0;
+  const [tool] = plugin.createTools({
+    project_id: "project",
+    session_id: "session",
+    async complete_model(_prompt, signal) {
+      completionCount += 1;
+      if (completionCount === 1) {
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            initialGenerationAborted = true;
+            reject(new DOMException("Superseded", "AbortError"));
+          }, { once: true });
+        });
+      }
+      return {
+        text: "Updated summary",
+        provider_id: "openai",
+        model_id: "test-model",
+      };
+    },
+    open_summary_review(request) {
+      reviewCount += 1;
+      if (reviewCount === 1) {
+        let resolveReview;
+        return {
+          resolution: new Promise((resolve) => {
+            resolveReview = resolve;
+          }),
+          update(updatedRequest) {
+            if (updatedRequest.loading_phase !== "summary") return;
+            resolveReview({
+              decision: "add-search",
+              approved_text: "",
+              selected_section_ids:
+                updatedRequest.selected_section_ids,
+              feedback_text: "",
+              summary_model: null,
+              search_provider: "exa",
+              query_text: "second angle",
+            });
+          },
+        };
+      }
+      if (reviewCount === 2) {
+        assert.equal(request.stage, "select-evidence");
+        assert.equal(request.loading_phase, null);
+        assert.deepEqual(
+          request.sections.map((section) => section.title),
+          ["first angle · Exa", "second angle · Exa"],
+        );
+        return {
+          resolution: Promise.resolve({
+            decision: "summarize",
+            approved_text: "",
+            selected_section_ids: ["0", "1"],
+            feedback_text: "",
+            summary_model: null,
+            search_provider: "exa",
+            query_text: "",
+          }),
+          update() {},
+        };
+      }
+      assert.equal(request.stage, "review-summary");
+      assert.equal(request.draft_text, "Updated summary");
+      return {
+        resolution: Promise.resolve({
+          decision: "approve",
+          approved_text: request.draft_text,
+          selected_section_ids: ["0", "1"],
+          feedback_text: "",
+          summary_model: null,
+          search_provider: "exa",
+          query_text: "",
+        }),
+        update() {},
+      };
+    },
+  });
+
+  const result = await tool.execute(
+    "call",
+    { query: "first angle", provider: "exa" },
+    new AbortController().signal,
+    () => {},
+  );
+
+  assert.equal(initialGenerationAborted, true);
+  assert.equal(completionCount, 2);
+  assert.deepEqual(searchQueries, ["first angle", "second angle"]);
+  assert.equal(result.content[0].text, "Updated summary");
 });
 
 test("automatic draft can return to selection and regenerate", async () => {

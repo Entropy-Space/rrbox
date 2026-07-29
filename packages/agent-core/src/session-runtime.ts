@@ -105,6 +105,7 @@ function cloneSummaryReviewRequest(
     interaction_id: interactionId,
     stage: request.stage,
     is_loading: request.is_loading,
+    loading_phase: request.loading_phase,
     title: request.title,
     draft_text: request.draft_text,
     summary_model: request.summary_model
@@ -251,9 +252,18 @@ export class SessionRuntime {
     if (!pending || pending.request.interaction_id !== interactionId) {
       throw new Error("The summary review is no longer pending.");
     }
+    const allowedWhileLoading = pending.request.loading_phase === "search"
+      ? resolution.decision === "change-provider"
+      : pending.request.loading_phase === "summary"
+      ? (
+        resolution.decision === "change-provider" ||
+        resolution.decision === "add-search"
+      )
+      : false;
     if (
       pending.request.is_loading &&
-      resolution.decision !== "cancel"
+      resolution.decision !== "cancel" &&
+      !allowedWhileLoading
     ) {
       throw new Error(
         "The summary review cannot be submitted while it is loading.",

@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 17 as const;
+export const PROTOCOL_VERSION = 18 as const;
 
 export const SUMMARY_REVIEW_MAX_SECTIONS = 20;
 export const SUMMARY_REVIEW_MAX_SEARCH_PROVIDERS = 20;
@@ -35,6 +35,7 @@ export type SummaryReviewRequest = {
   interaction_id: string;
   stage: "select-evidence" | "review-summary";
   is_loading: boolean;
+  loading_phase: "search" | "summary" | null;
   title: string;
   draft_text: string;
   summary_model: ModelSelection | null;
@@ -1131,6 +1132,7 @@ function parseSummaryReviewRequest(
       "interaction_id",
       "stage",
       "is_loading",
+      "loading_phase",
       "title",
       "draft_text",
       "summary_model",
@@ -1165,9 +1167,17 @@ function parseSummaryReviewRequest(
     throw new Error("Summary review section ids must be unique.");
   }
   const stage = parseSummaryReviewStage(value.stage);
+  const loadingPhase = parseSummaryReviewLoadingPhase(
+    value.loading_phase,
+  );
   if (isLoading && stage !== "select-evidence") {
     throw new Error(
       "Only evidence selection may report a loading review.",
+    );
+  }
+  if (isLoading !== (loadingPhase !== null)) {
+    throw new Error(
+      "Summary review loading phase must match its loading state.",
     );
   }
   const draftText = requireBoundedString(
@@ -1244,6 +1254,7 @@ function parseSummaryReviewRequest(
     interaction_id: requireString(value, "interaction_id"),
     stage,
     is_loading: isLoading,
+    loading_phase: loadingPhase,
     title: requireBoundedString(value, "title", 200),
     draft_text: draftText,
     summary_model: summaryModel,
@@ -1486,6 +1497,15 @@ function parseSummaryReviewStage(
     throw new Error("Invalid summary review stage.");
   }
   return value;
+}
+
+function parseSummaryReviewLoadingPhase(
+  value: unknown,
+): SummaryReviewRequest["loading_phase"] {
+  if (value === null || value === "search" || value === "summary") {
+    return value;
+  }
+  throw new Error("Invalid summary review loading phase.");
 }
 
 function parseSummaryReviewSectionIds(

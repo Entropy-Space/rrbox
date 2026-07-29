@@ -74,6 +74,7 @@ test("summary review pauses a tool until the viewer approves it", async () => {
               const interaction = context.open_summary_review({
                 stage: "select-evidence",
                 is_loading: true,
+                loading_phase: "search",
                 title: "Find evidence",
                 draft_text: "",
                 summary_model: null,
@@ -95,6 +96,7 @@ test("summary review pauses a tool until the viewer approves it", async () => {
               interaction.update({
                 stage: "review-summary",
                 is_loading: false,
+                loading_phase: null,
                 title: "Review summary",
                 draft_text: "Draft summary",
                 summary_model: null,
@@ -256,6 +258,133 @@ test("summary review pauses a tool until the viewer approves it", async () => {
   assert.equal(result.content, "Approved summary");
 });
 
+test("loading summary reviews permit phase-scoped search mutations", async (t) => {
+  for (const testCase of [{
+    name: "provider change during search",
+    loading_phase: "search",
+    decision: "change-provider",
+    search_provider: "exa",
+    query_text: "",
+  }, {
+    name: "added search during summary generation",
+    loading_phase: "summary",
+    decision: "add-search",
+    search_provider: "auto",
+    query_text: "another angle",
+  }]) {
+    await t.test(testCase.name, async () => {
+      const events = [];
+      const core = createCore(
+        new MemoryProjectStore(),
+        createWorkspaceProvider(),
+        events,
+        {
+          async *stream(request) {
+            const hasResult = request.messages.some(
+              (message) =>
+                message.role === "tool" &&
+                message.tool_name === "loading_review_test",
+            );
+            if (!hasResult) {
+              yield* toolCallEvents({
+                tool_call_id: "loading-review-call",
+                tool_name: "loading_review_test",
+                arguments: {},
+              });
+              yield { type: "done", stop_reason: "tool_use" };
+              return;
+            }
+            yield* textEvents("Continued after review mutation.");
+            yield { type: "done", stop_reason: "stop" };
+          },
+        },
+        {
+          plugins: [{
+            id: "loading-review-test",
+            createTools(context) {
+              return [{
+                name: "loading_review_test",
+                label: "Loading review",
+                description: "Exercise loading review mutations.",
+                parameters: Type.Object({}),
+                async execute(_callId, _params, signal) {
+                  const resolution = await context.request_summary_review({
+                    stage: "select-evidence",
+                    is_loading: true,
+                    loading_phase: testCase.loading_phase,
+                    title: "Loading review",
+                    draft_text: "",
+                    summary_model: null,
+                    draft_metadata: null,
+                    query_draft: testCase.query_text,
+                    query_notice: "Working…",
+                    search_providers: [{
+                      provider_id: "auto",
+                      display_name: "Automatic",
+                    }, {
+                      provider_id: "exa",
+                      display_name: "Exa",
+                    }],
+                    search_provider: "auto",
+                    sections: [],
+                    selected_section_ids: [],
+                  }, signal);
+                  return {
+                    content: [{
+                      type: "text",
+                      text: resolution.decision,
+                    }],
+                    details: { summary: "Review mutated" },
+                  };
+                },
+              }];
+            },
+          }],
+        },
+      );
+
+      await core.handle(createCommand("bootstrap", {}));
+      const state = latestState(events);
+      const prompt = core.handle(createCommand("prompt", {
+        project_id: state.active_project_id,
+        session_id: null,
+        text: "Mutate this loading review.",
+      }));
+      await waitForCondition(
+        () =>
+          events.some(
+            (event) => event.type === "summary_review_requested",
+          ),
+      );
+      const review = events.findLast(
+        (event) => event.type === "summary_review_requested",
+      );
+      await core.handle(createCommand("summary_review_resolve", {
+        project_id: review.payload.project_id,
+        session_id: review.payload.session_id,
+        interaction_id: review.payload.interaction_id,
+        resolution: {
+          decision: testCase.decision,
+          approved_text: "",
+          selected_section_ids: [],
+          feedback_text: "",
+          summary_model: null,
+          search_provider: testCase.search_provider,
+          query_text: testCase.query_text,
+        },
+      }));
+      await prompt;
+
+      const result = latestState(events).timeline.find(
+        (entry) =>
+          entry.type === "tool_result" &&
+          entry.tool_name === "loading_review_test",
+      );
+      assert.equal(result.content, testCase.decision);
+    });
+  }
+});
+
 test("a local review deadline clears the interaction without aborting the run", async () => {
   const events = [];
   const reviewDeadline = new AbortController();
@@ -297,6 +426,7 @@ test("a local review deadline clears the interaction without aborting the run", 
                 await context.request_summary_review({
                   stage: "select-evidence",
                   is_loading: false,
+                  loading_phase: null,
                   title: "Select evidence",
                   draft_text: "",
                   summary_model: null,

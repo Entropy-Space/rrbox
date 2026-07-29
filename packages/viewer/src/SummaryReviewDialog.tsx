@@ -77,6 +77,8 @@ function ActiveSummaryReviewDialog({
     new Set(review.selected_section_ids);
   const isSelecting = review.stage === "select-evidence";
   const isLoading = review.is_loading;
+  const canAddSearchWhileLoading =
+    review.loading_phase === "summary";
   const selectionChanged = !sameStringSet(
     selectedSectionIds,
     review.selected_section_ids,
@@ -173,7 +175,7 @@ function ActiveSummaryReviewDialog({
                   <span>Search provider</span>
                   <select
                     value={review.search_provider ?? ""}
-                    disabled={review.is_submitting || isLoading}
+                    disabled={review.is_submitting}
                     onChange={(event) => {
                       onResolve({
                         decision: "change-provider",
@@ -334,7 +336,10 @@ function ActiveSummaryReviewDialog({
                   type="text"
                   value={queryText}
                   maxLength={4 * 1024}
-                  disabled={review.is_submitting || isLoading}
+                  disabled={
+                    review.is_submitting ||
+                    (isLoading && !canAddSearchWhileLoading)
+                  }
                   placeholder="Enter another research angle"
                   onChange={(event) => setQueryText(event.target.value)}
                 />
@@ -369,7 +374,7 @@ function ActiveSummaryReviewDialog({
                     type="button"
                     disabled={
                       review.is_submitting ||
-                      isLoading ||
+                      (isLoading && !canAddSearchWhileLoading) ||
                       queryText.trim().length === 0
                     }
                     onClick={() => {
@@ -443,7 +448,9 @@ function ActiveSummaryReviewDialog({
           >
             {review.error_message ??
               (isLoading
-                ? `Searching… ${review.sections.length} evidence sections received`
+                ? review.loading_phase === "summary"
+                  ? `Generating summary from ${review.sections.length} evidence sections…`
+                  : `Searching… ${review.sections.length} evidence sections received`
                 : `${selectedSectionIds.size} of ${review.sections.length} evidence sections selected`)}
           </span>
           <div>

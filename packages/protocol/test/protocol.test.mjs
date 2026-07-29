@@ -9,7 +9,7 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v17 command", () => {
+test("round-trips every protocol-v18 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("bootstrap", {
@@ -376,6 +376,7 @@ test("round-trips every normalized timeline core event", () => {
         interaction_id: "review-1",
         stage: "review-summary",
         is_loading: false,
+        loading_phase: null,
         title: "Review web search summary",
         draft_text: "Draft summary",
         summary_model: null,
@@ -417,6 +418,7 @@ test("round-trips every normalized timeline core event", () => {
         interaction_id: "review-2",
         stage: "select-evidence",
         is_loading: true,
+        loading_phase: "search",
         title: "Select web search evidence",
         draft_text: "",
         summary_model: null,
@@ -565,6 +567,7 @@ test("validates summary model selections and draft metadata", () => {
       interaction_id: "review-1",
       stage: "review-summary",
       is_loading: false,
+      loading_phase: null,
       title: "Review web search summary",
       draft_text: "Draft summary",
       summary_model: {
@@ -648,6 +651,7 @@ test("bounds query curation and permits empty evidence selection", () => {
       interaction_id: "review-1",
       stage: "select-evidence",
       is_loading: false,
+      loading_phase: null,
       title: "Select evidence",
       draft_text: "",
       summary_model: null,
@@ -678,11 +682,13 @@ test("bounds query curation and permits empty evidence selection", () => {
   const loadingRequest = structuredClone(selectionRequest);
   loadingRequest.type = "summary_review_updated";
   loadingRequest.payload.is_loading = true;
+  loadingRequest.payload.loading_phase = "search";
   loadingRequest.payload.sections = [];
   assert.deepEqual(parseCoreEvent(loadingRequest), loadingRequest);
 
   const emptyReadyRequest = structuredClone(loadingRequest);
   emptyReadyRequest.payload.is_loading = false;
+  emptyReadyRequest.payload.loading_phase = null;
   assert.throws(
     () => parseCoreEvent(emptyReadyRequest),
     /sections are out of bounds/,
@@ -691,9 +697,17 @@ test("bounds query curation and permits empty evidence selection", () => {
   const loadingDraftRequest = structuredClone(selectionRequest);
   loadingDraftRequest.payload.stage = "review-summary";
   loadingDraftRequest.payload.is_loading = true;
+  loadingDraftRequest.payload.loading_phase = "summary";
   assert.throws(
     () => parseCoreEvent(loadingDraftRequest),
     /Only evidence selection may report a loading review/,
+  );
+
+  const inconsistentLoadingPhase = structuredClone(selectionRequest);
+  inconsistentLoadingPhase.payload.loading_phase = "search";
+  assert.throws(
+    () => parseCoreEvent(inconsistentLoadingPhase),
+    /loading phase must match/,
   );
 
   const unavailableSelection = structuredClone(selectionRequest);
@@ -945,6 +959,7 @@ test("requires request correlation for commands and interactive results", () => 
       interaction_id: "review-1",
       stage: "select-evidence",
       is_loading: false,
+      loading_phase: null,
       title: "Select evidence",
       draft_text: "",
       summary_model: null,

@@ -206,6 +206,12 @@ pnpm test
 `pnpm test` builds both application frontends, checks and tests the Rust host,
 and runs the shared browser/package test suites.
 
+GitHub Actions runs `pnpm lint` and the full `pnpm test` pipeline on pull
+requests and pushes to `main`. The CI job pins the documented Node.js, pnpm,
+Rust, and `wasm-pack` versions and installs the official Tauri 2 Linux
+prerequisites. Mobile signing and simulator packaging remain separate release
+concerns.
+
 ## Deployment policy
 
 Keep this repository local unless the user explicitly selects and authorizes a

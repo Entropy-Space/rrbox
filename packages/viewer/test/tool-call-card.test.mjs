@@ -26,6 +26,10 @@ test("tool cards expose a keyboard-accessible disclosure button", () => {
   assert.match(toolCardSource, /\{isExpanded && \(/);
   assert.match(toolCardSource, /label="Input"/);
   assert.match(toolCardSource, /label="Output"/);
+  assert.match(
+    toolCardSource,
+    /!result && block\.progress_summary/,
+  );
 });
 
 test("expanded tool payloads preserve whitespace and bound long content", () => {

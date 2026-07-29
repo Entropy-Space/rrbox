@@ -119,6 +119,7 @@ pipelines. It accepts one focused query or up to four varied queries, optional
 domain and recency filters, and raw, automatic-summary, or reviewed-summary
 workflows. Reviewed summary opens its in-app curator before retrieval and
 streams each completed query/provider result into a separate evidence card.
+The running tool card also reports retrieval, synthesis, and approval phases.
 Once retrieval finishes, it automatically generates the first draft from all
 successful cards, then allows editing, Markdown preview, regeneration with
 feedback, changing the summary provider/model, approval, or returning to

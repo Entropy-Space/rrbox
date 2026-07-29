@@ -9,7 +9,7 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v19 command", () => {
+test("round-trips every protocol-v20 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("bootstrap", {
@@ -1461,6 +1461,7 @@ function createTimeline() {
           arguments: { path: "/README.md", content: "# Updated" },
           thought_signature: "opaque-thought",
           label: "Writing /README.md",
+          progress_summary: "Writing file…",
         },
       ],
     }),

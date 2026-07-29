@@ -163,6 +163,7 @@ test("streaming assistant entries finalize while preserving block identities", (
       tool_name: "read_file",
       arguments: {},
       label: "Reading /README.md",
+      progress_summary: "Reading file…",
     },
   ];
 
@@ -218,6 +219,7 @@ test("streaming assistant entries finalize while preserving block identities", (
     ["reasoning-block", "text-block", "tool-block"],
   );
   assert.equal(finalized.blocks[2].label, "Reading /README.md");
+  assert.equal(finalized.blocks[2].progress_summary, "Reading file…");
   assert.deepEqual(finalized.blocks[2].arguments, { path: "/README.md" });
 });
 

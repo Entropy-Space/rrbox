@@ -92,7 +92,7 @@ packages/viewer → browser workspace adapter → browser/archive.worker.ts
 The viewer depends on `CoreTransport`, not on `Worker`. Both applications
 construct `WorkerCoreTransport`, which validates all incoming protocol values,
 isolates subscribers, and owns worker teardown. The viewer and core worker
-exchange only protocol-v19 JSON values. Transport shutdown uses a separate
+exchange only protocol-v20 JSON values. Transport shutdown uses a separate
 versioned control envelope: it asks the worker to abort and drain the core,
 waits for disposal acknowledgement, and force-terminates after a bounded
 timeout if cleanup cannot finish. A
@@ -176,8 +176,10 @@ The tool supports a single query or a bounded batch of varied queries, domain
 and recency filters, larger inline excerpts, explicit provider selection, and
 raw, automatic-summary, or summary-review workflows. Search results are
 normalized into provider-independent answers and source records before
-rendering. Automatic summary calls the active session model through a
-constrained completion hook. During reviewed synthesis, the viewer may choose
+rendering. Bounded partial tool updates expose retrieval, synthesis, and
+approval phases on the running tool card. Automatic summary calls the active
+session model through a constrained completion hook. During reviewed
+synthesis, the viewer may choose
 any ready provider/model from the live catalog; the core resolves that choice
 instead of accepting an arbitrary model descriptor. A failed explicit choice
 retries once with the active model under the same deadline before producing a

@@ -252,6 +252,10 @@ function toTimelineAssistantBlock(
         ...(existing?.type === "tool_call" && existing.label !== undefined
           ? { label: existing.label }
           : {}),
+        ...(existing?.type === "tool_call" &&
+            existing.progress_summary !== undefined
+          ? { progress_summary: existing.progress_summary }
+          : {}),
       };
   }
 }

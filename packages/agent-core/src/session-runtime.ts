@@ -715,6 +715,29 @@ export class SessionRuntime {
       }
       return;
     }
+
+    if (event.type === "tool_execution_update") {
+      const block = this.requireUnresolvedToolCall(
+        event.toolCallId,
+        event.toolName,
+      );
+      const summary = toolProgressSummary(event.partialResult);
+      if (summary === null || summary === block.progress_summary) return;
+      const updated: ToolCallBlock = {
+        ...block,
+        progress_summary: summary,
+      };
+      this.replaceAssistantBlock(updated);
+      this.emit(
+        "assistant_block_updated",
+        {
+          entry_id: this.requireAssistantEntryIdForBlock(updated.block_id),
+          block: structuredClone(updated),
+        },
+        run.request_id,
+      );
+      return;
+    }
   }
 
   private handleAssistantMessageUpdate(
@@ -1650,8 +1673,13 @@ function createActiveRun(
 }
 
 function toolLabel(toolName: string, args: unknown): string {
-  const path = isRecord(args) && typeof args.path === "string" ? args.path : "workspace";
+  const path =
+    isRecord(args) && typeof args.path === "string"
+      ? args.path
+      : "workspace";
   switch (toolName) {
+    case "list_files":
+      return `Listing ${path}`;
     case "read_file":
       return `Reading ${path}`;
     case "search_files":
@@ -1664,9 +1692,26 @@ function toolLabel(toolName: string, args: unknown): string {
       return `Removing ${path}`;
     case "run_python":
       return "Running Python";
+    case "web_search":
+      return "Searching web";
     default:
-      return `Listing ${path}`;
+      return toolName
+        .split("_")
+        .filter(Boolean)
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ") || "Running tool";
   }
+}
+
+function toolProgressSummary(partialResult: unknown): string | null {
+  if (!isRecord(partialResult) || !isRecord(partialResult.details)) {
+    return null;
+  }
+  const summary = partialResult.details.summary;
+  if (typeof summary !== "string") return null;
+  const normalized = summary.trim();
+  if (normalized.length === 0) return null;
+  return normalized.slice(0, 240);
 }
 
 function isMutationToolName(value: string): value is MutationToolName {

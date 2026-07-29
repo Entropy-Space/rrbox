@@ -31,6 +31,98 @@ const localModel = {
   baseUrl: "",
 };
 
+test("tool execution updates reach the running tool card", async () => {
+  const events = [];
+  const core = createCore(
+    new MemoryProjectStore(),
+    createWorkspaceProvider(),
+    events,
+    {
+      async *stream(request) {
+        const hasResult = request.messages.some(
+          (message) =>
+            message.role === "tool" &&
+            message.tool_name === "progress_test",
+        );
+        if (!hasResult) {
+          yield* toolCallEvents({
+            tool_call_id: "progress-call",
+            tool_name: "progress_test",
+            arguments: {},
+          });
+          yield { type: "done", stop_reason: "tool_use" };
+          return;
+        }
+        yield* textEvents("Progress received.");
+        yield { type: "done", stop_reason: "stop" };
+      },
+    },
+    {
+      plugins: [{
+        id: "progress-test",
+        createTools() {
+          return [{
+            name: "progress_test",
+            label: "Progress",
+            description: "Exercise partial tool updates.",
+            parameters: Type.Object({}),
+            async execute(_callId, _params, _signal, onUpdate) {
+              onUpdate?.({
+                content: [{ type: "text", text: "Searching" }],
+                details: { summary: "Searching 1 of 2 queries…" },
+              });
+              onUpdate?.({
+                content: [{ type: "text", text: "Synthesizing" }],
+                details: { summary: "Generating cited summary…" },
+              });
+              return {
+                content: [{ type: "text", text: "Done" }],
+                details: { summary: "Complete" },
+              };
+            },
+          }];
+        },
+      }],
+    },
+  );
+
+  await core.handle(createCommand("bootstrap", {}));
+  const state = latestState(events);
+  await core.handle(createCommand("prompt", {
+    project_id: state.active_project_id,
+    session_id: null,
+    text: "Report progress.",
+  }));
+
+  const progress = events
+    .filter((event) => event.type === "assistant_block_updated")
+    .map((event) => event.payload.block)
+    .filter(
+      (block) =>
+        block.type === "tool_call" &&
+        block.tool_call_id === "progress-call" &&
+        block.progress_summary,
+    )
+    .map((block) => block.progress_summary);
+  assert.deepEqual(progress, [
+    "Searching 1 of 2 queries…",
+    "Generating cited summary…",
+  ]);
+
+  const persistedCall = latestState(events).timeline
+    .filter((entry) => entry.type === "assistant_message")
+    .flatMap((entry) => entry.blocks)
+    .find(
+      (block) =>
+        block.type === "tool_call" &&
+        block.tool_call_id === "progress-call",
+    );
+  assert.equal(
+    persistedCall.progress_summary,
+    "Generating cited summary…",
+  );
+});
+
 test("summary review pauses a tool until the viewer approves it", async () => {
   const events = [];
   let reviewActivityCount = 0;

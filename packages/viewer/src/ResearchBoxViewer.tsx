@@ -977,6 +977,9 @@ function ToolCallCard({
         <span className="tool-copy">
           <strong>{label}</strong>
           {!block.label && path && <small>{path}</small>}
+          {!result && block.progress_summary && (
+            <small>{block.progress_summary}</small>
+          )}
           {resultCopy.summary && <small>{resultCopy.summary}</small>}
           {resultCopy.error_detail && (
             <small className="tool-error-detail">

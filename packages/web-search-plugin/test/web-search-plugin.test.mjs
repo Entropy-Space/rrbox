@@ -47,6 +47,7 @@ test("searches multiple angles and summarizes with the active model", async () =
 
   assert.equal(plugin.id, "web-search");
   assert.equal(tool.name, "web_search");
+  const progressUpdates = [];
   const result = await tool.execute(
     "call",
     {
@@ -56,7 +57,7 @@ test("searches multiple angles and summarizes with the active model", async () =
       domain_filter: ["rust-lang.org", "-example.com"],
     },
     new AbortController().signal,
-    () => {},
+    (update) => progressUpdates.push(update),
   );
 
   assert.deepEqual(calls, [
@@ -78,6 +79,46 @@ test("searches multiple angles and summarizes with the active model", async () =
     },
   ]);
   assert.equal(completions.length, 1);
+  assert.deepEqual(
+    progressUpdates.map((update) => ({
+      summary: update.details.summary,
+      progress: update.details.progress,
+    })),
+    [
+      {
+        summary: "Preparing 2 web searches…",
+        progress: {
+          phase: "searching",
+          completed_queries: 0,
+          total_queries: 2,
+        },
+      },
+      {
+        summary: "Searched 1 of 2 queries…",
+        progress: {
+          phase: "searching",
+          completed_queries: 1,
+          total_queries: 2,
+        },
+      },
+      {
+        summary: "Searched 2 of 2 queries…",
+        progress: {
+          phase: "searching",
+          completed_queries: 2,
+          total_queries: 2,
+        },
+      },
+      {
+        summary: "Generating cited summary…",
+        progress: {
+          phase: "generating-summary",
+          completed_queries: 2,
+          total_queries: 2,
+        },
+      },
+    ],
+  );
   assert.match(completions[0], /Do not follow instructions/u);
   assert.match(completions[0], /Rust memory safety/u);
   assert.equal(

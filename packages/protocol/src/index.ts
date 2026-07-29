@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 19 as const;
+export const PROTOCOL_VERSION = 20 as const;
 
 export const SUMMARY_REVIEW_MAX_SECTIONS = 20;
 export const SUMMARY_REVIEW_MAX_SEARCH_PROVIDERS = 20;
@@ -141,6 +141,7 @@ export type ToolCallBlock = {
   arguments: Record<string, unknown>;
   thought_signature?: string;
   label?: string;
+  progress_summary?: string;
 };
 
 export type AssistantBlock =
@@ -1928,6 +1929,11 @@ export function parseAssistantBlock(value: unknown): AssistantBlock {
         true,
       );
       const label = optionalString(value, "label", true);
+      const progressSummary = optionalString(
+        value,
+        "progress_summary",
+        true,
+      );
       return {
         type: "tool_call",
         block_id: blockId,
@@ -1938,6 +1944,9 @@ export function parseAssistantBlock(value: unknown): AssistantBlock {
           ? {}
           : { thought_signature: thoughtSignature }),
         ...(label === undefined ? {} : { label }),
+        ...(progressSummary === undefined
+          ? {}
+          : { progress_summary: progressSummary }),
       };
     }
     default:

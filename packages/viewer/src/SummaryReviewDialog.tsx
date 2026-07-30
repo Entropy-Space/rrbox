@@ -276,6 +276,11 @@ function ActiveSummaryReviewDialog({
                 </select>
               </label>
             </div>
+            {isLoading && review.query_notice && (
+              <p className="summary-review-progress" role="status">
+                {review.query_notice}
+              </p>
+            )}
           </div>
           <button
             className="icon-button"
@@ -365,7 +370,7 @@ function ActiveSummaryReviewDialog({
                   placeholder="Enter another research angle"
                   onChange={(event) => setQueryText(event.target.value)}
                 />
-                {review.query_notice && (
+                {review.query_notice && !isLoading && (
                   <small role="status">{review.query_notice}</small>
                 )}
                 <div>

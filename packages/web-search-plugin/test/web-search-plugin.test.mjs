@@ -388,6 +388,7 @@ test("active review interaction resets the idle deadline", async () => {
   });
   let draftRequest;
   let resolveReview;
+  const draftDeadlines = [];
   const [tool] = plugin.createTools({
     project_id: "project",
     session_id: "session",
@@ -418,6 +419,7 @@ test("active review interaction resets the idle deadline", async () => {
         update(request) {
           if (request.stage === "review-summary") {
             draftRequest = request;
+            draftDeadlines.push(request.auto_submit_at);
           }
         },
       };
@@ -439,6 +441,8 @@ test("active review interaction resets the idle deadline", async () => {
     result.details.synthesis.fallback_reason,
     "model-completion-unavailable",
   );
+  assert.ok(draftDeadlines.length >= 2);
+  assert.ok(draftDeadlines[1] > draftDeadlines[0]);
 });
 
 test("hiding during search continues with tool-card progress", async () => {
@@ -756,7 +760,7 @@ test("summary grace keeps the dialog open before generation", async () => {
   assert.ok(graceNotices.some((notice) => /1 seconds/u.test(notice ?? "")));
 });
 
-test("opens a search placeholder before provider discovery completes", async () => {
+test("opens every search placeholder before provider discovery completes", async () => {
   let releaseProviders;
   const providersReady = new Promise((resolve) => {
     releaseProviders = resolve;
@@ -825,15 +829,27 @@ test("opens a search placeholder before provider discovery completes", async () 
 
   const execution = tool.execute(
     "call",
-    { query: "example" },
+    { queries: ["example one", "example two"] },
     new AbortController().signal,
     () => {},
   );
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.equal(initialRequest.loading_phase, "search");
-  assert.equal(initialRequest.sections.length, 0);
-  assert.match(initialRequest.query_notice, /Searching 0 of 1/u);
+  assert.deepEqual(initialRequest.sections, [{
+    section_id: "pending-0",
+    title: "example one",
+    body: "Searching…",
+    is_selectable: false,
+    sources: [],
+  }, {
+    section_id: "pending-1",
+    title: "example two",
+    body: "Searching…",
+    is_selectable: false,
+    sources: [],
+  }]);
+  assert.match(initialRequest.query_notice, /Searching 0 of 2/u);
 
   releaseProviders([{ provider_id: "exa", include_in_all: true }]);
   const result = await execution;
@@ -864,6 +880,7 @@ test("summary draft deadline auto-submits the generated draft", async () => {
     review_timeout_ms: 10,
   });
   let reviewCount = 0;
+  let draftRequest;
   const [tool] = plugin.createTools({
     project_id: "project",
     session_id: "session",
@@ -886,6 +903,7 @@ test("summary draft deadline auto-submits the generated draft", async () => {
           query_text: "",
         };
       }
+      draftRequest = request;
       return new Promise((_resolve, reject) => {
         signal.addEventListener("abort", () => {
           reject(new DOMException("Review timed out.", "AbortError"));
@@ -902,6 +920,8 @@ test("summary draft deadline auto-submits the generated draft", async () => {
   );
 
   assert.equal(reviewCount, 2);
+  assert.equal(typeof draftRequest.auto_submit_at, "number");
+  assert.ok(draftRequest.auto_submit_at <= Date.now());
   assert.equal(result.content[0].text, "Unapproved model draft");
   assert.equal(result.details.synthesis.fallback_used, false);
 });
@@ -1030,10 +1050,18 @@ test("summary-review returns only the user-approved synthesis", async () => {
 
 test("summary-review streams initial searches into one open review", async () => {
   const searchedQueries = [];
+  let activeSearches = 0;
+  let maximumActiveSearches = 0;
   const plugin = createWebSearchAgentPlugin({
     async search(request) {
       searchedQueries.push(request.query);
+      activeSearches += 1;
+      maximumActiveSearches = Math.max(
+        maximumActiveSearches,
+        activeSearches,
+      );
       await new Promise((resolve) => setTimeout(resolve, 5));
+      activeSearches -= 1;
       return {
         query: request.query,
         provider: "exa",
@@ -1085,7 +1113,19 @@ test("summary-review streams initial searches into one open review", async () =>
       selectionOpenCount += 1;
       assert.equal(searchedQueries.length, 0);
       assert.equal(request.is_loading, true);
-      assert.deepEqual(request.sections, []);
+      assert.deepEqual(
+        request.sections.map((section) => ({
+          title: section.title,
+          body: section.body,
+        })),
+        [{
+          title: "angle one",
+          body: "Searching…",
+        }, {
+          title: "angle two",
+          body: "Searching…",
+        }],
+      );
       let resolveSelection;
       return {
         resolution: new Promise((resolve) => {
@@ -1117,46 +1157,21 @@ test("summary-review streams initial searches into one open review", async () =>
   );
 
   assert.equal(selectionOpenCount, 1);
-  assert.deepEqual(
-    selectionUpdates.map((request) => ({
-      stage: request.stage,
-      is_loading: request.is_loading,
-      loading_phase: request.loading_phase,
-      section_count: request.sections.length,
-      selected_section_ids: request.selected_section_ids,
-    })),
-    [{
-      stage: "select-evidence",
-      is_loading: true,
-      loading_phase: "search",
-      section_count: 0,
-      selected_section_ids: [],
-    }, {
-      stage: "select-evidence",
-      is_loading: true,
-      loading_phase: "search",
-      section_count: 1,
-      selected_section_ids: ["0"],
-    }, {
-      stage: "select-evidence",
-      is_loading: true,
-      loading_phase: "search",
-      section_count: 2,
-      selected_section_ids: ["0", "1"],
-    }, {
-      stage: "select-evidence",
-      is_loading: true,
-      loading_phase: "summary",
-      section_count: 2,
-      selected_section_ids: ["0", "1"],
-    }, {
-      stage: "review-summary",
-      is_loading: false,
-      loading_phase: null,
-      section_count: 2,
-      selected_section_ids: ["0", "1"],
-    }],
+  assert.equal(maximumActiveSearches, 2);
+  const searchUpdates = selectionUpdates.filter((request) =>
+    request.loading_phase === "search"
   );
+  assert.ok(searchUpdates.length >= 3);
+  assert.ok(searchUpdates.every((request) => request.sections.length === 2));
+  assert.ok(searchUpdates.some((request) =>
+    request.sections.some((section) => section.body === "Searching…") &&
+    request.sections.some((section) => section.is_selectable)
+  ));
+  const finalRequest = selectionUpdates.at(-1);
+  assert.equal(finalRequest.stage, "review-summary");
+  assert.equal(finalRequest.sections.length, 2);
+  assert.deepEqual(finalRequest.selected_section_ids, ["0", "1"]);
+  assert.equal(typeof finalRequest.auto_submit_at, "number");
   assert.equal(result.content[0].text, "Live review summary");
 });
 

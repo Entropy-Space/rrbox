@@ -297,7 +297,9 @@ export function createWebSearchAgentPlugin(
             workflow === "summary-review" &&
             context.open_summary_review
           ) {
-            const partialResults: QueryResult[] = [];
+            const partialResults = new Array<QueryResult | undefined>(
+              queries.length,
+            );
             const searchController = new AbortController();
             const searchSignal = signal
               ? AbortSignal.any([signal, searchController.signal])
@@ -307,6 +309,7 @@ export function createWebSearchAgentPlugin(
               stage: "select-evidence" as const,
               is_loading: true,
               loading_phase: "search" as const,
+              auto_submit_at: null,
               title: "Select web search evidence",
               draft_text: "",
               summary_model: null,
@@ -326,7 +329,10 @@ export function createWebSearchAgentPlugin(
                     }]),
               ],
               search_provider: activeSearchProvider,
-              sections: [],
+              sections: createLoadingReviewSections(
+                queries,
+                partialResults,
+              ),
               selected_section_ids: [],
             };
             const liveReview = context.open_summary_review(
@@ -342,18 +348,24 @@ export function createWebSearchAgentPlugin(
               searchProviderOptionsPromise.then((availableProviders) => {
                 searchProviders = availableProviders;
                 if (!isInitialReviewActive) return availableProviders;
-                const partialReviewResults = createReviewResults(
+                const completedResults = completedQueryResults(
                   partialResults,
+                );
+                const partialReviewResults = createReviewResults(
+                  completedResults,
                 );
                 try {
                   liveReview.update({
                     ...initialReviewRequest,
                     query_notice:
-                      `Searching ${partialResults.length} of ${
+                      `Searching ${completedResults.length} of ${
                         queries.length
                       } queries…`,
                     search_providers: availableProviders,
-                    sections: createReviewSections(partialReviewResults),
+                    sections: createLoadingReviewSections(
+                      queries,
+                      partialResults,
+                    ),
                     selected_section_ids: selectableSectionIds(
                       partialReviewResults,
                     ),
@@ -373,8 +385,8 @@ export function createWebSearchAgentPlugin(
               queries,
               searchOptions,
               searchSignal,
-              (result, completedCount, totalCount) => {
-                partialResults.push(result);
+              (result, completedCount, totalCount, queryIndex) => {
+                partialResults[queryIndex] = result;
                 reportProgress(
                   "searching",
                   `Searching ${completedCount}/${totalCount}…`,
@@ -382,13 +394,14 @@ export function createWebSearchAgentPlugin(
                   totalCount,
                 );
                 const partialReviewResults = createReviewResults(
-                  partialResults,
+                  completedQueryResults(partialResults),
                 );
                 try {
                   liveReview.update({
                     stage: "select-evidence",
                     is_loading: true,
                     loading_phase: "search",
+                    auto_submit_at: null,
                     title: "Select web search evidence",
                     draft_text: "",
                     summary_model: null,
@@ -398,7 +411,10 @@ export function createWebSearchAgentPlugin(
                       `Searching ${completedCount} of ${totalCount} queries…`,
                     search_providers: searchProviders,
                     search_provider: activeSearchProvider,
-                    sections: createReviewSections(partialReviewResults),
+                    sections: createLoadingReviewSections(
+                      queries,
+                      partialResults,
+                    ),
                     selected_section_ids: selectableSectionIds(
                       partialReviewResults,
                     ),
@@ -445,7 +461,7 @@ export function createWebSearchAgentPlugin(
                 } catch (error) {
                   if (signal?.aborted) throw error;
                 }
-                queryResults = partialResults;
+                queryResults = completedQueryResults(partialResults);
               }
               await searchProviderOptionsReady;
               reviewResults = createReviewResults(queryResults);
@@ -507,6 +523,7 @@ export function createWebSearchAgentPlugin(
                     stage: "select-evidence",
                     is_loading: false,
                     loading_phase: null,
+                    auto_submit_at: null,
                     title: "Select web search evidence",
                     draft_text: "",
                     summary_model: null,
@@ -537,11 +554,13 @@ export function createWebSearchAgentPlugin(
                   liveReview.resolution,
                   reviewController,
                   options.review_timeout_ms,
-                  signal,
-                  liveReview.subscribe_activity
-                    ? (listener) =>
-                      liveReview.subscribe_activity!(listener)
-                    : undefined,
+                  {
+                    signal,
+                    subscribeActivity: liveReview.subscribe_activity
+                      ? (listener) =>
+                        liveReview.subscribe_activity!(listener)
+                      : undefined,
+                  },
                 );
               } else {
                 try {
@@ -554,6 +573,7 @@ export function createWebSearchAgentPlugin(
                     loading_phase: summaryGraceMs > 0
                       ? "summary-grace"
                       : "summary",
+                    auto_submit_at: null,
                     title: "Select web search evidence",
                     draft_text: "",
                     summary_model: null,
@@ -607,6 +627,7 @@ export function createWebSearchAgentPlugin(
                         stage: "select-evidence",
                         is_loading: true,
                         loading_phase: "summary-grace",
+                        auto_submit_at: null,
                         title: "Select web search evidence",
                         draft_text: "",
                         summary_model: null,
@@ -675,6 +696,7 @@ export function createWebSearchAgentPlugin(
                       stage: "select-evidence",
                       is_loading: true,
                       loading_phase: "summary",
+                      auto_submit_at: null,
                       title: "Select web search evidence",
                       draft_text: "",
                       summary_model: null,
@@ -771,22 +793,27 @@ export function createWebSearchAgentPlugin(
                       reviewed = true;
                       reviewController.abort();
                     } else {
+                      const autoSubmitAt = createReviewAutoSubmitAt(
+                        options.review_timeout_ms,
+                      );
+                      const finalReviewRequest: SummaryReviewInput = {
+                        stage: "review-summary",
+                        is_loading: false,
+                        loading_phase: null,
+                        auto_submit_at: autoSubmitAt,
+                        title: "Review web search summary",
+                        draft_text: synthesis.text,
+                        summary_model: summaryModel,
+                        draft_metadata: createDraftMetadata(synthesis),
+                        query_draft: "",
+                        query_notice: null,
+                        search_providers: searchProviders,
+                        search_provider: activeSearchProvider,
+                        sections,
+                        selected_section_ids: selectedSectionIds,
+                      };
                       try {
-                        liveReview.update({
-                          stage: "review-summary",
-                          is_loading: false,
-                          loading_phase: null,
-                          title: "Review web search summary",
-                          draft_text: synthesis.text,
-                          summary_model: summaryModel,
-                          draft_metadata: createDraftMetadata(synthesis),
-                          query_draft: "",
-                          query_notice: null,
-                          search_providers: searchProviders,
-                          search_provider: activeSearchProvider,
-                          sections,
-                          selected_section_ids: selectedSectionIds,
-                        });
+                        liveReview.update(finalReviewRequest);
                       } catch {
                         const resolution = await liveReview.resolution;
                         if (resolution.decision === "cancel") {
@@ -805,18 +832,34 @@ export function createWebSearchAgentPlugin(
                         liveReview.resolution,
                         reviewController,
                         options.review_timeout_ms,
-                        signal,
-                        liveReview.subscribe_activity
-                          ? (listener) =>
-                            liveReview.subscribe_activity!(listener)
-                          : undefined,
-                        liveReview.is_visible
-                          ? () => liveReview.is_visible!()
-                          : undefined,
-                        liveReview.subscribe_visibility
-                          ? (listener) =>
-                            liveReview.subscribe_visibility!(listener)
-                          : undefined,
+                        {
+                          signal,
+                          subscribeActivity: liveReview.subscribe_activity
+                            ? (listener) =>
+                              liveReview.subscribe_activity!(listener)
+                            : undefined,
+                          isVisible: liveReview.is_visible
+                            ? () => liveReview.is_visible!()
+                            : undefined,
+                          subscribeVisibility:
+                            liveReview.subscribe_visibility
+                              ? (listener) =>
+                                liveReview.subscribe_visibility!(listener)
+                              : undefined,
+                          autoSubmit: {
+                            initialDeadline: autoSubmitAt,
+                            onReset: (autoSubmitAt) => {
+                              try {
+                                liveReview.update({
+                                  ...finalReviewRequest,
+                                  auto_submit_at: autoSubmitAt,
+                                });
+                              } catch {
+                                // Resolution or dismissal wins this race.
+                              }
+                            },
+                          },
+                        },
                       );
                       reportProgress(
                         "waiting-for-review",
@@ -901,6 +944,7 @@ export function createWebSearchAgentPlugin(
                       stage: "select-evidence",
                       is_loading: false,
                       loading_phase: null,
+                      auto_submit_at: null,
                       title: "Select web search evidence",
                       draft_text: "",
                       summary_model: summaryModel,
@@ -1199,6 +1243,9 @@ export function createWebSearchAgentPlugin(
                       stage: "review-summary",
                       is_loading: false,
                       loading_phase: null,
+                      auto_submit_at: createReviewAutoSubmitAt(
+                        options.review_timeout_ms,
+                      ),
                       title: "Review web search summary",
                       draft_text: synthesis!.text,
                       summary_model: summaryModel,
@@ -1346,8 +1393,36 @@ export function createWebSearchAgentPlugin(
 }
 
 function createReviewSections(results: QueryResult[]) {
-  return results.map((result, index) => ({
-    section_id: String(index),
+  return results.map((result, index) =>
+    createReviewSection(result, String(index))
+  );
+}
+
+function createLoadingReviewSections(
+  queries: readonly string[],
+  results: readonly (QueryResult | undefined)[],
+) {
+  let sectionIndex = 0;
+  return queries.flatMap((query, queryIndex) => {
+    const result = results[queryIndex];
+    if (!result) {
+      return [{
+        section_id: `pending-${queryIndex}`,
+        title: query,
+        body: "Searching…",
+        is_selectable: false,
+        sources: [],
+      }];
+    }
+    return createReviewResults([result]).map((reviewResult) =>
+      createReviewSection(reviewResult, String(sectionIndex++))
+    );
+  });
+}
+
+function createReviewSection(result: QueryResult, sectionId: string) {
+  return {
+    section_id: sectionId,
     title: result.provider
       ? `${result.query} · ${providerLabel(result.provider)}`
       : result.query,
@@ -1359,7 +1434,15 @@ function createReviewSections(results: QueryResult[]) {
       title: source.title,
       url: source.url,
     })),
-  }));
+  };
+}
+
+function completedQueryResults(
+  results: readonly (QueryResult | undefined)[],
+): QueryResult[] {
+  return results.filter((result): result is QueryResult =>
+    result !== undefined
+  );
 }
 
 function selectableSectionIds(results: QueryResult[]): string[] {
@@ -1597,10 +1680,12 @@ async function executeQueries(
     result: QueryResult,
     completedCount: number,
     totalCount: number,
+    queryIndex: number,
   ) => void,
 ): Promise<QueryResult[]> {
-  const results: QueryResult[] = [];
-  for (const query of queries) {
+  const results = new Array<QueryResult>(queries.length);
+  let completedCount = 0;
+  await Promise.all(queries.map(async (query, queryIndex) => {
     let result: QueryResult;
     try {
       result = {
@@ -1620,9 +1705,10 @@ async function executeQueries(
         provider_errors: extractProviderFailures(error),
       };
     }
-    results.push(result);
-    onResult?.(result, results.length, queries.length);
-  }
+    results[queryIndex] = result;
+    completedCount += 1;
+    onResult?.(result, completedCount, queries.length, queryIndex);
+  }));
   return results;
 }
 
@@ -1739,28 +1825,72 @@ function openSummaryReviewWithDeadline(
   const interaction = openReview(request, reviewSignal);
   const reviewPromise = interaction.resolution;
   void reviewPromise.catch(() => undefined);
+  let currentRequest = request;
+  const update = (updatedRequest: SummaryReviewInput) => {
+    currentRequest = updatedRequest;
+    interaction.update(updatedRequest);
+  };
   return {
-    update: interaction.update,
+    update,
     resolution: waitForSummaryReviewWithDeadline(
       reviewPromise,
       timeoutController,
       timeoutMs,
-      signal,
-      interaction.subscribe_activity
-        ? (listener) => interaction.subscribe_activity!(listener)
-        : undefined,
+      {
+        signal,
+        subscribeActivity: interaction.subscribe_activity
+          ? (listener) => interaction.subscribe_activity!(listener)
+          : undefined,
+        isVisible: interaction.is_visible
+          ? () => interaction.is_visible!()
+          : undefined,
+        subscribeVisibility: interaction.subscribe_visibility
+          ? (listener) => interaction.subscribe_visibility!(listener)
+          : undefined,
+        autoSubmit: request.auto_submit_at === null
+          ? undefined
+          : {
+              initialDeadline: request.auto_submit_at,
+              onReset: (autoSubmitAt) => {
+                try {
+                  update({
+                    ...currentRequest,
+                    auto_submit_at: autoSubmitAt,
+                  });
+                } catch {
+                  // Resolution or dismissal wins this race.
+                }
+              },
+            },
+      },
     ),
   };
 }
+
+type ReviewAutoSubmitDeadline = {
+  initialDeadline: number;
+  onReset(autoSubmitAt: number): void;
+};
+
+type ReviewDeadlineOptions = {
+  signal?: AbortSignal;
+  subscribeActivity?: SummaryReviewInteraction["subscribe_activity"];
+  isVisible?: SummaryReviewInteraction["is_visible"];
+  subscribeVisibility?: SummaryReviewInteraction["subscribe_visibility"];
+  autoSubmit?: ReviewAutoSubmitDeadline;
+};
 
 async function waitForSummaryReviewWithDeadline(
   reviewPromise: Promise<SummaryReviewResolution>,
   timeoutController: AbortController,
   timeoutMs: number,
-  signal?: AbortSignal,
-  subscribeActivity?: SummaryReviewInteraction["subscribe_activity"],
-  isVisible?: SummaryReviewInteraction["is_visible"],
-  subscribeVisibility?: SummaryReviewInteraction["subscribe_visibility"],
+  {
+    signal,
+    subscribeActivity,
+    isVisible,
+    subscribeVisibility,
+    autoSubmit,
+  }: ReviewDeadlineOptions = {},
 ): Promise<SummaryReviewResolution | null> {
   if (isVisible?.() === false) {
     timeoutController.abort();
@@ -1773,15 +1903,19 @@ async function waitForSummaryReviewWithDeadline(
     resolveTimeout = () => resolve(timeoutMarker);
   });
   let timeout: ReturnType<typeof setTimeout> | undefined;
-  const resetTimeout = () => {
+  const resetTimeout = (deadline = Date.now() + timeoutMs) => {
     if (timeout) clearTimeout(timeout);
     timeout = setTimeout(() => {
       timeoutController.abort();
       resolveTimeout();
-    }, timeoutMs);
+    }, Math.max(0, deadline - Date.now()));
   };
-  resetTimeout();
-  const unsubscribeActivity = subscribeActivity?.(resetTimeout);
+  resetTimeout(autoSubmit?.initialDeadline);
+  const unsubscribeActivity = subscribeActivity?.(() => {
+    const deadline = Date.now() + timeoutMs;
+    resetTimeout(deadline);
+    autoSubmit?.onReset(deadline);
+  });
   let resolveHidden!: () => void;
   const hiddenPromise = new Promise<typeof hiddenMarker>((resolve) => {
     resolveHidden = () => resolve(hiddenMarker);
@@ -1822,6 +1956,10 @@ async function waitForSummaryReviewWithDeadline(
       signal.removeEventListener("abort", rejectCallerAbort);
     }
   }
+}
+
+function createReviewAutoSubmitAt(timeoutMs: number): number {
+  return Date.now() + timeoutMs;
 }
 
 function waitForDelay(

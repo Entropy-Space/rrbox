@@ -480,8 +480,17 @@ function ActiveSummaryReviewDialog({
                   : review.loading_phase === "summary-grace"
                   ? review.query_notice ??
                     "Waiting briefly before summarizing…"
-                  : `Searching… ${review.sections.length} evidence sections received`
-                : `${selectedSectionIds.size} of ${review.sections.length} evidence sections selected`)}
+                  : review.query_notice ?? "Searching for evidence…"
+                : review.auto_submit_at === null
+                ? `${selectedSectionIds.size} of ${review.sections.length} evidence sections selected`
+                : (
+                    <AutoSubmitCountdown
+                      key={review.auto_submit_at}
+                      deadline={review.auto_submit_at}
+                      selectedCount={selectedSectionIds.size}
+                      totalCount={review.sections.length}
+                    />
+                  ))}
           </span>
           <div>
             <button
@@ -621,6 +630,37 @@ function ActiveSummaryReviewDialog({
         </footer>
       </section>
     </dialog>
+  );
+}
+
+function AutoSubmitCountdown({
+  deadline,
+  selectedCount,
+  totalCount,
+}: {
+  deadline: number;
+  selectedCount: number;
+  totalCount: number;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  const secondsRemaining = Math.max(
+    0,
+    Math.ceil((deadline - now) / 1_000),
+  );
+  const approvalStatus = secondsRemaining === 0
+    ? "Auto-approving…"
+    : `Auto-approving in ${secondsRemaining}s`;
+
+  return (
+    <>
+      {selectedCount} of {totalCount} evidence sections selected · {approvalStatus}
+    </>
   );
 }
 

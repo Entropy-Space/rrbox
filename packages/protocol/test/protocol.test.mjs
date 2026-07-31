@@ -9,7 +9,7 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v22 command", () => {
+test("round-trips every protocol-v23 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("bootstrap", {
@@ -402,6 +402,7 @@ test("round-trips every normalized timeline core event", () => {
         stage: "review-summary",
         is_loading: false,
         loading_phase: null,
+        auto_submit_at: 1_750_000_000_000,
         title: "Review web search summary",
         draft_text: "Draft summary",
         summary_model: null,
@@ -444,6 +445,7 @@ test("round-trips every normalized timeline core event", () => {
         stage: "select-evidence",
         is_loading: true,
         loading_phase: "search",
+        auto_submit_at: null,
         title: "Select web search evidence",
         draft_text: "",
         summary_model: null,
@@ -593,6 +595,7 @@ test("validates summary model selections and draft metadata", () => {
       stage: "review-summary",
       is_loading: false,
       loading_phase: null,
+      auto_submit_at: 1_750_000_000_000,
       title: "Review web search summary",
       draft_text: "Draft summary",
       summary_model: {
@@ -677,6 +680,7 @@ test("bounds query curation and permits empty evidence selection", () => {
       stage: "select-evidence",
       is_loading: false,
       loading_phase: null,
+      auto_submit_at: null,
       title: "Select evidence",
       draft_text: "",
       summary_model: null,
@@ -733,6 +737,23 @@ test("bounds query curation and permits empty evidence selection", () => {
   assert.throws(
     () => parseCoreEvent(inconsistentLoadingPhase),
     /loading phase must match/,
+  );
+
+  const invalidAutoSubmitStage = structuredClone(selectionRequest);
+  invalidAutoSubmitStage.payload.auto_submit_at = 1_750_000_000_000;
+  assert.throws(
+    () => parseCoreEvent(invalidAutoSubmitStage),
+    /Only a ready summary review may have an auto-submit deadline/,
+  );
+
+  const invalidAutoSubmitDeadline = structuredClone(selectionRequest);
+  invalidAutoSubmitDeadline.payload.stage = "review-summary";
+  invalidAutoSubmitDeadline.payload.draft_text = "Draft";
+  invalidAutoSubmitDeadline.payload.selected_section_ids = ["0"];
+  invalidAutoSubmitDeadline.payload.auto_submit_at = -1;
+  assert.throws(
+    () => parseCoreEvent(invalidAutoSubmitDeadline),
+    /auto_submit_at must be a non-negative/,
   );
 
   const unavailableSelection = structuredClone(selectionRequest);
@@ -985,6 +1006,7 @@ test("requires request correlation for commands and interactive results", () => 
       stage: "select-evidence",
       is_loading: false,
       loading_phase: null,
+      auto_submit_at: null,
       title: "Select evidence",
       draft_text: "",
       summary_model: null,

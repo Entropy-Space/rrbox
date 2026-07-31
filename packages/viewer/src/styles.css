@@ -543,6 +543,16 @@
   border-color: var(--focus-ring);
 }
 
+.summary-review-header .summary-review-progress {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 10px 0 0;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .summary-review-icon {
   display: grid;
   width: 38px;

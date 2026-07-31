@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 22 as const;
+export const PROTOCOL_VERSION = 23 as const;
 
 export const SUMMARY_REVIEW_MAX_SECTIONS = 20;
 export const SUMMARY_REVIEW_MAX_SEARCH_PROVIDERS = 20;
@@ -36,6 +36,7 @@ export type SummaryReviewRequest = {
   stage: "select-evidence" | "review-summary";
   is_loading: boolean;
   loading_phase: "search" | "summary-grace" | "summary" | null;
+  auto_submit_at: number | null;
   title: string;
   draft_text: string;
   summary_model: ModelSelection | null;
@@ -1167,6 +1168,7 @@ function parseSummaryReviewRequest(
       "stage",
       "is_loading",
       "loading_phase",
+      "auto_submit_at",
       "title",
       "draft_text",
       "summary_model",
@@ -1212,6 +1214,18 @@ function parseSummaryReviewRequest(
   if (isLoading !== (loadingPhase !== null)) {
     throw new Error(
       "Summary review loading phase must match its loading state.",
+    );
+  }
+  const autoSubmitAt = requireNullableNonNegativeInteger(
+    value,
+    "auto_submit_at",
+  );
+  if (
+    autoSubmitAt !== null &&
+    (stage !== "review-summary" || isLoading)
+  ) {
+    throw new Error(
+      "Only a ready summary review may have an auto-submit deadline.",
     );
   }
   const draftText = requireBoundedString(
@@ -1289,6 +1303,7 @@ function parseSummaryReviewRequest(
     stage,
     is_loading: isLoading,
     loading_phase: loadingPhase,
+    auto_submit_at: autoSubmitAt,
     title: requireBoundedString(value, "title", 200),
     draft_text: draftText,
     summary_model: summaryModel,

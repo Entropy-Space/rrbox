@@ -388,6 +388,7 @@ test("active review interaction resets the idle deadline", async () => {
   });
   let draftRequest;
   let resolveReview;
+  const draftDeadlines = [];
   const [tool] = plugin.createTools({
     project_id: "project",
     session_id: "session",
@@ -418,6 +419,7 @@ test("active review interaction resets the idle deadline", async () => {
         update(request) {
           if (request.stage === "review-summary") {
             draftRequest = request;
+            draftDeadlines.push(request.auto_submit_at);
           }
         },
       };
@@ -439,6 +441,8 @@ test("active review interaction resets the idle deadline", async () => {
     result.details.synthesis.fallback_reason,
     "model-completion-unavailable",
   );
+  assert.ok(draftDeadlines.length >= 2);
+  assert.ok(draftDeadlines[1] > draftDeadlines[0]);
 });
 
 test("hiding during search continues with tool-card progress", async () => {
@@ -677,6 +681,7 @@ test("reopening during summarization restores summary review", async () => {
 
 test("summary grace keeps the dialog open before generation", async () => {
   const phases = [];
+  const graceNotices = [];
   let resolveReview;
   const plugin = createWebSearchAgentPlugin({
     async search(request) {
@@ -698,7 +703,7 @@ test("summary grace keeps the dialog open before generation", async () => {
     default_workflow: "summary-review",
     summary_timeout_ms: 1_000,
     review_timeout_ms: 1_000,
-    summary_grace_ms: 10,
+    summary_grace_ms: 1_200,
   });
   const [tool] = plugin.createTools({
     project_id: "project",
@@ -712,6 +717,7 @@ test("summary grace keeps the dialog open before generation", async () => {
     },
     open_summary_review(initialRequest) {
       phases.push(initialRequest.loading_phase);
+      graceNotices.push(initialRequest.query_notice);
       return {
         resolution: new Promise((resolve) => {
           resolveReview = resolve;
@@ -721,6 +727,9 @@ test("summary grace keeps the dialog open before generation", async () => {
         },
         update(request) {
           phases.push(request.loading_phase);
+          if (request.loading_phase === "summary-grace") {
+            graceNotices.push(request.query_notice);
+          }
           if (request.stage === "review-summary") {
             resolveReview({
               decision: "approve",
@@ -747,6 +756,104 @@ test("summary grace keeps the dialog open before generation", async () => {
   assert.equal(result.content[0].text, "Grace-period summary.");
   assert.ok(phases.includes("summary-grace"));
   assert.ok(phases.includes("summary"));
+  assert.ok(graceNotices.some((notice) => /2 seconds/u.test(notice ?? "")));
+  assert.ok(graceNotices.some((notice) => /1 seconds/u.test(notice ?? "")));
+});
+
+test("opens every search placeholder before provider discovery completes", async () => {
+  let releaseProviders;
+  const providersReady = new Promise((resolve) => {
+    releaseProviders = resolve;
+  });
+  let initialRequest;
+  let resolveReview;
+  const plugin = createWebSearchAgentPlugin({
+    async list_available_providers() {
+      return providersReady;
+    },
+    async search(request) {
+      return {
+        query: request.query,
+        provider: "exa",
+        answer: "Placeholder evidence.",
+        sources: [{
+          title: "Example",
+          url: "https://example.com/",
+        }],
+      };
+    },
+    close() {},
+  }, {
+    maximum_results: 5,
+    maximum_output_bytes: 64 * 1024,
+    default_provider: "exa",
+    default_workflow: "summary-review",
+    summary_timeout_ms: 1_000,
+    review_timeout_ms: 1_000,
+    summary_grace_ms: 0,
+  });
+  const [tool] = plugin.createTools({
+    project_id: "project",
+    session_id: "session",
+    async complete_model() {
+      return {
+        text: "Placeholder summary.",
+        provider_id: "openai",
+        model_id: "test-model",
+      };
+    },
+    open_summary_review(request) {
+      initialRequest = request;
+      return {
+        resolution: new Promise((resolve) => {
+          resolveReview = resolve;
+        }),
+        subscribe_activity() {
+          return () => undefined;
+        },
+        update(request) {
+          if (request.stage !== "review-summary") return;
+          resolveReview({
+            decision: "approve",
+            approved_text: request.draft_text,
+            selected_section_ids: request.selected_section_ids,
+            feedback_text: "",
+            summary_model: null,
+            search_provider: "exa",
+            query_text: "",
+          });
+        },
+      };
+    },
+  });
+
+  const execution = tool.execute(
+    "call",
+    { queries: ["example one", "example two"] },
+    new AbortController().signal,
+    () => {},
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(initialRequest.loading_phase, "search");
+  assert.deepEqual(initialRequest.sections, [{
+    section_id: "pending-0",
+    title: "example one",
+    body: "Searching…",
+    is_selectable: false,
+    sources: [],
+  }, {
+    section_id: "pending-1",
+    title: "example two",
+    body: "Searching…",
+    is_selectable: false,
+    sources: [],
+  }]);
+  assert.match(initialRequest.query_notice, /Searching 0 of 2/u);
+
+  releaseProviders([{ provider_id: "exa", include_in_all: true }]);
+  const result = await execution;
+  assert.equal(result.content[0].text, "Placeholder summary.");
 });
 
 test("summary draft deadline auto-submits the generated draft", async () => {
@@ -773,6 +880,7 @@ test("summary draft deadline auto-submits the generated draft", async () => {
     review_timeout_ms: 10,
   });
   let reviewCount = 0;
+  let draftRequest;
   const [tool] = plugin.createTools({
     project_id: "project",
     session_id: "session",
@@ -795,6 +903,7 @@ test("summary draft deadline auto-submits the generated draft", async () => {
           query_text: "",
         };
       }
+      draftRequest = request;
       return new Promise((_resolve, reject) => {
         signal.addEventListener("abort", () => {
           reject(new DOMException("Review timed out.", "AbortError"));
@@ -811,6 +920,8 @@ test("summary draft deadline auto-submits the generated draft", async () => {
   );
 
   assert.equal(reviewCount, 2);
+  assert.equal(typeof draftRequest.auto_submit_at, "number");
+  assert.ok(draftRequest.auto_submit_at <= Date.now());
   assert.equal(result.content[0].text, "Unapproved model draft");
   assert.equal(result.details.synthesis.fallback_used, false);
 });
@@ -939,10 +1050,18 @@ test("summary-review returns only the user-approved synthesis", async () => {
 
 test("summary-review streams initial searches into one open review", async () => {
   const searchedQueries = [];
+  let activeSearches = 0;
+  let maximumActiveSearches = 0;
   const plugin = createWebSearchAgentPlugin({
     async search(request) {
       searchedQueries.push(request.query);
+      activeSearches += 1;
+      maximumActiveSearches = Math.max(
+        maximumActiveSearches,
+        activeSearches,
+      );
       await new Promise((resolve) => setTimeout(resolve, 5));
+      activeSearches -= 1;
       return {
         query: request.query,
         provider: "exa",
@@ -994,7 +1113,19 @@ test("summary-review streams initial searches into one open review", async () =>
       selectionOpenCount += 1;
       assert.equal(searchedQueries.length, 0);
       assert.equal(request.is_loading, true);
-      assert.deepEqual(request.sections, []);
+      assert.deepEqual(
+        request.sections.map((section) => ({
+          title: section.title,
+          body: section.body,
+        })),
+        [{
+          title: "angle one",
+          body: "Searching…",
+        }, {
+          title: "angle two",
+          body: "Searching…",
+        }],
+      );
       let resolveSelection;
       return {
         resolution: new Promise((resolve) => {
@@ -1026,40 +1157,21 @@ test("summary-review streams initial searches into one open review", async () =>
   );
 
   assert.equal(selectionOpenCount, 1);
-  assert.deepEqual(
-    selectionUpdates.map((request) => ({
-      stage: request.stage,
-      is_loading: request.is_loading,
-      loading_phase: request.loading_phase,
-      section_count: request.sections.length,
-      selected_section_ids: request.selected_section_ids,
-    })),
-    [{
-      stage: "select-evidence",
-      is_loading: true,
-      loading_phase: "search",
-      section_count: 1,
-      selected_section_ids: ["0"],
-    }, {
-      stage: "select-evidence",
-      is_loading: true,
-      loading_phase: "search",
-      section_count: 2,
-      selected_section_ids: ["0", "1"],
-    }, {
-      stage: "select-evidence",
-      is_loading: true,
-      loading_phase: "summary",
-      section_count: 2,
-      selected_section_ids: ["0", "1"],
-    }, {
-      stage: "review-summary",
-      is_loading: false,
-      loading_phase: null,
-      section_count: 2,
-      selected_section_ids: ["0", "1"],
-    }],
+  assert.equal(maximumActiveSearches, 2);
+  const searchUpdates = selectionUpdates.filter((request) =>
+    request.loading_phase === "search"
   );
+  assert.ok(searchUpdates.length >= 3);
+  assert.ok(searchUpdates.every((request) => request.sections.length === 2));
+  assert.ok(searchUpdates.some((request) =>
+    request.sections.some((section) => section.body === "Searching…") &&
+    request.sections.some((section) => section.is_selectable)
+  ));
+  const finalRequest = selectionUpdates.at(-1);
+  assert.equal(finalRequest.stage, "review-summary");
+  assert.equal(finalRequest.sections.length, 2);
+  assert.deepEqual(finalRequest.selected_section_ids, ["0", "1"]);
+  assert.equal(typeof finalRequest.auto_submit_at, "number");
   assert.equal(result.content[0].text, "Live review summary");
 });
 

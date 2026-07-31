@@ -109,6 +109,7 @@ function cloneSummaryReviewRequest(
     stage: request.stage,
     is_loading: request.is_loading,
     loading_phase: request.loading_phase,
+    auto_submit_at: request.auto_submit_at,
     title: request.title,
     draft_text: request.draft_text,
     summary_model: request.summary_model

@@ -47,6 +47,7 @@ import {
 import type { FormEvent, KeyboardEvent, RefObject } from "react";
 import { ChatSearchDialog } from "./ChatSearchDialog.tsx";
 import { shouldFocusComposerAfterChatSearch } from "./chat-search.ts";
+import { ComposerCommandMenu } from "./ComposerCommandMenu.tsx";
 import {
   isModalNavigationOpen,
   MOBILE_NAVIGATION_QUERY,
@@ -70,6 +71,7 @@ import {
   type AssistantTurnPresentation,
 } from "./timeline-rendering.ts";
 import { useAgentSession } from "./use-agent-session.ts";
+import { useComposerCommandMenu } from "./use-composer-command-menu.ts";
 import { useConversationScroll } from "./use-conversation-scroll.ts";
 import {
   useWorkspaceChangeReview,
@@ -333,6 +335,27 @@ export function ResearchBoxViewer({
     !isWorkspaceTransferPending &&
     !coreState.is_running &&
     coreState.pending_prompt === null;
+  const isModelSelectionDisabled =
+    !coreState.is_ready ||
+    coreState.is_running ||
+    isManagementPending ||
+    coreState.pending_prompt !== null ||
+    isWorkspaceTransferPending;
+  const focusComposer = useCallback(() => {
+    composerRef.current?.focus();
+  }, []);
+  const composerCommandMenu = useComposerCommandMenu({
+    draft: coreState.input_draft,
+    draftScope: `${coreState.active_project_id ?? ""}\u0000${
+      coreState.active_session_id ?? ""
+    }`,
+    providers: coreState.providers,
+    selection: coreState.active_model,
+    canSelectModel: !isModelSelectionDisabled,
+    onDraftChange: updateInputDraft,
+    onSelectModel: selectModel,
+    focusComposer,
+  });
   const submitDraft = useCallback(
     (prompt: string) => {
       if (!canSubmitDraft || prompt.trim().length === 0) return;
@@ -421,14 +444,16 @@ export function ResearchBoxViewer({
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    composerCommandMenu.prepareLiteralSubmit();
     submitDraft(coreState.input_draft);
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    const commandResult = composerCommandMenu.handleKeyDown(event);
+    if (commandResult !== "unhandled") return;
     if (
       event.key === "Enter" &&
-      !event.shiftKey &&
-      !event.nativeEvent.isComposing
+      !event.shiftKey
     ) {
       event.preventDefault();
       submitDraft(coreState.input_draft);
@@ -558,13 +583,7 @@ export function ResearchBoxViewer({
             <ModelSelector
               providers={coreState.providers}
               selection={coreState.active_model}
-              selectionDisabled={
-                !coreState.is_ready ||
-                coreState.is_running ||
-                isManagementPending ||
-                coreState.pending_prompt !== null ||
-                isWorkspaceTransferPending
-              }
+              selectionDisabled={isModelSelectionDisabled}
               onSelect={selectModel}
               onRefresh={refreshProvider}
               refreshingProviderIds={refreshingProviderIds}
@@ -682,62 +701,83 @@ export function ResearchBoxViewer({
                 </div>
               )}
               {visibleError && <div className="error-banner">{visibleError}</div>}
-              <form className="composer" onSubmit={handleSubmit}>
-                <textarea
-                  ref={composerRef}
-                  value={coreState.input_draft}
-                  rows={1}
-                  aria-label="Message rrbox"
-                  placeholder="Message rrbox"
-                  disabled={
-                    !coreState.is_ready ||
-                    coreState.active_project_id === null
-                  }
-                  onChange={(event) => updateInputDraft(event.target.value)}
-                  onKeyDown={handleComposerKeyDown}
-                />
-                <div className="composer-controls">
-                  <div className="composer-tools">
-                    <button type="button" aria-label="Add attachment">
-                      <Plus size={19} />
-                    </button>
-                    <button type="button" className="tools-pill">
-                      <SlidersHorizontal size={16} />
-                      <span>Tools</span>
-                    </button>
-                  </div>
-                  <div className="composer-actions">
-                    <button type="button" aria-label="Attach a file">
-                      <Paperclip size={18} />
-                    </button>
-                    <button type="button" aria-label="Voice input">
-                      <Mic size={19} />
-                    </button>
-                    {coreState.is_running ? (
-                      <button
-                        className="send-button stop-button"
-                        type="button"
-                        aria-label="Stop response"
-                        onClick={abortRun}
-                      >
-                        <span />
+              <div className="composer-shell">
+                {composerCommandMenu.menu && (
+                  <ComposerCommandMenu {...composerCommandMenu.menu} />
+                )}
+                <form className="composer" onSubmit={handleSubmit}>
+                  <textarea
+                    ref={composerRef}
+                    value={coreState.input_draft}
+                    rows={1}
+                    role="combobox"
+                    aria-label="Message rrbox"
+                    aria-autocomplete="list"
+                    aria-haspopup="listbox"
+                    aria-controls={composerCommandMenu.menu?.menuId}
+                    aria-expanded={composerCommandMenu.menu !== null}
+                    aria-activedescendant={
+                      composerCommandMenu.activeDescendantId
+                    }
+                    placeholder="Message rrbox"
+                    disabled={
+                      !coreState.is_ready ||
+                      coreState.active_project_id === null
+                    }
+                    onBlur={composerCommandMenu.handleBlur}
+                    onChange={composerCommandMenu.handleChange}
+                    onCompositionEnd={
+                      composerCommandMenu.handleCompositionEnd
+                    }
+                    onCompositionStart={
+                      composerCommandMenu.handleCompositionStart
+                    }
+                    onFocus={composerCommandMenu.handleFocus}
+                    onKeyDown={handleComposerKeyDown}
+                  />
+                  <div className="composer-controls">
+                    <div className="composer-tools">
+                      <button type="button" aria-label="Add attachment">
+                        <Plus size={19} />
                       </button>
-                    ) : (
-                      <button
-                        className="send-button"
-                        type="submit"
-                        aria-label="Send message"
-                        disabled={
-                          !coreState.input_draft.trim() ||
-                          !canSubmitDraft
-                        }
-                      >
-                        <ArrowUp size={18} strokeWidth={2.5} />
+                      <button type="button" className="tools-pill">
+                        <SlidersHorizontal size={16} />
+                        <span>Tools</span>
                       </button>
-                    )}
+                    </div>
+                    <div className="composer-actions">
+                      <button type="button" aria-label="Attach a file">
+                        <Paperclip size={18} />
+                      </button>
+                      <button type="button" aria-label="Voice input">
+                        <Mic size={19} />
+                      </button>
+                      {coreState.is_running ? (
+                        <button
+                          className="send-button stop-button"
+                          type="button"
+                          aria-label="Stop response"
+                          onClick={abortRun}
+                        >
+                          <span />
+                        </button>
+                      ) : (
+                        <button
+                          className="send-button"
+                          type="submit"
+                          aria-label="Send message"
+                          disabled={
+                            !coreState.input_draft.trim() ||
+                            !canSubmitDraft
+                          }
+                        >
+                          <ArrowUp size={18} strokeWidth={2.5} />
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              </form>
+                </form>
+              </div>
               <p className="composer-note">
                 rrbox can make mistakes. Check important work.
               </p>

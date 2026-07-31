@@ -4,6 +4,7 @@ import test from "node:test";
 
 const [
   viewerSource,
+  composerMenuSource,
   pluginsSource,
   sidebarSource,
   projectTreeSource,
@@ -13,6 +14,10 @@ const [
 ] = await Promise.all([
   readFile(
     new URL("../src/ResearchBoxViewer.tsx", import.meta.url),
+    "utf8",
+  ),
+  readFile(
+    new URL("../src/use-composer-command-menu.ts", import.meta.url),
     "utf8",
   ),
   readFile(new URL("../src/PluginsPage.tsx", import.meta.url), "utf8"),
@@ -99,6 +104,37 @@ test("the composer separates drafting from sending", () => {
     viewerSource,
     /if \(!canSubmitDraft \|\| prompt\.trim\(\)\.length === 0\) return;/u,
   );
+});
+
+test("composer commands require keyboard acceptance and preserve literal sends", () => {
+  assert.match(
+    viewerSource,
+    /composerCommandMenu\.prepareLiteralSubmit\(\);/u,
+  );
+  assert.match(
+    viewerSource,
+    /if \(commandResult !== "unhandled"\) return;/u,
+  );
+  assert.match(
+    composerMenuSource,
+    /\(event\.key !== "Enter" \|\| event\.shiftKey\)/u,
+  );
+  assert.match(
+    composerMenuSource,
+    /\(event\.key !== "Tab" \|\| event\.shiftKey\)/u,
+  );
+  assert.match(
+    composerMenuSource,
+    /dismissedDraft: draft,\s+acceptedCommandId: null,/u,
+  );
+});
+
+test("the composer tracks the full IME lifecycle before handling Enter", () => {
+  assert.match(viewerSource, /onCompositionStart=/u);
+  assert.match(viewerSource, /onCompositionEnd=/u);
+  assert.match(composerMenuSource, /event\.nativeEvent\.keyCode/u);
+  assert.match(composerMenuSource, /event\.nativeEvent\.isComposing/u);
+  assert.match(composerMenuSource, /return "ime";/u);
 });
 
 function sourceBlock(source, start, end) {

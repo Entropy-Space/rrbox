@@ -2522,6 +2522,133 @@
   color: var(--ink);
 }
 
+.composer-shell {
+  position: relative;
+}
+
+.composer-command-menu {
+  position: absolute;
+  z-index: 4;
+  right: 0;
+  bottom: calc(100% + 8px);
+  left: 0;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: var(--canvas);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.14);
+}
+
+.composer-command-menu-heading {
+  padding: 10px 12px 7px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.composer-command-menu-options {
+  max-height: min(286px, 42dvh);
+  overflow-y: auto;
+  padding: 0 6px 6px;
+  overscroll-behavior: contain;
+}
+
+.composer-command-menu-option {
+  display: grid;
+  min-height: 54px;
+  align-items: center;
+  gap: 11px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  grid-template-columns: minmax(76px, auto) minmax(0, 1fr) auto;
+}
+
+.composer-command-menu-option.active {
+  background: var(--soft);
+}
+
+.composer-command-menu-badge {
+  max-width: 170px;
+  overflow: hidden;
+  color: var(--ink);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-command-menu-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.composer-command-menu-title,
+.composer-command-menu-description {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-command-menu-title {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.composer-command-menu-description {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.composer-command-menu-current {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: #167159;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.composer-command-menu-empty {
+  padding: 14px 10px 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.composer-command-menu-hint {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 18px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.composer-command-menu-hint span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.composer-command-menu-hint kbd {
+  min-width: 19px;
+  padding: 1px 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--soft);
+  color: var(--muted-strong);
+  font-family: inherit;
+  font-size: 9px;
+  line-height: 16px;
+  text-align: center;
+}
+
 .composer {
   overflow: hidden;
   padding: 10px 10px 8px 14px;
@@ -3467,6 +3594,23 @@
 
   .composer-region {
     padding: 8px 10px 8px;
+  }
+
+  .composer-command-menu-option {
+    grid-template-columns: minmax(66px, auto) minmax(0, 1fr) auto;
+  }
+
+  .composer-command-menu-badge {
+    max-width: 105px;
+  }
+
+  .composer-command-menu-hint {
+    justify-content: space-between;
+    gap: 6px;
+  }
+
+  .composer-command-menu-hint span:first-child {
+    display: none;
   }
 
   .composer-note {

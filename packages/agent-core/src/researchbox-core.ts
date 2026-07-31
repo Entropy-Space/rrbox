@@ -614,6 +614,10 @@ export class ResearchBoxCore {
         );
         return;
       }
+      const registeredModel = this.requireActiveModel();
+      if (this.runtime && !this.runtime.usesModel(registeredModel)) {
+        await this.activateSelection();
+      }
 
       if (command.payload.session_id === null) {
         const currentProject = this.requireProject(

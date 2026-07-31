@@ -136,6 +136,7 @@ export class SessionRuntime {
   private readonly workspace: WorkspaceController;
   private readonly eventSink: CoreEventSink;
   private readonly checkpoint: SessionRuntimeOptions["checkpoint"];
+  private readonly model: Model<string>;
   private readonly agent: Agent;
   private readonly unsubscribe: () => void;
   private activeRun: ActiveRun | null = null;
@@ -149,6 +150,7 @@ export class SessionRuntime {
     this.workspace = options.workspace;
     this.eventSink = options.event_sink;
     this.checkpoint = options.checkpoint;
+    this.model = options.model;
     this.agent = new Agent({
       initialState: {
         systemPrompt: options.system_prompt,
@@ -194,6 +196,10 @@ export class SessionRuntime {
 
   get is_running(): boolean {
     return this.activeRun !== null || this.agent.state.isStreaming;
+  }
+
+  usesModel(model: Model<string>): boolean {
+    return this.model === model;
   }
 
   bindDocument(document: SessionDocument): void {

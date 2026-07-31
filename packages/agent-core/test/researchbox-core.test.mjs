@@ -1701,6 +1701,120 @@ test("persisted dynamic model becomes ready after reload discovery", async () =>
   assert.deepEqual(refreshedState.active_model, readyState.active_model);
 });
 
+test("reload uses refreshed capabilities for a persisted reasoning session", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const requests = [];
+  const descriptor = {
+    provider_id: "local-openai",
+    provider_display_name: "Local OpenAI",
+    model_id: "persisted-reasoning-model",
+    display_name: "Persisted reasoning model",
+    context_window: 128_000,
+    max_output_tokens: 8_192,
+    supports_tools: true,
+    supports_reasoning: true,
+    supports_reasoning_effort: true,
+    reasoning_efforts: ["none", "low", "medium", "high"],
+  };
+  const providers = [
+    {
+      provider_id: model.provider,
+      display_name: "rrbox",
+      kind: "mock",
+      models: [model],
+    },
+    {
+      provider_id: descriptor.provider_id,
+      display_name: descriptor.provider_display_name,
+      kind: "openai_compatible",
+      discover_models: true,
+    },
+  ];
+  const createDynamicCore = (modelCatalog, eventSink) =>
+    new ResearchBoxCore({
+      projectStore: store,
+      workspaceBackend: provider,
+      modelTransport: {
+        async *stream(request) {
+          requests.push(structuredClone(request));
+          yield { type: "done", stop_reason: "stop" };
+        },
+      },
+      modelCatalog,
+      model,
+      providers,
+      systemPrompt: "You are a test agent.",
+      eventSink,
+    });
+
+  const initialEvents = [];
+  const initial = createDynamicCore(
+    {
+      async listModels() {
+        return [descriptor];
+      },
+    },
+    (event) => initialEvents.push(event),
+  );
+  await initial.handle(createCommand("bootstrap", {}));
+  await initial.handle(createCommand("provider_refresh", {
+    provider_id: descriptor.provider_id,
+  }));
+  const projectId = latestState(initialEvents).active_project_id;
+  await initial.handle(createCommand("model_select", {
+    project_id: projectId,
+    session_id: null,
+    provider_id: descriptor.provider_id,
+    model_id: descriptor.model_id,
+  }));
+  await initial.handle(createCommand("reasoning_effort_select", {
+    project_id: projectId,
+    session_id: null,
+    reasoning_effort: "high",
+  }));
+  await initial.handle(createCommand("prompt", {
+    project_id: projectId,
+    session_id: null,
+    text: "Create a persisted reasoning session.",
+  }));
+  const sessionId = latestState(initialEvents).active_session_id;
+  assert.equal(requests.at(-1).reasoning_effort, "high");
+  await initial.dispose();
+
+  let releaseDiscovery;
+  const discovery = new Promise((resolve) => {
+    releaseDiscovery = resolve;
+  });
+  const reloadedEvents = [];
+  const reloaded = createDynamicCore(
+    {
+      async listModels() {
+        return discovery;
+      },
+    },
+    (event) => reloadedEvents.push(event),
+  );
+  await reloaded.handle(createCommand("bootstrap", {
+    active_project_id: projectId,
+    active_session_id: sessionId,
+  }));
+  const refresh = reloaded.handle(createCommand("provider_refresh", {
+    provider_id: descriptor.provider_id,
+  }));
+  releaseDiscovery([descriptor]);
+  await refresh;
+
+  await reloaded.handle(createCommand("prompt", {
+    project_id: projectId,
+    session_id: sessionId,
+    text: "Use the restored high effort.",
+  }));
+
+  assert.equal(requests.at(-1).reasoning_effort, "high");
+  await reloaded.dispose();
+});
+
 test("provider refresh recovers when its loading snapshot fails", async () => {
   const store = new MemoryProjectStore();
   const workspace = new MemoryFileSystem({ "/README.md": "# Test" });

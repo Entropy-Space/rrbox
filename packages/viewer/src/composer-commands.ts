@@ -137,6 +137,11 @@ export function buildComposerReasoningSuggestions(
     }));
 }
 
+export function formatReasoningEffort(effort: ReasoningEffort): string {
+  if (effort === "xhigh") return "XHigh";
+  return `${effort.charAt(0).toUpperCase()}${effort.slice(1)}`;
+}
+
 function reasoningSuggestion(
   effort: ReasoningEffort,
 ): Omit<ComposerReasoningSuggestion, "isSelected"> {

@@ -15,6 +15,7 @@ import {
   buildComposerModelSuggestions,
   buildComposerReasoningSuggestions,
   composerCommandQuery,
+  formatReasoningEffort,
   isImeCommitKey,
   matchComposerCommands,
   moveComposerSuggestion,
@@ -404,11 +405,6 @@ export function useComposerCommandMenu({
     handleBlur,
     prepareLiteralSubmit,
   };
-}
-
-function formatReasoningEffort(effort: ReasoningEffort): string {
-  if (effort === "xhigh") return "XHigh";
-  return `${effort.charAt(0).toUpperCase()}${effort.slice(1)}`;
 }
 
 function commandEmptyMessage(

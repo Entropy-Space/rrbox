@@ -4,6 +4,7 @@ import {
   buildComposerModelSuggestions,
   buildComposerReasoningSuggestions,
   composerCommandQuery,
+  formatReasoningEffort,
   isImeCommitKey,
   matchComposerCommands,
   modelCommandQuery,
@@ -133,6 +134,9 @@ test("reasoning suggestions follow the active model capability list", () => {
     ).map((suggestion) => suggestion.suggestionId),
     ["none"],
   );
+  assert.equal(formatReasoningEffort("default"), "Default");
+  assert.equal(formatReasoningEffort("none"), "None");
+  assert.equal(formatReasoningEffort("xhigh"), "XHigh");
 });
 
 test("suggestion navigation wraps and recovers from an invalid index", () => {

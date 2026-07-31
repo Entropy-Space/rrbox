@@ -56,6 +56,7 @@ import { MarkdownContent } from "./MarkdownContent.tsx";
 import { isStreamingAssistantText } from "./markdown.ts";
 import { ModelSelector } from "./ModelSelector.tsx";
 import { PluginsPage } from "./PluginsPage.tsx";
+import { ReasoningEffortSelector } from "./ReasoningEffortSelector.tsx";
 import { SummaryReviewDialog } from "./SummaryReviewDialog.tsx";
 import {
   loadPluginSettings,
@@ -744,10 +745,21 @@ export function ResearchBoxViewer({
                       <button type="button" aria-label="Add attachment">
                         <Plus size={19} />
                       </button>
-                      <button type="button" className="tools-pill">
+                      <button
+                        type="button"
+                        className="tools-pill"
+                        aria-label="Tools"
+                      >
                         <SlidersHorizontal size={16} />
                         <span>Tools</span>
                       </button>
+                      <ReasoningEffortSelector
+                        providers={coreState.providers}
+                        selection={coreState.active_model}
+                        effort={coreState.active_reasoning_effort}
+                        selectionDisabled={isChatConfigurationDisabled}
+                        onSelect={selectReasoningEffort}
+                      />
                     </div>
                     <div className="composer-actions">
                       <button type="button" aria-label="Attach a file">

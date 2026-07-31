@@ -284,12 +284,13 @@ test("CAS-persists migrated project state after a revision conflict", async () =
 
   const loaded = await store.load();
 
-  assert.equal(loaded.schema_version, 3);
+  assert.equal(loaded.schema_version, 4);
   assert.equal(loaded.state_revision, 6);
   assert.deepEqual(loaded.projects[0].new_chat_model, {
     provider_id: "researchbox",
     model_id: "researchbox-mock",
   });
+  assert.equal(loaded.projects[0].new_chat_reasoning_effort, "default");
   assert.deepEqual(saveAttempts, [
     { expected_revision: 4, state_revision: 5 },
     { expected_revision: 5, state_revision: 6 },
@@ -842,7 +843,7 @@ function createReceipt() {
 
 function createState(stateRevision) {
   return {
-    schema_version: 3,
+    schema_version: 4,
     state_revision: stateRevision,
     active_project_id: "project-1",
     active_session_id: null,
@@ -858,6 +859,7 @@ function createState(stateRevision) {
           provider_id: "researchbox",
           model_id: "researchbox-mock",
         },
+        new_chat_reasoning_effort: "default",
       },
     ],
     sessions: [],

@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 23 as const;
+export const PROTOCOL_VERSION = 24 as const;
 
 export const SUMMARY_REVIEW_MAX_SECTIONS = 20;
 export const SUMMARY_REVIEW_MAX_SEARCH_PROVIDERS = 20;
@@ -226,9 +226,20 @@ export type ModelSelection = {
   model_id: string;
 };
 
+export type ModelReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh";
+
+export type ReasoningEffort = "default" | ModelReasoningEffort;
+
 export type ModelSummary = ModelSelection & {
   display_name: string;
   availability: "ready" | "unavailable";
+  reasoning_efforts: ModelReasoningEffort[];
   status_message?: string;
 };
 
@@ -264,6 +275,7 @@ export type CoreStateSnapshot = {
   sessions: SessionSummary[];
   providers: ProviderSummary[];
   active_model: ModelSelection;
+  active_reasoning_effort: ReasoningEffort;
   active_project_id: string;
   active_session_id: string | null;
   input_draft: string;
@@ -302,6 +314,14 @@ export type ViewerCommand =
         session_id: string | null;
         provider_id: string;
         model_id: string;
+      }
+    >
+  | CommandEnvelope<
+      "reasoning_effort_select",
+      {
+        project_id: string;
+        session_id: string | null;
+        reasoning_effort: ReasoningEffort;
       }
     >
   | CommandEnvelope<"provider_refresh", { provider_id: string }>
@@ -594,6 +614,12 @@ export function parseViewerCommand(value: unknown): ViewerCommand {
         session_id: requireNullableString(payload, "session_id"),
         provider_id: requireString(payload, "provider_id"),
         model_id: requireString(payload, "model_id"),
+      });
+    case "reasoning_effort_select":
+      return commandEnvelope("reasoning_effort_select", requestId, {
+        project_id: requireString(payload, "project_id"),
+        session_id: requireNullableString(payload, "session_id"),
+        reasoning_effort: parseReasoningEffort(payload.reasoning_effort),
       });
     case "provider_refresh":
       return commandEnvelope("provider_refresh", requestId, {
@@ -1658,6 +1684,9 @@ function parseCoreStateSnapshot(value: unknown): CoreStateSnapshot {
     sessions: requireArray(value, "sessions").map(parseSessionSummary),
     providers: requireArray(value, "providers").map(parseProviderSummary),
     active_model: parseModelSelection(value.active_model),
+    active_reasoning_effort: parseReasoningEffort(
+      value.active_reasoning_effort,
+    ),
     active_project_id: requireString(value, "active_project_id"),
     active_session_id: requireNullableString(value, "active_session_id"),
     input_draft: requireString(value, "input_draft", true),
@@ -1769,6 +1798,40 @@ export function parseModelSelection(value: unknown): ModelSelection {
   };
 }
 
+export function parseReasoningEffort(value: unknown): ReasoningEffort {
+  if (value === "default" || isModelReasoningEffort(value)) return value;
+  throw new Error("Invalid reasoning effort.");
+}
+
+function parseModelReasoningEfforts(
+  value: unknown,
+): ModelReasoningEffort[] {
+  if (!Array.isArray(value)) {
+    throw new Error("reasoning_efforts must be an array.");
+  }
+  const efforts = value.map((effort) => {
+    if (!isModelReasoningEffort(effort)) {
+      throw new Error("Invalid model reasoning effort.");
+    }
+    return effort;
+  });
+  if (new Set(efforts).size !== efforts.length) {
+    throw new Error("Duplicate model reasoning effort.");
+  }
+  return efforts;
+}
+
+function isModelReasoningEffort(
+  value: unknown,
+): value is ModelReasoningEffort {
+  return value === "none" ||
+    value === "minimal" ||
+    value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "xhigh";
+}
+
 function parseModelSummary(value: unknown): ModelSummary {
   const selection = parseModelSelection(value);
   if (!isRecord(value)) throw new Error("Model summary must be an object.");
@@ -1781,6 +1844,7 @@ function parseModelSummary(value: unknown): ModelSummary {
     ...selection,
     display_name: requireString(value, "display_name"),
     availability,
+    reasoning_efforts: parseModelReasoningEfforts(value.reasoning_efforts),
     ...(statusMessage === undefined ? {} : { status_message: statusMessage }),
   };
 }

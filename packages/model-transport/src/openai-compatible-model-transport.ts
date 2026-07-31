@@ -3,6 +3,7 @@ import {
   type ModelCatalogTransport,
   type ModelConversationMessage,
   type ModelDescriptor,
+  type ModelReasoningEffort,
   type ModelRequest,
   type ModelStreamEvent,
   type ModelToolCall,
@@ -520,6 +521,14 @@ function parseCatalogEntry(
       : undefined;
   const limit =
     metadata && isRecord(metadata.limit) ? metadata.limit : undefined;
+  const supportsReasoning =
+    capabilities && typeof capabilities.reasoning === "boolean"
+      ? capabilities.reasoning
+      : false;
+  const reasoningEfforts = parseRouterReasoningEfforts(
+    capabilities,
+    supportsReasoning,
+  );
 
   return {
     provider_id: providerId,
@@ -535,15 +544,52 @@ function parseCatalogEntry(
       capabilities && typeof capabilities.toolcall === "boolean"
         ? capabilities.toolcall
         : true,
-    supports_reasoning:
-      capabilities && typeof capabilities.reasoning === "boolean"
-        ? capabilities.reasoning
-        : false,
-    supports_reasoning_effort:
-      capabilities && typeof capabilities.reasoning_effort === "boolean"
-        ? capabilities.reasoning_effort
-        : false,
+    supports_reasoning: supportsReasoning,
+    supports_reasoning_effort: reasoningEfforts.length > 0,
+    reasoning_efforts: reasoningEfforts,
   };
+}
+
+function parseRouterReasoningEfforts(
+  capabilities: Record<string, unknown> | undefined,
+  supportsReasoning: boolean,
+): ModelReasoningEffort[] {
+  const configured = capabilities?.reasoning_efforts;
+  if (configured !== undefined) {
+    if (!Array.isArray(configured)) {
+      throw new Error("capabilities.reasoning_efforts must be an array.");
+    }
+    const efforts = configured.map((effort) => {
+      if (!isModelReasoningEffort(effort)) {
+        throw new Error("Invalid capabilities.reasoning_efforts value.");
+      }
+      return effort;
+    });
+    if (new Set(efforts).size !== efforts.length) {
+      throw new Error("capabilities.reasoning_efforts contains duplicates.");
+    }
+    if (!supportsReasoning && efforts.length > 0) {
+      throw new Error(
+        "A non-reasoning model cannot advertise reasoning efforts.",
+      );
+    }
+    return efforts;
+  }
+  if (capabilities?.reasoning_effort === true) {
+    return ["minimal", "low", "medium", "high", "xhigh"];
+  }
+  return supportsReasoning ? ["none", "low", "medium", "high"] : [];
+}
+
+function isModelReasoningEffort(
+  value: unknown,
+): value is ModelReasoningEffort {
+  return value === "none" ||
+    value === "minimal" ||
+    value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "xhigh";
 }
 
 function parseToolCallFragments(value: unknown): ToolCallFragment[] {

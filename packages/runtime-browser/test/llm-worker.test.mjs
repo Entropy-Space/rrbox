@@ -719,6 +719,7 @@ function descriptor(providerId, modelId) {
     supports_tools: true,
     supports_reasoning: false,
     supports_reasoning_effort: false,
+    reasoning_efforts: [],
   };
 }
 

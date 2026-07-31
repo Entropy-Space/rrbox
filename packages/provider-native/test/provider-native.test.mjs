@@ -178,6 +178,7 @@ test("discovers models through the constrained native fetch adapter", async () =
       supports_tools: true,
       supports_reasoning: false,
       supports_reasoning_effort: false,
+      reasoning_efforts: [],
     },
   ]);
 

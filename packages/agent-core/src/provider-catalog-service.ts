@@ -15,10 +15,12 @@ export type ProviderModelCatalog = {
 
 export type ProviderCatalogModel = Model<string> & {
   supports_reasoning_effort: boolean;
+  reasoning_efforts: ModelSummary["reasoning_efforts"];
 };
 
 type ProviderModelInput = Model<string> & {
   supports_reasoning_effort?: boolean;
+  reasoning_efforts?: ModelSummary["reasoning_efforts"];
 };
 
 export type ModelProviderDefinition = {
@@ -393,6 +395,7 @@ function providerSummary(provider: ProviderState): ProviderSummary {
         model_id: model.id,
         display_name: model.name,
         availability,
+        reasoning_efforts: [...model.reasoning_efforts],
         ...(status_message === undefined ? {} : { status_message }),
       }))
       .sort((left, right) => left.display_name.localeCompare(right.display_name)),
@@ -428,6 +431,11 @@ function modelsFromDescriptors(
 function modelFromDescriptor(
   descriptor: ModelDescriptor,
 ): ProviderCatalogModel {
+  const reasoningEfforts = descriptor.reasoning_efforts
+    ? [...descriptor.reasoning_efforts]
+    : descriptor.supports_reasoning_effort === true
+      ? (["minimal", "low", "medium", "high", "xhigh"] as const)
+      : [];
   return {
     id: descriptor.model_id,
     name: descriptor.display_name,
@@ -435,8 +443,8 @@ function modelFromDescriptor(
     provider: descriptor.provider_id,
     baseUrl: "",
     reasoning: descriptor.supports_reasoning,
-    supports_reasoning_effort:
-      descriptor.supports_reasoning_effort === true,
+    supports_reasoning_effort: reasoningEfforts.length > 0,
+    reasoning_efforts: [...reasoningEfforts],
     input: ["text"],
     cost: {
       input: 0,
@@ -458,6 +466,7 @@ function unavailableModel(selection: ModelSelection): ProviderCatalogModel {
     baseUrl: "",
     reasoning: false,
     supports_reasoning_effort: false,
+    reasoning_efforts: [],
     input: ["text"],
     cost: {
       input: 0,
@@ -473,9 +482,15 @@ function unavailableModel(selection: ModelSelection): ProviderCatalogModel {
 function toProviderCatalogModel(
   model: ProviderModelInput,
 ): ProviderCatalogModel {
+  const reasoningEfforts = model.reasoning_efforts
+    ? [...model.reasoning_efforts]
+    : model.supports_reasoning_effort === true
+      ? ["minimal", "low", "medium", "high", "xhigh"] as const
+      : [];
   return {
     ...model,
-    supports_reasoning_effort: model.supports_reasoning_effort === true,
+    supports_reasoning_effort: reasoningEfforts.length > 0,
+    reasoning_efforts: [...reasoningEfforts],
   };
 }
 

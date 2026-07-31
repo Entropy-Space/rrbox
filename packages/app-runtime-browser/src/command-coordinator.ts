@@ -292,6 +292,7 @@ function commandLockScopes(
         shared(projectCommandLock(command.payload.project_id)),
       );
     case "model_select":
+    case "reasoning_effort_select":
     case "session_update":
     case "session_delete":
       return coordinated(

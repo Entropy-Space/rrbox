@@ -183,6 +183,7 @@ export function ResearchBoxViewer({
     revertWorkspaceChange,
     selectNewChat,
     selectModel,
+    selectReasoningEffort,
     refreshProvider,
     renameSession,
     deleteSession,
@@ -335,7 +336,7 @@ export function ResearchBoxViewer({
     !isWorkspaceTransferPending &&
     !coreState.is_running &&
     coreState.pending_prompt === null;
-  const isModelSelectionDisabled =
+  const isChatConfigurationDisabled =
     !coreState.is_ready ||
     coreState.is_running ||
     isManagementPending ||
@@ -351,9 +352,12 @@ export function ResearchBoxViewer({
     }`,
     providers: coreState.providers,
     selection: coreState.active_model,
-    canSelectModel: !isModelSelectionDisabled,
+    activeReasoningEffort: coreState.active_reasoning_effort,
+    canSelectModel: !isChatConfigurationDisabled,
+    canSelectReasoningEffort: !isChatConfigurationDisabled,
     onDraftChange: updateInputDraft,
     onSelectModel: selectModel,
+    onSelectReasoningEffort: selectReasoningEffort,
     focusComposer,
   });
   const submitDraft = useCallback(
@@ -583,7 +587,7 @@ export function ResearchBoxViewer({
             <ModelSelector
               providers={coreState.providers}
               selection={coreState.active_model}
-              selectionDisabled={isModelSelectionDisabled}
+              selectionDisabled={isChatConfigurationDisabled}
               onSelect={selectModel}
               onRefresh={refreshProvider}
               refreshingProviderIds={refreshingProviderIds}

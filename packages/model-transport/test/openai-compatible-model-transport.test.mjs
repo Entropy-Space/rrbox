@@ -89,6 +89,7 @@ test("discovers and normalizes OpenAI-compatible models", async () => {
       supports_tools: true,
       supports_reasoning: true,
       supports_reasoning_effort: true,
+      reasoning_efforts: ["minimal", "low", "medium", "high", "xhigh"],
     },
     {
       provider_id: "local-openai",
@@ -100,6 +101,7 @@ test("discovers and normalizes OpenAI-compatible models", async () => {
       supports_tools: true,
       supports_reasoning: false,
       supports_reasoning_effort: false,
+      reasoning_efforts: [],
     },
   ]);
   assert.equal(callCount, 1);

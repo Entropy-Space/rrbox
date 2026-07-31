@@ -51,6 +51,7 @@ test("authoritative snapshots update providers and the active model", () => {
     provider_id: "researchbox",
     model_id: "researchbox-mock",
   });
+  assert.equal(state.active_reasoning_effort, "default");
 
   const changed = snapshot("p1", "s1", 2);
   changed.providers = [localOpenAiProvider()];
@@ -58,6 +59,7 @@ test("authoritative snapshots update providers and the active model", () => {
     provider_id: "local-openai",
     model_id: "gpt-5.4",
   };
+  changed.active_reasoning_effort = "high";
   state = coreReducer(state, event("state_snapshot", { state: changed }));
 
   assert.deepEqual(state.providers, [localOpenAiProvider()]);
@@ -65,6 +67,7 @@ test("authoritative snapshots update providers and the active model", () => {
     provider_id: "local-openai",
     model_id: "gpt-5.4",
   });
+  assert.equal(state.active_reasoning_effort, "high");
 });
 
 test("catalog and lifecycle events stay independent from workspace state", () => {
@@ -1894,6 +1897,7 @@ function snapshot(
       provider_id: "researchbox",
       model_id: "researchbox-mock",
     },
+    active_reasoning_effort: "default",
     active_project_id: projectId,
     active_session_id: sessionId,
     input_draft: inputDraft,
@@ -1915,6 +1919,7 @@ function mockProvider() {
         model_id: "researchbox-mock",
         display_name: "rrbox Mock",
         availability: "ready",
+        reasoning_efforts: [],
       },
     ],
   };
@@ -1932,6 +1937,7 @@ function localOpenAiProvider() {
         model_id: "gpt-5.4",
         display_name: "GPT-5.4",
         availability: "ready",
+        reasoning_efforts: ["none", "low", "medium", "high"],
       },
     ],
   };

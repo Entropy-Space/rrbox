@@ -17,6 +17,7 @@ import {
   type AssistantMessageEntry,
   type CoreEvent,
   type ModelSelection,
+  type ReasoningEffort,
   type SummaryReviewRequest,
   type SummaryReviewResolution,
   type ToolCallBlock,
@@ -52,6 +53,7 @@ export type SessionRuntimeOptions = {
   workspace: WorkspaceController;
   model_transport: ModelTransport;
   model: Model<string>;
+  reasoning_effort: ReasoningEffort;
   resolve_model?: (selection: ModelSelection) => Model<string> | undefined;
   system_prompt: string;
   plugins?: readonly AgentPlugin[];
@@ -151,7 +153,11 @@ export class SessionRuntime {
       initialState: {
         systemPrompt: options.system_prompt,
         model: options.model,
-        thinkingLevel: options.model.reasoning ? "medium" : "off",
+        thinkingLevel:
+          options.reasoning_effort === "default" ||
+          options.reasoning_effort === "none"
+            ? "off"
+            : options.reasoning_effort,
         tools: createAgentPluginTools(
           options.plugins ?? [],
           {
@@ -175,7 +181,10 @@ export class SessionRuntime {
         messages: timelineToAgentMessages(options.document.timeline),
       },
       sessionId: options.session_id,
-      streamFn: createModelStreamFn(options.model_transport),
+      streamFn: createModelStreamFn(
+        options.model_transport,
+        options.reasoning_effort === "none" ? "none" : undefined,
+      ),
       toolExecution: "sequential",
     });
     this.unsubscribe = this.agent.subscribe((event) =>

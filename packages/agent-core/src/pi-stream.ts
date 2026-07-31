@@ -20,9 +20,13 @@ import { assertCompleteToolCallResults } from "./tool-transcript.ts";
 
 type ReasoningEffortModel = Model<string> & {
   supports_reasoning_effort?: boolean;
+  reasoning_efforts?: ModelRequest["reasoning_effort"][];
 };
 
-export function createModelStreamFn(transport: ModelTransport): StreamFn {
+export function createModelStreamFn(
+  transport: ModelTransport,
+  reasoningEffortOverride?: ModelRequest["reasoning_effort"],
+): StreamFn {
   return (model, context, options) => {
     const stream = createAssistantMessageEventStream();
     const message = createPartialMessage(model.api, model.provider, model.id);
@@ -46,7 +50,7 @@ export function createModelStreamFn(transport: ModelTransport): StreamFn {
         model,
         context,
         options?.sessionId,
-        options?.reasoning,
+        reasoningEffortOverride ?? options?.reasoning,
       );
     } catch (error) {
       message.stopReason = "error";
@@ -292,7 +296,8 @@ function toModelRequest(
     provider_id: model.provider,
     model_id: model.id,
     system_prompt: context.systemPrompt ?? "",
-    ...(reasoningEffort !== undefined && supportsReasoningEffort(model)
+    ...(reasoningEffort !== undefined &&
+    supportsReasoningEffort(model, reasoningEffort)
       ? { reasoning_effort: reasoningEffort }
       : {}),
     messages: context.messages
@@ -311,10 +316,15 @@ function toModelRequest(
   };
 }
 
-function supportsReasoningEffort(model: Model<string>): boolean {
-  return (
-    (model as ReasoningEffortModel).supports_reasoning_effort === true
-  );
+function supportsReasoningEffort(
+  model: Model<string>,
+  effort: ModelRequest["reasoning_effort"],
+): boolean {
+  const reasoningModel = model as ReasoningEffortModel;
+  if (reasoningModel.reasoning_efforts) {
+    return reasoningModel.reasoning_efforts.includes(effort);
+  }
+  return reasoningModel.supports_reasoning_effort === true && effort !== "none";
 }
 
 function toModelConversationMessage(

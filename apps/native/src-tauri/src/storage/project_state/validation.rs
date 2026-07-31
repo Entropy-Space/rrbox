@@ -7,7 +7,7 @@ use crate::protocol::{deserialize_u64_from_json, require_array, require_string};
 use super::super::StorageError;
 
 pub(super) const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
-const PROJECT_STORE_SCHEMA_VERSION: u64 = 3;
+const PROJECT_STORE_SCHEMA_VERSION: u64 = 4;
 const SESSION_DOCUMENT_FORMAT_VERSION: u64 = 4;
 
 #[derive(Debug)]
@@ -173,7 +173,11 @@ fn validate_project_record(project: &Value) -> Result<(), StorageError> {
     require_string(project, field).map_err(StorageError::InvalidRequest)?;
   }
   require_any_string(project, "new_chat_draft")?;
-  validate_model_selection(project.get("new_chat_model"), "new_chat_model")
+  validate_model_selection(project.get("new_chat_model"), "new_chat_model")?;
+  validate_reasoning_effort(
+    project.get("new_chat_reasoning_effort"),
+    "new_chat_reasoning_effort",
+  )
 }
 
 fn validate_session_record(session: &Value) -> Result<(), StorageError> {
@@ -181,7 +185,8 @@ fn validate_session_record(session: &Value) -> Result<(), StorageError> {
     require_string(session, field).map_err(StorageError::InvalidRequest)?;
   }
   require_boolean(session, "title_is_custom")?;
-  validate_model_selection(session.get("selected_model"), "selected_model")
+  validate_model_selection(session.get("selected_model"), "selected_model")?;
+  validate_reasoning_effort(session.get("reasoning_effort"), "reasoning_effort")
 }
 
 fn validate_model_selection(value: Option<&Value>, field: &str) -> Result<(), StorageError> {
@@ -198,6 +203,15 @@ fn validate_model_selection(value: Option<&Value>, field: &str) -> Result<(), St
       })?;
   }
   Ok(())
+}
+
+fn validate_reasoning_effort(value: Option<&Value>, field: &str) -> Result<(), StorageError> {
+  match value.and_then(Value::as_str) {
+    Some("default" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh") => Ok(()),
+    _ => Err(StorageError::InvalidRequest(format!(
+      "{field} must be a supported reasoning effort."
+    ))),
+  }
 }
 
 fn validate_session_document(document: &Value) -> Result<&Vec<Value>, StorageError> {

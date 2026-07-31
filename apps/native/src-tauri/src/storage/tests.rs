@@ -34,6 +34,7 @@ fn project(project_id: &str, name: &str, last_session_id: Option<&str>) -> Value
       "provider_id": "researchbox",
       "model_id": "researchbox-mock",
     },
+    "new_chat_reasoning_effort": "default",
   })
 }
 
@@ -49,6 +50,7 @@ fn session(session_id: &str, project_id: &str) -> Value {
       "provider_id": "researchbox",
       "model_id": "researchbox-mock",
     },
+    "reasoning_effort": "default",
   })
 }
 
@@ -70,7 +72,7 @@ fn state(
   documents: Vec<Value>,
 ) -> Value {
   json!({
-    "schema_version": 3,
+    "schema_version": 4,
     "state_revision": revision,
     "active_project_id": active_project_id,
     "active_session_id": null,

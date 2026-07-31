@@ -212,6 +212,39 @@ test("forwards Pi reasoning effort only when explicitly supported", async () => 
   assert.equal(requests[2].reasoning_effort, "high");
 });
 
+test("explicit none overrides Pi while default leaves effort unset", async () => {
+  const requests = [];
+  const transport = {
+    async *stream(request) {
+      requests.push(structuredClone(request));
+      yield { type: "done", stop_reason: "stop" };
+    },
+  };
+  const reasoningModel = {
+    ...model,
+    reasoning: true,
+    reasoning_efforts: ["none", "low", "medium", "high"],
+  };
+
+  for await (const event of createModelStreamFn(transport)(
+    reasoningModel,
+    { systemPrompt: "Work carefully.", messages: [], tools: [] },
+    { sessionId: "session-default" },
+  )) {
+    assert.notEqual(event.type, "error");
+  }
+  for await (const event of createModelStreamFn(transport, "none")(
+    reasoningModel,
+    { systemPrompt: "Work carefully.", messages: [], tools: [] },
+    { sessionId: "session-none", reasoning: "high" },
+  )) {
+    assert.notEqual(event.type, "error");
+  }
+
+  assert.equal("reasoning_effort" in requests[0], false);
+  assert.equal(requests[1].reasoning_effort, "none");
+});
+
 test("forwards registered plugin tools to the model", async () => {
   const requests = [];
   const streamFn = createModelStreamFn({

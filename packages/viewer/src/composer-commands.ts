@@ -1,9 +1,10 @@
 import type {
   ModelSelection,
   ProviderSummary,
+  ReasoningEffort,
 } from "@researchbox/protocol";
 
-export type ComposerCommandId = "model";
+export type ComposerCommandId = "model" | "reasoning";
 
 export type ComposerCommand = {
   commandId: ComposerCommandId;
@@ -22,12 +23,27 @@ export type ComposerModelSuggestion = {
   isSelected: boolean;
 };
 
-export const COMPOSER_COMMANDS: readonly ComposerCommand[] = [{
-  commandId: "model",
-  invocation: "/model",
-  title: "Switch model",
-  description: "Choose the model for this chat.",
-}];
+export type ComposerReasoningSuggestion = {
+  suggestionId: ReasoningEffort;
+  title: string;
+  description: string;
+  isSelected: boolean;
+};
+
+export const COMPOSER_COMMANDS: readonly ComposerCommand[] = [
+  {
+    commandId: "model",
+    invocation: "/model",
+    title: "Switch model",
+    description: "Choose the model for this chat.",
+  },
+  {
+    commandId: "reasoning",
+    invocation: "/reasoning",
+    title: "Reasoning effort",
+    description: "Choose how much reasoning to use in this chat.",
+  },
+];
 
 export function matchComposerCommands(
   draft: string,
@@ -40,7 +56,18 @@ export function matchComposerCommands(
 }
 
 export function modelCommandQuery(draft: string): string | null {
-  const prefix = "/model ";
+  return composerCommandQuery(draft, "model");
+}
+
+export function composerCommandQuery(
+  draft: string,
+  commandId: ComposerCommandId,
+): string | null {
+  const command = COMPOSER_COMMANDS.find(
+    (candidate) => candidate.commandId === commandId,
+  );
+  if (!command) return null;
+  const prefix = `${command.invocation} `;
   return draft.startsWith(prefix) ? draft.slice(prefix.length) : null;
 }
 
@@ -78,6 +105,85 @@ export function buildComposerModelSuggestions(
       }];
     });
   });
+}
+
+export function buildComposerReasoningSuggestions(
+  providers: readonly ProviderSummary[],
+  selection: ModelSelection,
+  activeEffort: ReasoningEffort,
+  query: string,
+): ComposerReasoningSuggestion[] {
+  const activeModel = providers
+    .find((provider) => provider.provider_id === selection.provider_id)
+    ?.models.find((model) => model.model_id === selection.model_id);
+  const availableEfforts: ReasoningEffort[] = [
+    "default",
+    ...(activeModel?.reasoning_efforts ?? []),
+  ];
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  return availableEfforts
+    .map(reasoningSuggestion)
+    .filter((suggestion) => {
+      if (!normalizedQuery) return true;
+      return [
+        suggestion.suggestionId,
+        suggestion.title,
+        suggestion.description,
+      ].join(" ").toLocaleLowerCase().includes(normalizedQuery);
+    })
+    .map((suggestion) => ({
+      ...suggestion,
+      isSelected: suggestion.suggestionId === activeEffort,
+    }));
+}
+
+function reasoningSuggestion(
+  effort: ReasoningEffort,
+): Omit<ComposerReasoningSuggestion, "isSelected"> {
+  switch (effort) {
+    case "default":
+      return {
+        suggestionId: effort,
+        title: "Provider default",
+        description: "Let the selected model choose its reasoning effort.",
+      };
+    case "none":
+      return {
+        suggestionId: effort,
+        title: "Disable reasoning",
+        description: "Send an explicit none reasoning effort.",
+      };
+    case "minimal":
+      return {
+        suggestionId: effort,
+        title: "Minimal reasoning",
+        description: "Use the smallest available reasoning budget.",
+      };
+    case "low":
+      return {
+        suggestionId: effort,
+        title: "Low reasoning",
+        description: "Prefer faster responses with less reasoning.",
+      };
+    case "medium":
+      return {
+        suggestionId: effort,
+        title: "Medium reasoning",
+        description: "Balance reasoning depth and response time.",
+      };
+    case "high":
+      return {
+        suggestionId: effort,
+        title: "High reasoning",
+        description: "Spend more time reasoning before responding.",
+      };
+    case "xhigh":
+      return {
+        suggestionId: effort,
+        title: "Extra-high reasoning",
+        description: "Use the model's largest advertised reasoning effort.",
+      };
+  }
 }
 
 export function moveComposerSuggestion(

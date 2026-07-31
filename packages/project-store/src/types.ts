@@ -2,16 +2,18 @@ import type {
   AssistantBlock,
   AssistantMessageEntry,
   ModelSelection,
+  ReasoningEffort,
   TimelineEntry,
   ToolCallBlock,
   WorkspaceChangeSummary,
 } from "@researchbox/protocol";
 import {
   assertTimelineInvariants,
+  parseReasoningEffort,
   parseTimeline,
 } from "@researchbox/protocol";
 
-export const PROJECT_STORE_SCHEMA_VERSION = 3 as const;
+export const PROJECT_STORE_SCHEMA_VERSION = 4 as const;
 export const SESSION_DOCUMENT_FORMAT_VERSION = 4 as const;
 
 export const DEFAULT_MODEL_SELECTION: ModelSelection = {
@@ -19,8 +21,11 @@ export const DEFAULT_MODEL_SELECTION: ModelSelection = {
   model_id: "researchbox-mock",
 };
 
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "default";
+
 const LEGACY_PROJECT_STORE_SCHEMA_VERSION = 1 as const;
 const DRAFT_PROJECT_STORE_SCHEMA_VERSION = 2 as const;
+const MODEL_SELECTION_PROJECT_STORE_SCHEMA_VERSION = 3 as const;
 const LEGACY_SESSION_DOCUMENT_FORMAT_VERSION = 1 as const;
 const TRANSCRIPT_SESSION_DOCUMENT_FORMAT_VERSION = 2 as const;
 const TIMELINE_SESSION_DOCUMENT_FORMAT_VERSION = 3 as const;
@@ -33,6 +38,7 @@ export type ProjectRecord = {
   last_session_id: string | null;
   new_chat_draft: string;
   new_chat_model: ModelSelection;
+  new_chat_reasoning_effort: ReasoningEffort;
 };
 
 export type SessionRecord = {
@@ -43,6 +49,7 @@ export type SessionRecord = {
   created_at: string;
   updated_at: string;
   selected_model: ModelSelection;
+  reasoning_effort: ReasoningEffort;
 };
 
 export type SessionDocument = {
@@ -85,6 +92,7 @@ export function parseProjectStoreStateWithMigration(
   const schemaVersion = value.schema_version;
   if (
     schemaVersion !== PROJECT_STORE_SCHEMA_VERSION &&
+    schemaVersion !== MODEL_SELECTION_PROJECT_STORE_SCHEMA_VERSION &&
     schemaVersion !== DRAFT_PROJECT_STORE_SCHEMA_VERSION &&
     schemaVersion !== LEGACY_PROJECT_STORE_SCHEMA_VERSION
   ) {
@@ -92,7 +100,10 @@ export function parseProjectStoreStateWithMigration(
   }
 
   const legacy = schemaVersion === LEGACY_PROJECT_STORE_SCHEMA_VERSION;
-  const hasModelSelection = schemaVersion === PROJECT_STORE_SCHEMA_VERSION;
+  const hasModelSelection =
+    schemaVersion === PROJECT_STORE_SCHEMA_VERSION ||
+    schemaVersion === MODEL_SELECTION_PROJECT_STORE_SCHEMA_VERSION;
+  const hasReasoningEffort = schemaVersion === PROJECT_STORE_SCHEMA_VERSION;
   const storedDocuments = requireArray(value, "documents");
   const emptyLegacyDocuments = legacy
     ? findEmptyLegacyDocuments(storedDocuments)
@@ -106,10 +117,15 @@ export function parseProjectStoreStateWithMigration(
       ? requireString(value, "active_session_id")
       : requireNullableString(value, "active_session_id"),
     projects: requireArray(value, "projects").map((project) =>
-      parseProjectRecord(project, legacy, hasModelSelection),
+      parseProjectRecord(
+        project,
+        legacy,
+        hasModelSelection,
+        hasReasoningEffort,
+      ),
     ),
     sessions: requireArray(value, "sessions").map((session) =>
-      parseSessionRecord(session, hasModelSelection),
+      parseSessionRecord(session, hasModelSelection, hasReasoningEffort),
     ),
     documents: storedDocuments.map((document) => {
       const parsed = parseSessionDocument(document, legacy);
@@ -190,6 +206,7 @@ function parseProjectRecord(
   value: unknown,
   legacy: boolean,
   hasModelSelection: boolean,
+  hasReasoningEffort: boolean,
 ): ProjectRecord {
   if (!isRecord(value)) throw new Error("Project record must be an object.");
   return {
@@ -206,12 +223,16 @@ function parseProjectRecord(
     new_chat_model: hasModelSelection
       ? parseModelSelection(value.new_chat_model)
       : { ...DEFAULT_MODEL_SELECTION },
+    new_chat_reasoning_effort: hasReasoningEffort
+      ? parseReasoningEffort(value.new_chat_reasoning_effort)
+      : DEFAULT_REASONING_EFFORT,
   };
 }
 
 function parseSessionRecord(
   value: unknown,
   hasModelSelection: boolean,
+  hasReasoningEffort: boolean,
 ): SessionRecord {
   if (!isRecord(value)) throw new Error("Session record must be an object.");
   return {
@@ -224,6 +245,9 @@ function parseSessionRecord(
     selected_model: hasModelSelection
       ? parseModelSelection(value.selected_model)
       : { ...DEFAULT_MODEL_SELECTION },
+    reasoning_effort: hasReasoningEffort
+      ? parseReasoningEffort(value.reasoning_effort)
+      : DEFAULT_REASONING_EFFORT,
   };
 }
 

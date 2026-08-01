@@ -61,5 +61,6 @@ test("keeps the shared mock descriptor aligned with the core model", () => {
     supports_tools: true,
     supports_reasoning: researchBoxMockModel.reasoning,
     supports_reasoning_effort: false,
+    reasoning_efforts: [],
   });
 });

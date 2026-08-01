@@ -14,6 +14,7 @@ import {
   type ModelSelection,
   type ProjectSummary,
   type ProviderSummary,
+  type ReasoningEffort,
   type SessionSummary,
   type SummaryReviewRequest,
   type SummaryReviewResolution,
@@ -50,6 +51,7 @@ export type AgentSessionState = {
   sessions: SessionSummary[];
   providers: ProviderSummary[];
   active_model: ModelSelection;
+  active_reasoning_effort: ReasoningEffort;
   active_project_id: string | null;
   active_session_id: string | null;
   input_draft: string;
@@ -87,6 +89,7 @@ export const initialAgentSessionState: AgentSessionState = {
     provider_id: "",
     model_id: "",
   },
+  active_reasoning_effort: "default",
   active_project_id: null,
   active_session_id: null,
   input_draft: "",
@@ -776,6 +779,24 @@ export function useAgentSession(
     ],
   );
 
+  const selectReasoningEffort = useCallback(
+    (reasoningEffort: ReasoningEffort) => {
+      if (!coreState.active_project_id) return;
+      sendManagementCommand(
+        createCommand("reasoning_effort_select", {
+          project_id: coreState.active_project_id,
+          session_id: coreState.active_session_id,
+          reasoning_effort: reasoningEffort,
+        }),
+      );
+    },
+    [
+      coreState.active_project_id,
+      coreState.active_session_id,
+      sendManagementCommand,
+    ],
+  );
+
   const refreshProvider = useCallback(
     (providerId: string) => {
       if (
@@ -1000,6 +1021,7 @@ export function useAgentSession(
     revertWorkspaceChange,
     selectNewChat,
     selectModel,
+    selectReasoningEffort,
     refreshProvider,
     renameSession,
     deleteSession,
@@ -1619,6 +1641,7 @@ function applySnapshot(
         ? snapshot.providers
         : state.providers,
     active_model: snapshot.active_model,
+    active_reasoning_effort: snapshot.active_reasoning_effort,
     active_project_id: snapshot.active_project_id,
     active_session_id: snapshot.active_session_id,
     input_draft: preserveDraft ? state.input_draft : snapshot.input_draft,

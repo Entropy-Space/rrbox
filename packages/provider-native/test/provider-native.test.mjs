@@ -178,6 +178,7 @@ test("discovers models through the constrained native fetch adapter", async () =
       supports_tools: true,
       supports_reasoning: false,
       supports_reasoning_effort: false,
+      reasoning_efforts: [],
     },
   ]);
 
@@ -204,7 +205,9 @@ test("preserves incremental SSE ordering through the native body stream", async 
 
   assert.equal(request.endpoint, "chat_completions");
   assert.equal(request.method, "post");
-  assert.equal(JSON.parse(request.body).model, "gpt-test");
+  const body = JSON.parse(request.body);
+  assert.equal(body.model, "gpt-test");
+  assert.equal(body.reasoning_effort, "high");
 
   channel.port1.postMessage({
     protocol_version: 1,
@@ -572,6 +575,7 @@ function modelRequest() {
     provider_id: "local-openai",
     model_id: "gpt-test",
     system_prompt: "Be concise.",
+    reasoning_effort: "high",
     messages: [{ role: "user", content: "Hello" }],
     tools: [],
   };

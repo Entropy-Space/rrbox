@@ -29,6 +29,7 @@ export const researchBoxMockModelDescriptor: ModelDescriptor = {
   supports_tools: true,
   supports_reasoning: researchBoxMockModel.reasoning,
   supports_reasoning_effort: false,
+  reasoning_efforts: [],
 };
 
 export const researchBoxSystemPrompt =

@@ -1,5 +1,13 @@
 export type ModelToolName = string;
 
+export type ModelReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh";
+
 export type ModelToolCall = {
   tool_call_id: string;
   tool_name: ModelToolName;
@@ -51,6 +59,7 @@ export type ModelDescriptor = {
   supports_tools: boolean;
   supports_reasoning: boolean;
   supports_reasoning_effort: boolean;
+  reasoning_efforts: ModelReasoningEffort[];
 };
 
 export type ModelStreamEvent =
@@ -87,7 +96,7 @@ export type ModelRequest = {
   provider_id: string;
   model_id: string;
   system_prompt: string;
-  reasoning_effort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  reasoning_effort?: ModelReasoningEffort;
   messages: ModelConversationMessage[];
   tools: ModelToolDefinition[];
 };
@@ -130,6 +139,15 @@ export function parseModelRequest(value: unknown): ModelRequest {
 export function parseModelDescriptor(value: unknown): ModelDescriptor {
   if (!isRecord(value)) throw new Error("Model descriptor must be an object.");
 
+  const legacySupportsReasoningEffort =
+    value.supports_reasoning_effort === undefined
+      ? false
+      : requireBoolean(value, "supports_reasoning_effort");
+  const reasoningEfforts = parseReasoningEfforts(
+    value.reasoning_efforts,
+    legacySupportsReasoningEffort,
+  );
+
   return {
     provider_id: requireIdentifier(value, "provider_id"),
     provider_display_name: requireString(value, "provider_display_name"),
@@ -142,10 +160,8 @@ export function parseModelDescriptor(value: unknown): ModelDescriptor {
     ),
     supports_tools: requireBoolean(value, "supports_tools"),
     supports_reasoning: requireBoolean(value, "supports_reasoning"),
-    supports_reasoning_effort:
-      value.supports_reasoning_effort === undefined
-        ? false
-        : requireBoolean(value, "supports_reasoning_effort"),
+    supports_reasoning_effort: reasoningEfforts.length > 0,
+    reasoning_efforts: reasoningEfforts,
   };
 }
 
@@ -733,6 +749,7 @@ function parseReasoningEffort(
 ): ModelRequest["reasoning_effort"] {
   if (value === undefined) return undefined;
   if (
+    value !== "none" &&
     value !== "minimal" &&
     value !== "low" &&
     value !== "medium" &&
@@ -742,6 +759,29 @@ function parseReasoningEffort(
     throw new Error("Invalid reasoning_effort.");
   }
   return value;
+}
+
+function parseReasoningEfforts(
+  value: unknown,
+  legacySupportsReasoningEffort: boolean,
+): ModelReasoningEffort[] {
+  if (value === undefined) {
+    return legacySupportsReasoningEffort
+      ? ["minimal", "low", "medium", "high", "xhigh"]
+      : [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("reasoning_efforts must be an array.");
+  }
+  const efforts = value.map((effort) => {
+    const parsed = parseReasoningEffort(effort);
+    if (parsed === undefined) throw new Error("Invalid reasoning_efforts.");
+    return parsed;
+  });
+  if (new Set(efforts).size !== efforts.length) {
+    throw new Error("reasoning_efforts must not contain duplicates.");
+  }
+  return efforts;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

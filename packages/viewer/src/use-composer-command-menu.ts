@@ -1,6 +1,7 @@
 import type {
   ModelSelection,
   ProviderSummary,
+  ReasoningEffort,
 } from "@researchbox/protocol";
 import {
   useCallback,
@@ -12,9 +13,11 @@ import {
 import type { ChangeEvent, KeyboardEvent } from "react";
 import {
   buildComposerModelSuggestions,
+  buildComposerReasoningSuggestions,
+  composerCommandQuery,
+  formatReasoningEffort,
   isImeCommitKey,
   matchComposerCommands,
-  modelCommandQuery,
   moveComposerSuggestion,
   type ComposerCommandId,
 } from "./composer-commands.ts";
@@ -38,9 +41,12 @@ export type UseComposerCommandMenuOptions = {
   draftScope: string;
   providers: readonly ProviderSummary[];
   selection: ModelSelection;
+  activeReasoningEffort: ReasoningEffort;
   canSelectModel: boolean;
+  canSelectReasoningEffort: boolean;
   onDraftChange: (draft: string) => void;
   onSelectModel: (providerId: string, modelId: string) => void;
+  onSelectReasoningEffort: (reasoningEffort: ReasoningEffort) => void;
   focusComposer: () => void;
 };
 
@@ -71,9 +77,12 @@ export function useComposerCommandMenu({
   draftScope,
   providers,
   selection,
+  activeReasoningEffort,
   canSelectModel,
+  canSelectReasoningEffort,
   onDraftChange,
   onSelectModel,
+  onSelectReasoningEffort,
   focusComposer,
 }: UseComposerCommandMenuOptions) {
   const menuId = useId();
@@ -107,16 +116,22 @@ export function useComposerCommandMenu({
     activeIndex,
   } = interaction;
 
+  const acceptedCommandQuery = acceptedCommandId === null
+    ? null
+    : composerCommandQuery(draft, acceptedCommandId);
+  const isCommandAccepted = acceptedCommandQuery !== null;
   const acceptedModelQuery = acceptedCommandId === "model"
-    ? modelCommandQuery(draft)
+    ? acceptedCommandQuery
     : null;
-  const isModelCommandAccepted = acceptedModelQuery !== null;
+  const acceptedReasoningQuery = acceptedCommandId === "reasoning"
+    ? acceptedCommandQuery
+    : null;
   const matchingCommands = useMemo(
     () => matchComposerCommands(draft),
     [draft],
   );
   const modelSuggestions = useMemo(
-    () => isModelCommandAccepted && canSelectModel
+    () => acceptedModelQuery !== null && canSelectModel
       ? buildComposerModelSuggestions(
           providers,
           selection,
@@ -126,7 +141,23 @@ export function useComposerCommandMenu({
     [
       acceptedModelQuery,
       canSelectModel,
-      isModelCommandAccepted,
+      providers,
+      selection,
+    ],
+  );
+  const reasoningSuggestions = useMemo(
+    () => acceptedReasoningQuery !== null && canSelectReasoningEffort
+      ? buildComposerReasoningSuggestions(
+          providers,
+          selection,
+          activeReasoningEffort,
+          acceptedReasoningQuery,
+        )
+      : [],
+    [
+      acceptedReasoningQuery,
+      activeReasoningEffort,
+      canSelectReasoningEffort,
       providers,
       selection,
     ],
@@ -135,12 +166,12 @@ export function useComposerCommandMenu({
   const commandMenuIsVisible =
     isFocused &&
     !menuIsDismissed &&
-    !isModelCommandAccepted &&
+    !isCommandAccepted &&
     matchingCommands.length > 0;
-  const modelMenuIsVisible =
+  const actionMenuIsVisible =
     isFocused &&
     !menuIsDismissed &&
-    isModelCommandAccepted;
+    isCommandAccepted;
 
   const commandItems = useMemo<readonly ComposerCommandMenuItem[]>(
     () => matchingCommands.map((command) => ({
@@ -161,9 +192,28 @@ export function useComposerCommandMenu({
     })),
     [modelSuggestions],
   );
-  const visibleItems = modelMenuIsVisible ? modelItems : commandItems;
-  const fallbackIndex = modelMenuIsVisible
-    ? Math.max(0, modelSuggestions.findIndex((model) => model.isSelected))
+  const reasoningItems = useMemo<readonly ComposerCommandMenuItem[]>(
+    () => reasoningSuggestions.map((suggestion) => ({
+      itemId: suggestion.suggestionId,
+      badge: formatReasoningEffort(suggestion.suggestionId),
+      title: suggestion.title,
+      description: suggestion.description,
+      isCurrent: suggestion.isSelected,
+    })),
+    [reasoningSuggestions],
+  );
+  const actionItems = acceptedCommandId === "reasoning"
+    ? reasoningItems
+    : modelItems;
+  const actionSuggestions = acceptedCommandId === "reasoning"
+    ? reasoningSuggestions
+    : modelSuggestions;
+  const visibleItems = actionMenuIsVisible ? actionItems : commandItems;
+  const fallbackIndex = actionMenuIsVisible
+    ? Math.max(
+        0,
+        actionSuggestions.findIndex((suggestion) => suggestion.isSelected),
+      )
     : 0;
   const visibleActiveIndex = activeIndex >= 0 && activeIndex < visibleItems.length
     ? activeIndex
@@ -177,24 +227,30 @@ export function useComposerCommandMenu({
           activeIndex: visibleActiveIndex,
           emptyMessage: null,
         }
-      : modelMenuIsVisible
+      : actionMenuIsVisible
         ? {
             menuId,
-            label: "Choose a model",
-            items: modelItems,
+            label: acceptedCommandId === "reasoning"
+              ? "Choose reasoning effort"
+              : "Choose a model",
+            items: actionItems,
             activeIndex: visibleActiveIndex,
-            emptyMessage: canSelectModel
-              ? "No matching models. Press Esc to keep this as a prompt."
-              : "Model switching is unavailable while rrbox is busy.",
+            emptyMessage: commandEmptyMessage(
+              acceptedCommandId,
+              canSelectModel,
+              canSelectReasoningEffort,
+            ),
           }
         : null,
     [
       canSelectModel,
+      canSelectReasoningEffort,
+      acceptedCommandId,
+      actionItems,
+      actionMenuIsVisible,
       commandItems,
       commandMenuIsVisible,
       menuId,
-      modelItems,
-      modelMenuIsVisible,
       visibleActiveIndex,
     ],
   );
@@ -205,7 +261,9 @@ export function useComposerCommandMenu({
       updateInteraction((current) => ({
         dismissedDraft: null,
         activeIndex: 0,
-        acceptedCommandId: modelCommandQuery(nextDraft) === null
+        acceptedCommandId:
+          current.acceptedCommandId === null ||
+          composerCommandQuery(nextDraft, current.acceptedCommandId) === null
           ? null
           : current.acceptedCommandId,
       }));
@@ -278,10 +336,18 @@ export function useComposerCommandMenu({
         return "handled";
       }
 
-      const model = modelSuggestions[selectedIndex];
-      if (!model || !canSelectModel) return "handled";
-      if (!model.isSelected) {
-        onSelectModel(model.providerId, model.modelId);
+      if (acceptedCommandId === "reasoning") {
+        const suggestion = reasoningSuggestions[selectedIndex];
+        if (!suggestion || !canSelectReasoningEffort) return "handled";
+        if (!suggestion.isSelected) {
+          onSelectReasoningEffort(suggestion.suggestionId);
+        }
+      } else {
+        const model = modelSuggestions[selectedIndex];
+        if (!model || !canSelectModel) return "handled";
+        if (!model.isSelected) {
+          onSelectModel(model.providerId, model.modelId);
+        }
       }
       updateInteraction({
         acceptedCommandId: null,
@@ -294,6 +360,8 @@ export function useComposerCommandMenu({
     },
     [
       canSelectModel,
+      canSelectReasoningEffort,
+      acceptedCommandId,
       commandMenuIsVisible,
       draft,
       focusComposer,
@@ -302,6 +370,8 @@ export function useComposerCommandMenu({
       modelSuggestions,
       onDraftChange,
       onSelectModel,
+      onSelectReasoningEffort,
+      reasoningSuggestions,
       updateInteraction,
     ],
   );
@@ -335,4 +405,19 @@ export function useComposerCommandMenu({
     handleBlur,
     prepareLiteralSubmit,
   };
+}
+
+function commandEmptyMessage(
+  commandId: ComposerCommandId | null,
+  canSelectModel: boolean,
+  canSelectReasoningEffort: boolean,
+): string {
+  if (commandId === "reasoning") {
+    return canSelectReasoningEffort
+      ? "No matching efforts. Press Esc to keep this as a prompt."
+      : "Reasoning changes are unavailable while rrbox is busy.";
+  }
+  return canSelectModel
+    ? "No matching models. Press Esc to keep this as a prompt."
+    : "Model switching is unavailable while rrbox is busy.";
 }

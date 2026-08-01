@@ -56,6 +56,7 @@ import { MarkdownContent } from "./MarkdownContent.tsx";
 import { isStreamingAssistantText } from "./markdown.ts";
 import { ModelSelector } from "./ModelSelector.tsx";
 import { PluginsPage } from "./PluginsPage.tsx";
+import { ReasoningEffortSelector } from "./ReasoningEffortSelector.tsx";
 import { SummaryReviewDialog } from "./SummaryReviewDialog.tsx";
 import {
   loadPluginSettings,
@@ -183,6 +184,7 @@ export function ResearchBoxViewer({
     revertWorkspaceChange,
     selectNewChat,
     selectModel,
+    selectReasoningEffort,
     refreshProvider,
     renameSession,
     deleteSession,
@@ -335,7 +337,7 @@ export function ResearchBoxViewer({
     !isWorkspaceTransferPending &&
     !coreState.is_running &&
     coreState.pending_prompt === null;
-  const isModelSelectionDisabled =
+  const isChatConfigurationDisabled =
     !coreState.is_ready ||
     coreState.is_running ||
     isManagementPending ||
@@ -351,9 +353,12 @@ export function ResearchBoxViewer({
     }`,
     providers: coreState.providers,
     selection: coreState.active_model,
-    canSelectModel: !isModelSelectionDisabled,
+    activeReasoningEffort: coreState.active_reasoning_effort,
+    canSelectModel: !isChatConfigurationDisabled,
+    canSelectReasoningEffort: !isChatConfigurationDisabled,
     onDraftChange: updateInputDraft,
     onSelectModel: selectModel,
+    onSelectReasoningEffort: selectReasoningEffort,
     focusComposer,
   });
   const submitDraft = useCallback(
@@ -583,7 +588,7 @@ export function ResearchBoxViewer({
             <ModelSelector
               providers={coreState.providers}
               selection={coreState.active_model}
-              selectionDisabled={isModelSelectionDisabled}
+              selectionDisabled={isChatConfigurationDisabled}
               onSelect={selectModel}
               onRefresh={refreshProvider}
               refreshingProviderIds={refreshingProviderIds}
@@ -740,10 +745,21 @@ export function ResearchBoxViewer({
                       <button type="button" aria-label="Add attachment">
                         <Plus size={19} />
                       </button>
-                      <button type="button" className="tools-pill">
+                      <button
+                        type="button"
+                        className="tools-pill"
+                        aria-label="Tools"
+                      >
                         <SlidersHorizontal size={16} />
                         <span>Tools</span>
                       </button>
+                      <ReasoningEffortSelector
+                        providers={coreState.providers}
+                        selection={coreState.active_model}
+                        effort={coreState.active_reasoning_effort}
+                        selectionDisabled={isChatConfigurationDisabled}
+                        onSelect={selectReasoningEffort}
+                      />
                     </div>
                     <div className="composer-actions">
                       <button type="button" aria-label="Attach a file">

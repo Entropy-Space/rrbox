@@ -17,6 +17,7 @@ import {
   type CoreStateSnapshot,
   type FileEntry,
   type ModelSelection,
+  type ReasoningEffort,
   type ToolCallBlock,
   type ToolResultEntry,
   type ViewerCommand,
@@ -403,6 +404,7 @@ export class ResearchBoxCore {
       session_id: current.active_session_id,
     };
     const previousModel = this.getActiveModelSelection();
+    const previousReasoningEffort = this.getActiveReasoningEffort();
     this.installCommittedState(loaded, requestedSelection);
 
     const refreshed = this.requireState();
@@ -411,7 +413,8 @@ export class ResearchBoxCore {
       refreshed.active_project_id !== requestedSelection.project_id ||
       refreshed.active_session_id !== requestedSelection.session_id ||
       nextModel.provider_id !== previousModel.provider_id ||
-      nextModel.model_id !== previousModel.model_id;
+      nextModel.model_id !== previousModel.model_id ||
+      this.getActiveReasoningEffort() !== previousReasoningEffort;
     if (activationRequired) {
       if (this.runtime?.is_running) {
         this.selectionActivationPending = true;
@@ -524,6 +527,12 @@ export class ResearchBoxCore {
       case "model_select":
         await this.selectModel(command.payload, command.request_id);
         return;
+      case "reasoning_effort_select":
+        await this.selectReasoningEffort(
+          command.payload,
+          command.request_id,
+        );
+        return;
       case "input_draft_update":
         await this.updateInputDraft(
           command.payload.project_id,
@@ -605,6 +614,10 @@ export class ResearchBoxCore {
         );
         return;
       }
+      const registeredModel = this.requireActiveModel();
+      if (this.runtime && !this.runtime.usesModel(registeredModel)) {
+        await this.activateSelection();
+      }
 
       if (command.payload.session_id === null) {
         const currentProject = this.requireProject(
@@ -616,6 +629,7 @@ export class ResearchBoxCore {
           deriveSessionTitle(promptText),
           false,
           currentProject.new_chat_model,
+          currentProject.new_chat_reasoning_effort,
         );
         const staged = stagePrompt(created.document, promptText);
         try {
@@ -1095,9 +1109,81 @@ export class ResearchBoxCore {
       const project = findProject(draft, payload.project_id);
       if (payload.session_id === null) {
         project.new_chat_model = selection;
+        if (
+          !this.modelSupportsReasoningEffort(
+            selection,
+            project.new_chat_reasoning_effort,
+          )
+        ) {
+          project.new_chat_reasoning_effort = "default";
+        }
       } else {
         const session = findSession(draft, payload.session_id);
         session.selected_model = selection;
+        if (
+          !this.modelSupportsReasoningEffort(
+            selection,
+            session.reasoning_effort,
+          )
+        ) {
+          session.reasoning_effort = "default";
+        }
+        session.updated_at = now;
+      }
+      project.updated_at = now;
+      return draft;
+    });
+    await this.activateSelection();
+    await this.emitStateSnapshot(requestId);
+  }
+
+  private async selectReasoningEffort(
+    payload: Extract<
+      ViewerCommand,
+      { type: "reasoning_effort_select" }
+    >["payload"],
+    requestId: string,
+  ): Promise<void> {
+    if (
+      !this.validateActiveSelection(
+        payload.project_id,
+        payload.session_id,
+        requestId,
+      )
+    ) {
+      return;
+    }
+    if (!this.ensureManagementIdle(requestId)) return;
+
+    const activeModel = this.getActiveModelSelection();
+    if (
+      !this.modelSupportsReasoningEffort(
+        activeModel,
+        payload.reasoning_effort,
+      )
+    ) {
+      this.emitError(
+        "reasoning_effort_unavailable",
+        "That reasoning effort is not available for the selected model.",
+        requestId,
+        payload.project_id,
+        payload.session_id ?? undefined,
+      );
+      return;
+    }
+    if (this.getActiveReasoningEffort() === payload.reasoning_effort) {
+      await this.emitStateSnapshot(requestId);
+      return;
+    }
+
+    const now = new Date().toISOString();
+    await this.commitMutation((draft) => {
+      const project = findProject(draft, payload.project_id);
+      if (payload.session_id === null) {
+        project.new_chat_reasoning_effort = payload.reasoning_effort;
+      } else {
+        const session = findSession(draft, payload.session_id);
+        session.reasoning_effort = payload.reasoning_effort;
         session.updated_at = now;
       }
       project.updated_at = now;
@@ -1315,6 +1401,24 @@ export class ResearchBoxCore {
       : this.requireSession(state.active_session_id).selected_model;
   }
 
+  private getActiveReasoningEffort(): ReasoningEffort {
+    const state = this.requireState();
+    return state.active_session_id === null
+      ? this.requireProject(state.active_project_id)
+          .new_chat_reasoning_effort
+      : this.requireSession(state.active_session_id).reasoning_effort;
+  }
+
+  private modelSupportsReasoningEffort(
+    selection: ModelSelection,
+    effort: ReasoningEffort,
+  ): boolean {
+    if (effort === "default") return true;
+    return this.providerCatalog
+      .getModel(selection)
+      ?.reasoning_efforts.includes(effort) === true;
+  }
+
   private isModelReady(selection: ModelSelection): boolean {
     return this.providerCatalog.isModelReady(selection);
   }
@@ -1345,6 +1449,7 @@ export class ResearchBoxCore {
             workspace,
             model_transport: this.modelTransport,
             model: this.requireActiveModel(),
+            reasoning_effort: this.getActiveReasoningEffort(),
             resolve_model: (selection) =>
               this.providerCatalog.isModelReady(selection)
                 ? this.providerCatalog.getModel(selection)
@@ -1626,6 +1731,7 @@ export class ResearchBoxCore {
         })),
       providers: catalog.providers,
       active_model: { ...activeModel },
+      active_reasoning_effort: this.getActiveReasoningEffort(),
       active_project_id: state.active_project_id,
       active_session_id: state.active_session_id,
       input_draft:
@@ -2366,6 +2472,7 @@ function createProjectRecord(
     last_session_id: null,
     new_chat_draft: "",
     new_chat_model: { ...modelSelection },
+    new_chat_reasoning_effort: "default",
   };
 }
 
@@ -2374,6 +2481,7 @@ function createSessionRecord(
   title: string,
   titleIsCustom: boolean,
   modelSelection: ModelSelection,
+  reasoningEffort: ReasoningEffort,
 ): { session: SessionRecord; document: SessionDocument } {
   const sessionId = crypto.randomUUID();
   const now = new Date().toISOString();
@@ -2386,6 +2494,7 @@ function createSessionRecord(
       created_at: now,
       updated_at: now,
       selected_model: { ...modelSelection },
+      reasoning_effort: reasoningEffort,
     },
     document: {
       format_version: SESSION_DOCUMENT_FORMAT_VERSION,

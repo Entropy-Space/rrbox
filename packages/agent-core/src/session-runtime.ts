@@ -17,6 +17,7 @@ import {
   type AssistantMessageEntry,
   type CoreEvent,
   type ModelSelection,
+  type ReasoningEffort,
   type SummaryReviewRequest,
   type SummaryReviewResolution,
   type ToolCallBlock,
@@ -52,6 +53,7 @@ export type SessionRuntimeOptions = {
   workspace: WorkspaceController;
   model_transport: ModelTransport;
   model: Model<string>;
+  reasoning_effort: ReasoningEffort;
   resolve_model?: (selection: ModelSelection) => Model<string> | undefined;
   system_prompt: string;
   plugins?: readonly AgentPlugin[];
@@ -134,6 +136,7 @@ export class SessionRuntime {
   private readonly workspace: WorkspaceController;
   private readonly eventSink: CoreEventSink;
   private readonly checkpoint: SessionRuntimeOptions["checkpoint"];
+  private readonly model: Model<string>;
   private readonly agent: Agent;
   private readonly unsubscribe: () => void;
   private activeRun: ActiveRun | null = null;
@@ -147,11 +150,16 @@ export class SessionRuntime {
     this.workspace = options.workspace;
     this.eventSink = options.event_sink;
     this.checkpoint = options.checkpoint;
+    this.model = options.model;
     this.agent = new Agent({
       initialState: {
         systemPrompt: options.system_prompt,
         model: options.model,
-        thinkingLevel: options.model.reasoning ? "medium" : "off",
+        thinkingLevel:
+          options.reasoning_effort === "default" ||
+          options.reasoning_effort === "none"
+            ? "off"
+            : options.reasoning_effort,
         tools: createAgentPluginTools(
           options.plugins ?? [],
           {
@@ -175,7 +183,10 @@ export class SessionRuntime {
         messages: timelineToAgentMessages(options.document.timeline),
       },
       sessionId: options.session_id,
-      streamFn: createModelStreamFn(options.model_transport),
+      streamFn: createModelStreamFn(
+        options.model_transport,
+        options.reasoning_effort === "none" ? "none" : undefined,
+      ),
       toolExecution: "sequential",
     });
     this.unsubscribe = this.agent.subscribe((event) =>
@@ -185,6 +196,10 @@ export class SessionRuntime {
 
   get is_running(): boolean {
     return this.activeRun !== null || this.agent.state.isStreaming;
+  }
+
+  usesModel(model: Model<string>): boolean {
+    return this.model === model;
   }
 
   bindDocument(document: SessionDocument): void {

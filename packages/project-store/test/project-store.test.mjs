@@ -511,7 +511,7 @@ test("v1 migration preserves nonempty sessions as v4 timelines", () => {
   );
 });
 
-test("schema-v2 migration adds model defaults and migrates its document", () => {
+test("schema-v2 migration adds command defaults and migrates its document", () => {
   const draft = createTranscriptState();
   draft.schema_version = 2;
   draft.projects[0].new_chat_draft = "new chat draft";
@@ -522,7 +522,7 @@ test("schema-v2 migration adds model defaults and migrates its document", () => 
   const result = parseProjectStoreStateWithMigration(draft);
 
   assert.equal(result.was_migrated, true);
-  assert.equal(result.state.schema_version, 3);
+  assert.equal(result.state.schema_version, 4);
   assert.deepEqual(
     result.state.projects[0].new_chat_model,
     createDefaultModelSelection(),
@@ -531,12 +531,28 @@ test("schema-v2 migration adds model defaults and migrates its document", () => 
     result.state.sessions[0].selected_model,
     createDefaultModelSelection(),
   );
+  assert.equal(result.state.projects[0].new_chat_reasoning_effort, "default");
+  assert.equal(result.state.sessions[0].reasoning_effort, "default");
   assert.equal(result.state.projects[0].new_chat_draft, "new chat draft");
   assert.equal(result.state.documents[0].input_draft, "session draft");
   assert.equal(
     result.state.documents[0].format_version,
     SESSION_DOCUMENT_FORMAT_VERSION,
   );
+});
+
+test("schema-v3 migration adds reasoning effort defaults", () => {
+  const draft = createState(1);
+  draft.schema_version = 3;
+  delete draft.projects[0].new_chat_reasoning_effort;
+  delete draft.sessions[0].reasoning_effort;
+
+  const result = parseProjectStoreStateWithMigration(draft);
+
+  assert.equal(result.was_migrated, true);
+  assert.equal(result.state.schema_version, 4);
+  assert.equal(result.state.projects[0].new_chat_reasoning_effort, "default");
+  assert.equal(result.state.sessions[0].reasoning_effort, "default");
 });
 
 test("project store rejects broken timeline and ownership invariants", () => {
@@ -644,6 +660,7 @@ test("draft writes reject missing and cross-project targets", async () => {
     last_session_id: null,
     new_chat_draft: "",
     new_chat_model: createDefaultModelSelection(),
+    new_chat_reasoning_effort: "default",
   });
   await store.save(state, null);
 
@@ -668,7 +685,7 @@ test("draft writes reject missing and cross-project targets", async () => {
 
 function createState(stateRevision) {
   return {
-    schema_version: 3,
+    schema_version: 4,
     state_revision: stateRevision,
     active_project_id: "project-1",
     active_session_id: "session-1",
@@ -680,7 +697,7 @@ function createState(stateRevision) {
 
 function createVirtualState(stateRevision) {
   return {
-    schema_version: 3,
+    schema_version: 4,
     state_revision: stateRevision,
     active_project_id: "project-1",
     active_session_id: null,
@@ -699,6 +716,7 @@ function createProjectRecord(lastSessionId) {
     last_session_id: lastSessionId,
     new_chat_draft: "",
     new_chat_model: createDefaultModelSelection(),
+    new_chat_reasoning_effort: "default",
   };
 }
 
@@ -711,6 +729,7 @@ function createSessionRecord(sessionId, title) {
     created_at: TIMESTAMP,
     updated_at: TIMESTAMP,
     selected_model: createDefaultModelSelection(),
+    reasoning_effort: "default",
   };
 }
 

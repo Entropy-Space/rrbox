@@ -1228,6 +1228,7 @@ test("core bootstrap isolates a malformed OPFS receipt without denying its commi
       provider_id: testModel.provider,
       model_id: testModel.id,
     },
+    reasoning_effort: "default",
   });
   initial.documents.push({
     format_version: SESSION_DOCUMENT_FORMAT_VERSION,

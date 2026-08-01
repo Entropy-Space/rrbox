@@ -61,6 +61,11 @@ test("parses a model request with a serialized conversation and tools", () => {
   assert.equal(request.messages[2]?.role, "tool");
   assert.equal(request.tools[0]?.name, "list_files");
   assert.equal(request.reasoning_effort, "medium");
+  assert.equal(
+    parseModelRequest({ ...modelRequest, reasoning_effort: "none" })
+      .reasoning_effort,
+    "none",
+  );
   assert.throws(
     () =>
       parseModelRequest({
@@ -83,16 +88,20 @@ test("model descriptors default reasoning-effort support independently", () => {
     supports_reasoning: true,
   };
 
-  assert.equal(
-    parseModelDescriptor(descriptor).supports_reasoning_effort,
-    false,
-  );
-  assert.equal(
+  assert.deepEqual(parseModelDescriptor(descriptor).reasoning_efforts, []);
+  assert.deepEqual(
     parseModelDescriptor({
       ...descriptor,
       supports_reasoning_effort: true,
-    }).supports_reasoning_effort,
-    true,
+    }).reasoning_efforts,
+    ["minimal", "low", "medium", "high", "xhigh"],
+  );
+  assert.deepEqual(
+    parseModelDescriptor({
+      ...descriptor,
+      reasoning_efforts: ["none", "low", "high"],
+    }).reasoning_efforts,
+    ["none", "low", "high"],
   );
 });
 

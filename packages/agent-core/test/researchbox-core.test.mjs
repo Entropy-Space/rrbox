@@ -1310,6 +1310,142 @@ test("model selection is chat-scoped and survives first send and reload", async 
   });
 });
 
+test("reasoning effort is chat-scoped, provider-visible, and capability-safe", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const requests = [];
+  const reasoningModel = {
+    ...localModel,
+    reasoning: true,
+    supports_reasoning_effort: true,
+    reasoning_efforts: ["none", "low", "medium", "high"],
+  };
+  const createConfiguredCore = (eventSink) =>
+    new ResearchBoxCore({
+      projectStore: store,
+      workspaceBackend: provider,
+      modelTransport: {
+        async *stream(request) {
+          requests.push(structuredClone(request));
+          yield { type: "done", stop_reason: "stop" };
+        },
+      },
+      model,
+      providers: [
+        {
+          provider_id: model.provider,
+          display_name: "rrbox",
+          kind: "mock",
+          models: [model],
+        },
+        {
+          provider_id: reasoningModel.provider,
+          display_name: "Local OpenAI",
+          kind: "openai_compatible",
+          models: [reasoningModel],
+        },
+      ],
+      systemPrompt: "You are a test agent.",
+      eventSink,
+    });
+
+  const core = createConfiguredCore((event) => events.push(event));
+  await core.handle(createCommand("bootstrap", {}));
+  const projectId = latestState(events).active_project_id;
+  await core.handle(createCommand("model_select", {
+    project_id: projectId,
+    session_id: null,
+    provider_id: reasoningModel.provider,
+    model_id: reasoningModel.id,
+  }));
+  await core.handle(createCommand("reasoning_effort_select", {
+    project_id: projectId,
+    session_id: null,
+    reasoning_effort: "high",
+  }));
+  assert.equal(latestState(events).active_reasoning_effort, "high");
+  assert.equal(
+    (await store.load()).projects[0].new_chat_reasoning_effort,
+    "high",
+  );
+
+  await core.handle(createCommand("prompt", {
+    project_id: projectId,
+    session_id: null,
+    text: "Think carefully",
+  }));
+  const sessionId = latestState(events).active_session_id;
+  assert.equal(requests[0].reasoning_effort, "high");
+  assert.equal((await store.load()).sessions[0].reasoning_effort, "high");
+
+  await core.handle(createCommand("reasoning_effort_select", {
+    project_id: projectId,
+    session_id: sessionId,
+    reasoning_effort: "none",
+  }));
+  await core.handle(createCommand("prompt", {
+    project_id: projectId,
+    session_id: sessionId,
+    text: "Answer directly",
+  }));
+  assert.equal(requests[1].reasoning_effort, "none");
+
+  await core.handle(createCommand("reasoning_effort_select", {
+    project_id: projectId,
+    session_id: sessionId,
+    reasoning_effort: "default",
+  }));
+  await core.handle(createCommand("prompt", {
+    project_id: projectId,
+    session_id: sessionId,
+    text: "Use the provider default",
+  }));
+  assert.equal("reasoning_effort" in requests[2], false);
+
+  await core.handle(createCommand("new_chat", { project_id: projectId }));
+  assert.equal(latestState(events).active_reasoning_effort, "high");
+  await core.handle(createCommand("model_select", {
+    project_id: projectId,
+    session_id: null,
+    provider_id: model.provider,
+    model_id: model.id,
+  }));
+  assert.equal(latestState(events).active_reasoning_effort, "default");
+
+  await core.handle(createCommand("reasoning_effort_select", {
+    project_id: projectId,
+    session_id: null,
+    reasoning_effort: "high",
+  }));
+  assert.equal(
+    events.findLast((event) => event.type === "error").payload.code,
+    "reasoning_effort_unavailable",
+  );
+  assert.equal(latestState(events).active_reasoning_effort, "default");
+
+  const reloadedEvents = [];
+  const reloaded = createConfiguredCore((event) => reloadedEvents.push(event));
+  await reloaded.handle(createCommand("bootstrap", {
+    active_project_id: projectId,
+    active_session_id: sessionId,
+  }));
+  assert.equal(latestState(reloadedEvents).active_reasoning_effort, "default");
+
+  await core.handle(createCommand("session_select", {
+    project_id: projectId,
+    session_id: sessionId,
+  }));
+  await core.handle(createCommand("reasoning_effort_select", {
+    project_id: projectId,
+    session_id: sessionId,
+    reasoning_effort: "low",
+  }));
+  await waitForCondition(
+    () => latestState(reloadedEvents).active_reasoning_effort === "low",
+  );
+});
+
 test("dynamic providers refresh, reject non-tool models, and recover", async () => {
   const store = new MemoryProjectStore();
   const provider = createWorkspaceProvider();
@@ -1563,6 +1699,120 @@ test("persisted dynamic model becomes ready after reload discovery", async () =>
     "ready",
   );
   assert.deepEqual(refreshedState.active_model, readyState.active_model);
+});
+
+test("reload uses refreshed capabilities for a persisted reasoning session", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const requests = [];
+  const descriptor = {
+    provider_id: "local-openai",
+    provider_display_name: "Local OpenAI",
+    model_id: "persisted-reasoning-model",
+    display_name: "Persisted reasoning model",
+    context_window: 128_000,
+    max_output_tokens: 8_192,
+    supports_tools: true,
+    supports_reasoning: true,
+    supports_reasoning_effort: true,
+    reasoning_efforts: ["none", "low", "medium", "high"],
+  };
+  const providers = [
+    {
+      provider_id: model.provider,
+      display_name: "rrbox",
+      kind: "mock",
+      models: [model],
+    },
+    {
+      provider_id: descriptor.provider_id,
+      display_name: descriptor.provider_display_name,
+      kind: "openai_compatible",
+      discover_models: true,
+    },
+  ];
+  const createDynamicCore = (modelCatalog, eventSink) =>
+    new ResearchBoxCore({
+      projectStore: store,
+      workspaceBackend: provider,
+      modelTransport: {
+        async *stream(request) {
+          requests.push(structuredClone(request));
+          yield { type: "done", stop_reason: "stop" };
+        },
+      },
+      modelCatalog,
+      model,
+      providers,
+      systemPrompt: "You are a test agent.",
+      eventSink,
+    });
+
+  const initialEvents = [];
+  const initial = createDynamicCore(
+    {
+      async listModels() {
+        return [descriptor];
+      },
+    },
+    (event) => initialEvents.push(event),
+  );
+  await initial.handle(createCommand("bootstrap", {}));
+  await initial.handle(createCommand("provider_refresh", {
+    provider_id: descriptor.provider_id,
+  }));
+  const projectId = latestState(initialEvents).active_project_id;
+  await initial.handle(createCommand("model_select", {
+    project_id: projectId,
+    session_id: null,
+    provider_id: descriptor.provider_id,
+    model_id: descriptor.model_id,
+  }));
+  await initial.handle(createCommand("reasoning_effort_select", {
+    project_id: projectId,
+    session_id: null,
+    reasoning_effort: "high",
+  }));
+  await initial.handle(createCommand("prompt", {
+    project_id: projectId,
+    session_id: null,
+    text: "Create a persisted reasoning session.",
+  }));
+  const sessionId = latestState(initialEvents).active_session_id;
+  assert.equal(requests.at(-1).reasoning_effort, "high");
+  await initial.dispose();
+
+  let releaseDiscovery;
+  const discovery = new Promise((resolve) => {
+    releaseDiscovery = resolve;
+  });
+  const reloadedEvents = [];
+  const reloaded = createDynamicCore(
+    {
+      async listModels() {
+        return discovery;
+      },
+    },
+    (event) => reloadedEvents.push(event),
+  );
+  await reloaded.handle(createCommand("bootstrap", {
+    active_project_id: projectId,
+    active_session_id: sessionId,
+  }));
+  const refresh = reloaded.handle(createCommand("provider_refresh", {
+    provider_id: descriptor.provider_id,
+  }));
+  releaseDiscovery([descriptor]);
+  await refresh;
+
+  await reloaded.handle(createCommand("prompt", {
+    project_id: projectId,
+    session_id: sessionId,
+    text: "Use the restored high effort.",
+  }));
+
+  assert.equal(requests.at(-1).reasoning_effort, "high");
+  await reloaded.dispose();
 });
 
 test("provider refresh recovers when its loading snapshot fails", async () => {

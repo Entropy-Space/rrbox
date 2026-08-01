@@ -2650,7 +2650,7 @@
 }
 
 .composer {
-  overflow: hidden;
+  overflow: visible;
   padding: 10px 10px 8px 14px;
   border: 1px solid var(--line-strong);
   border-radius: 26px;
@@ -2730,6 +2730,160 @@
   border: 1px solid var(--line);
   border-radius: 999px;
   font-size: 12px;
+}
+
+.reasoning-effort-root {
+  position: relative;
+}
+
+.composer-controls .reasoning-effort-trigger {
+  display: flex;
+  width: auto;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.reasoning-effort-trigger > span {
+  overflow: hidden;
+  max-width: 72px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reasoning-effort-trigger > svg:last-child {
+  color: var(--muted);
+  transition: transform 150ms ease;
+}
+
+.reasoning-effort-trigger[aria-expanded="true"] {
+  background: var(--soft);
+  color: var(--ink);
+}
+
+.reasoning-effort-trigger[aria-expanded="true"] > svg:last-child {
+  transform: rotate(180deg);
+}
+
+.reasoning-effort-popover {
+  position: absolute;
+  z-index: 6;
+  bottom: calc(100% + 10px);
+  left: 0;
+  overflow: hidden;
+  width: min(330px, calc(100vw - 96px));
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: var(--canvas);
+  box-shadow:
+    0 18px 48px rgba(0, 0, 0, 0.16),
+    0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.reasoning-effort-header {
+  display: flex;
+  min-height: 48px;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 14px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.reasoning-effort-header strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.reasoning-effort-header span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.reasoning-effort-options {
+  display: grid;
+  max-height: min(330px, 44dvh);
+  gap: 2px;
+  padding: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.composer-controls .reasoning-effort-option {
+  display: flex;
+  width: 100%;
+  height: auto;
+  min-height: 52px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+
+.composer-controls .reasoning-effort-option:hover,
+.composer-controls .reasoning-effort-option:focus-visible,
+.composer-controls .reasoning-effort-option.selected {
+  background: var(--soft);
+}
+
+.composer-controls .reasoning-effort-option[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.reasoning-effort-option > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.reasoning-effort-option strong,
+.reasoning-effort-option small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reasoning-effort-option strong {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.reasoning-effort-option small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.reasoning-effort-option > svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+  opacity: 0;
+}
+
+.reasoning-effort-option.selected > svg {
+  opacity: 1;
+}
+
+.reasoning-effort-notice {
+  margin: 0;
+  padding: 9px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--soft);
+  color: var(--muted-strong);
+  font-size: 10px;
+  line-height: 1.4;
 }
 
 .composer-controls .send-button {
@@ -3617,6 +3771,26 @@
     display: none;
   }
 
+  .composer-controls .tools-pill {
+    width: 34px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .composer-controls .tools-pill > span {
+    display: none;
+  }
+
+  .composer-controls .reasoning-effort-trigger {
+    gap: 4px;
+    padding: 0 7px;
+  }
+
+  .reasoning-effort-popover {
+    left: -52px;
+    width: min(330px, calc(100vw - 40px));
+  }
+
   .message-actions {
     opacity: 1;
   }
@@ -3690,6 +3864,12 @@
 
   .chat-search-panel {
     max-height: 82dvh;
+  }
+}
+
+@media (max-width: 360px) {
+  .composer-controls .tools-pill {
+    display: none;
   }
 }
 

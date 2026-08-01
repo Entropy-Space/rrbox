@@ -1,6 +1,7 @@
 "use client";
 
 export * from "./ModelSelector.tsx";
+export * from "./ReasoningEffortSelector.tsx";
 export * from "./plugin-settings.ts";
 export * from "./ResearchBoxViewer.tsx";
 export * from "./WorkspaceChangeReview.tsx";

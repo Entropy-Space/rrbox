@@ -9,7 +9,7 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v23 command", () => {
+test("round-trips every protocol-v24 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("bootstrap", {
@@ -33,6 +33,11 @@ test("round-trips every protocol-v23 command", () => {
       session_id: "s1",
       provider_id: "local-openai",
       model_id: "gpt-5.4",
+    }),
+    createCommand("reasoning_effort_select", {
+      project_id: "p1",
+      session_id: "s1",
+      reasoning_effort: "none",
     }),
     createCommand("provider_refresh", { provider_id: "local-openai" }),
     createCommand("session_update", {
@@ -1601,6 +1606,7 @@ function createPersistedState() {
       provider_id: "researchbox",
       model_id: "researchbox-mock",
     },
+    active_reasoning_effort: "high",
     active_project_id: "project-1",
     active_session_id: "session-1",
     input_draft: "draft reply",
@@ -1629,6 +1635,7 @@ function createVirtualState() {
       provider_id: "researchbox",
       model_id: "researchbox-mock",
     },
+    active_reasoning_effort: "default",
     active_project_id: "project-1",
     active_session_id: null,
     input_draft: "  unfinished message\n",
@@ -1650,6 +1657,7 @@ function createMockProvider() {
         model_id: "researchbox-mock",
         display_name: "rrbox Mock",
         availability: "ready",
+        reasoning_efforts: ["none", "low", "medium", "high"],
       },
     ],
   };

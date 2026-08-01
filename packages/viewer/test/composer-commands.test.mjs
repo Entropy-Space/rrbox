@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildComposerModelSuggestions,
+  buildComposerReasoningSuggestions,
+  composerCommandQuery,
+  formatReasoningEffort,
   isImeCommitKey,
   matchComposerCommands,
   modelCommandQuery,
@@ -11,11 +14,15 @@ import {
 test("slash suggestions are limited to a known command at the draft start", () => {
   assert.deepEqual(
     matchComposerCommands("/").map((command) => command.invocation),
-    ["/model"],
+    ["/model", "/reasoning"],
   );
   assert.deepEqual(
     matchComposerCommands("/Mo").map((command) => command.invocation),
     ["/model"],
+  );
+  assert.deepEqual(
+    matchComposerCommands("/rea").map((command) => command.invocation),
+    ["/reasoning"],
   );
   assert.deepEqual(matchComposerCommands("/unknown"), []);
   assert.deepEqual(matchComposerCommands("/usr/bin/env"), []);
@@ -30,6 +37,9 @@ test("a model query exists only after the accepted command inserts a space", () 
   assert.equal(modelCommandQuery("/model "), "");
   assert.equal(modelCommandQuery("/model gpt"), "gpt");
   assert.equal(modelCommandQuery("/Model gpt"), null);
+  assert.equal(composerCommandQuery("/reasoning", "reasoning"), null);
+  assert.equal(composerCommandQuery("/reasoning ", "reasoning"), "");
+  assert.equal(composerCommandQuery("/reasoning hi", "reasoning"), "hi");
 });
 
 test("model suggestions include only ready matches and mark the selection", () => {
@@ -45,12 +55,14 @@ test("model suggestions include only ready matches and mark the selection", () =
           model_id: "gpt-5.4",
           display_name: "GPT-5.4",
           availability: "ready",
+          reasoning_efforts: ["none", "low", "medium", "high"],
         },
         {
           provider_id: "openai",
           model_id: "retired",
           display_name: "Retired",
           availability: "unavailable",
+          reasoning_efforts: [],
         },
       ],
     },
@@ -80,6 +92,51 @@ test("model suggestions include only ready matches and mark the selection", () =
     ),
     [],
   );
+});
+
+test("reasoning suggestions follow the active model capability list", () => {
+  const providers = [{
+    provider_id: "openai",
+    display_name: "OpenAI",
+    kind: "openai_compatible",
+    availability: "ready",
+    models: [{
+      provider_id: "openai",
+      model_id: "gpt-5.4",
+      display_name: "GPT-5.4",
+      availability: "ready",
+      reasoning_efforts: ["none", "low", "medium", "high"],
+    }],
+  }];
+  const selection = { provider_id: "openai", model_id: "gpt-5.4" };
+
+  const suggestions = buildComposerReasoningSuggestions(
+    providers,
+    selection,
+    "medium",
+    "",
+  );
+  assert.deepEqual(
+    suggestions.map((suggestion) => suggestion.suggestionId),
+    ["default", "none", "low", "medium", "high"],
+  );
+  assert.equal(
+    suggestions.find((suggestion) => suggestion.suggestionId === "medium")
+      .isSelected,
+    true,
+  );
+  assert.deepEqual(
+    buildComposerReasoningSuggestions(
+      providers,
+      selection,
+      "medium",
+      "disable",
+    ).map((suggestion) => suggestion.suggestionId),
+    ["none"],
+  );
+  assert.equal(formatReasoningEffort("default"), "Default");
+  assert.equal(formatReasoningEffort("none"), "None");
+  assert.equal(formatReasoningEffort("xhigh"), "XHigh");
 });
 
 test("suggestion navigation wraps and recovers from an invalid index", () => {

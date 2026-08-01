@@ -11,6 +11,7 @@ const request = (prompt) => ({
   provider_id: "researchbox",
   model_id: "researchbox-mock",
   system_prompt: "Help with the workspace.",
+  reasoning_effort: "high",
   messages: [
     { role: "user", content: "Inspect the workspace." },
     {
@@ -166,6 +167,7 @@ test("round-trips search_files through the LLM worker boundary", async () => {
   const events = await collect(transport, searchRequest);
 
   assert.deepEqual(receivedRequest, searchRequest);
+  assert.equal(receivedRequest.reasoning_effort, "high");
   assert.deepEqual(events, [
     { type: "tool_call_start", content_index: 0 },
     {
@@ -719,6 +721,7 @@ function descriptor(providerId, modelId) {
     supports_tools: true,
     supports_reasoning: false,
     supports_reasoning_effort: false,
+    reasoning_efforts: [],
   };
 }
 

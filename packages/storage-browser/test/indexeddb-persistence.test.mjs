@@ -1082,7 +1082,7 @@ test("IndexedDB v1 project-store migration is persisted exactly once", async () 
   const database = new ResearchBoxDatabase(factory, databaseName);
   const store = new IndexedDbProjectStore(database);
   const expectedState = {
-    schema_version: 3,
+    schema_version: 4,
     state_revision: 8,
     active_project_id: "legacy-project",
     active_session_id: null,
@@ -1095,6 +1095,7 @@ test("IndexedDB v1 project-store migration is persisted exactly once", async () 
         last_session_id: null,
         new_chat_draft: "",
         new_chat_model: createDefaultModelSelection(),
+        new_chat_reasoning_effort: "default",
       },
     ],
     sessions: [],
@@ -1116,7 +1117,7 @@ test("IndexedDB v1 project-store migration is persisted exactly once", async () 
     await requestValue(verification.objectStore("meta").get("catalog")),
     {
       key: "catalog",
-      schema_version: 3,
+      schema_version: 4,
       state_revision: 8,
       active_project_id: "legacy-project",
       active_session_id: null,
@@ -1177,7 +1178,7 @@ test("IndexedDB v2 migration persists model selections and a v4 timeline exactly
   legacyDatabase.close();
 
   const expectedState = {
-    schema_version: 3,
+    schema_version: 4,
     state_revision: 13,
     active_project_id: "legacy-project",
     active_session_id: "legacy-session",
@@ -1190,6 +1191,7 @@ test("IndexedDB v2 migration persists model selections and a v4 timeline exactly
         last_session_id: "legacy-session",
         new_chat_draft: "new chat draft",
         new_chat_model: createDefaultModelSelection(),
+        new_chat_reasoning_effort: "default",
       },
     ],
     sessions: [
@@ -1201,6 +1203,7 @@ test("IndexedDB v2 migration persists model selections and a v4 timeline exactly
         created_at: timestamp,
         updated_at: timestamp,
         selected_model: createDefaultModelSelection(),
+        reasoning_effort: "default",
       },
     ],
     documents: [
@@ -1231,7 +1234,7 @@ test("IndexedDB v2 migration persists model selections and a v4 timeline exactly
     await requestValue(verification.objectStore("meta").get("catalog")),
     {
       key: "catalog",
-      schema_version: 3,
+      schema_version: 4,
       state_revision: 13,
       active_project_id: "legacy-project",
       active_session_id: "legacy-session",
@@ -2292,7 +2295,7 @@ test("IndexedDB project stores publish local and injected-channel changes", asyn
 function createState() {
   const timestamp = "2026-07-22T00:00:00.000Z";
   return {
-    schema_version: 3,
+    schema_version: 4,
     state_revision: 1,
     active_project_id: "project-1",
     active_session_id: "session-1",
@@ -2305,6 +2308,7 @@ function createState() {
         last_session_id: "session-1",
         new_chat_draft: "",
         new_chat_model: createDefaultModelSelection(),
+        new_chat_reasoning_effort: "default",
       },
     ],
     sessions: [
@@ -2316,6 +2320,7 @@ function createState() {
         created_at: timestamp,
         updated_at: timestamp,
         selected_model: createDefaultModelSelection(),
+        reasoning_effort: "default",
       },
     ],
     documents: [

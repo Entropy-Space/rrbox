@@ -19,11 +19,13 @@ import {
 
 test("sends selected reasoning effort through discovered browser models", async () => {
   const chatRequests = [];
+  const chatHeaders = [];
   const modelTransport = new OpenAiCompatibleModelTransport({
     provider_id: "local-openai",
     provider_display_name: "Local OpenAI",
     models_endpoint: "/models",
     chat_completions_endpoint: "/chat/completions",
+    send_session_affinity_headers: true,
     fetch_request: async (input, init) => {
       if (input === "/models") {
         return Response.json({
@@ -46,6 +48,7 @@ test("sends selected reasoning effort through discovered browser models", async 
       }
 
       assert.equal(input, "/chat/completions");
+      chatHeaders.push(new Headers(init.headers));
       chatRequests.push(JSON.parse(init.body));
       return new Response([
         "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Done\"},\"finish_reason\":\"stop\"}]}\n\n",
@@ -141,6 +144,9 @@ test("sends selected reasoning effort through discovered browser models", async 
 
     const activeSessionId = promptedState.active_session_id;
     assert.ok(activeSessionId);
+    assert.equal(chatHeaders[0].get("session_id"), activeSessionId);
+    assert.equal(chatHeaders[0].get("x-client-request-id"), activeSessionId);
+    assert.equal(chatHeaders[0].get("x-session-affinity"), activeSessionId);
 
     const resetEffort = createCommand("reasoning_effort_select", {
       project_id: initialState.active_project_id,
@@ -192,6 +198,9 @@ test("sends selected reasoning effort through discovered browser models", async 
 
     assert.equal(chatRequests[1].model, "deepseek-v4-flash");
     assert.equal(chatRequests[1].reasoning_effort, "high");
+    assert.equal(chatHeaders[1].get("session_id"), activeSessionId);
+    assert.equal(chatHeaders[1].get("x-client-request-id"), activeSessionId);
+    assert.equal(chatHeaders[1].get("x-session-affinity"), activeSessionId);
     assert.deepEqual(failures, []);
   } finally {
     coreTransport.close();

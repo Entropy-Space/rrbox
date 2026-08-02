@@ -1,4 +1,5 @@
 use std::{
+  collections::BTreeMap,
   io::{self, Read, Write},
   net::{TcpListener, TcpStream},
   sync::mpsc,
@@ -133,6 +134,42 @@ fn forwards_chat_json_only_to_the_fixed_chat_completions_path() {
   let request = server.request();
   assert_eq!(request.request_line, "POST /v1/chat/completions HTTP/1.1");
   assert_eq!(request.body, request_body.as_bytes());
+}
+
+#[test]
+fn forwards_session_affinity_headers_to_chat_completions() {
+  let server = TestServer::spawn(|mut stream| {
+    write_response(
+      &mut stream,
+      "200 OK",
+      &[("content-type", "text/event-stream")],
+      b"data: [DONE]\n\n",
+    );
+  });
+  let service = test_service(&server.base_url);
+  let (sender, receiver) = mpsc::channel();
+  let request_body = r#"{"model":"test-model","stream":true}"#;
+  let mut request = fetch_request(
+    LOCAL_OPENAI_PROVIDER_ID,
+    NativeProviderEndpoint::ChatCompletions,
+    NativeProviderMethod::Post,
+    Some(request_body.into()),
+  );
+  request.session_affinity_headers = BTreeMap::from([
+    ("session_id".into(), "session-1".into()),
+    ("x-client-request-id".into(), "session-1".into()),
+    ("x-session-affinity".into(), "session-1".into()),
+  ]);
+
+  service
+    .start_fetch(request, move |event| sender.send(event).map_err(|_| ()))
+    .expect("start chat request");
+
+  assert_complete(&collect_events(&receiver));
+  let request = server.request();
+  assert_eq!(request.header("session_id"), Some("session-1"));
+  assert_eq!(request.header("x-client-request-id"), Some("session-1"));
+  assert_eq!(request.header("x-session-affinity"), Some("session-1"));
 }
 
 #[test]
@@ -448,6 +485,7 @@ fn fetch_request(
     endpoint,
     method,
     body,
+    session_affinity_headers: BTreeMap::new(),
   }
 }
 
@@ -521,6 +559,7 @@ fn wait_for_cleanup(service: &ProviderService) {
 #[derive(Debug)]
 struct CapturedRequest {
   request_line: String,
+  headers: BTreeMap<String, String>,
   body: Vec<u8>,
 }
 
@@ -574,6 +613,15 @@ impl TestServer {
   }
 }
 
+impl CapturedRequest {
+  fn header(&self, name: &str) -> Option<&str> {
+    self
+      .headers
+      .get(&name.to_ascii_lowercase())
+      .map(String::as_str)
+  }
+}
+
 impl Drop for TestServer {
   fn drop(&mut self) {
     if let Some(handle) = self.thread.take() {
@@ -597,6 +645,14 @@ fn read_request(stream: &mut TcpStream) -> CapturedRequest {
     }
   };
   let headers = String::from_utf8(bytes[..header_end].to_vec()).expect("request headers are UTF-8");
+  let parsed_headers = headers
+    .lines()
+    .skip(1)
+    .filter_map(|line| {
+      let (name, value) = line.split_once(':')?;
+      Some((name.to_ascii_lowercase(), value.trim().to_owned()))
+    })
+    .collect();
   let content_length = headers
     .lines()
     .find_map(|line| {
@@ -613,6 +669,7 @@ fn read_request(stream: &mut TcpStream) -> CapturedRequest {
   }
   CapturedRequest {
     request_line: headers.lines().next().expect("request line").into(),
+    headers: parsed_headers,
     body: bytes[header_end..header_end + content_length].to_vec(),
   }
 }

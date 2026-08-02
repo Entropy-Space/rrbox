@@ -38,6 +38,38 @@ test("validates exact fixed-endpoint fetch requests", () => {
       }),
     /requires POST with a body/u,
   );
+  assert.deepEqual(
+    parseNativeProviderFetchRequest({
+      ...request,
+      endpoint: "chat_completions",
+      method: "post",
+      body: "{}",
+      session_affinity_headers: {
+        session_id: "session-1",
+        "x-client-request-id": "session-1",
+        "x-session-affinity": "session-1",
+      },
+    }).session_affinity_headers,
+    {
+      session_id: "session-1",
+      "x-client-request-id": "session-1",
+      "x-session-affinity": "session-1",
+    },
+  );
+  assert.throws(
+    () =>
+      parseNativeProviderFetchRequest({
+        ...request,
+        endpoint: "chat_completions",
+        method: "post",
+        body: "{}",
+        session_affinity_headers: {
+          session_id: "session-1",
+          "x-session-affinity": "session-2",
+        },
+      }),
+    /must use the same value/u,
+  );
 });
 
 test("enforces ordered response, chunk, and terminal events", () => {
@@ -120,7 +152,7 @@ test("discovers models through the constrained native fetch adapter", async () =
   const request = await requestPromise;
 
   assert.deepEqual(request, {
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     request_id: "models-request",
     operation_id: "models-operation",
     provider_id: "local-openai",
@@ -137,7 +169,7 @@ test("discovers models through the constrained native fetch adapter", async () =
     }),
   );
   channel.port1.postMessage({
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     request_id: request.request_id,
     result: {
       kind: "fetch_started",
@@ -205,12 +237,17 @@ test("preserves incremental SSE ordering through the native body stream", async 
 
   assert.equal(request.endpoint, "chat_completions");
   assert.equal(request.method, "post");
+  assert.deepEqual(request.session_affinity_headers, {
+    session_id: "session-1",
+    "x-client-request-id": "session-1",
+    "x-session-affinity": "session-1",
+  });
   const body = JSON.parse(request.body);
   assert.equal(body.model, "gpt-test");
   assert.equal(body.reasoning_effort, "high");
 
   channel.port1.postMessage({
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     request_id: request.request_id,
     result: {
       kind: "fetch_started",
@@ -292,7 +329,7 @@ test("defers cancellation until the native start acknowledgement", async () => {
 
   const cancelRequest = nextPortMessage(channel.port1);
   channel.port1.postMessage({
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     request_id: request.request_id,
     result: {
       kind: "fetch_started",
@@ -300,7 +337,7 @@ test("defers cancellation until the native start acknowledgement", async () => {
     },
   });
   assert.deepEqual(await cancelRequest, {
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     request_id: "cancel-request",
     operation_id: request.operation_id,
   });
@@ -352,7 +389,7 @@ test("honors abort after a terminal body event but before start acknowledgement"
 
   await assert.rejects(response, { name: "AbortError" });
   channel.port1.postMessage({
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     request_id: request.request_id,
     result: {
       kind: "fetch_started",
@@ -418,7 +455,7 @@ test("treats a cancellation command failure as terminal for its operation", asyn
   });
   const firstRequest = await firstRequestMessage;
   channel.port1.postMessage({
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     request_id: firstRequest.request_id,
     result: {
       kind: "fetch_started",
@@ -439,7 +476,7 @@ test("treats a cancellation command failure as terminal for its operation", asyn
   controller.abort();
   const cancelRequest = await cancelMessage;
   channel.port1.postMessage({
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     request_id: cancelRequest.request_id,
     result: {
       kind: "error",
@@ -474,7 +511,7 @@ test("fails all pending fetches on malformed correlation or close", async () => 
   });
   await requestMessage;
   channel.port1.postMessage({
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     request_id: "wrong-request",
     result: {
       kind: "fetch_started",
@@ -531,7 +568,7 @@ test("does not forward arbitrary URLs or credential headers", async () => {
 
 function providerEvent(operationId, eventIndex, event) {
   return {
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     operation_id: operationId,
     event_index: eventIndex,
     ...event,
@@ -540,7 +577,7 @@ function providerEvent(operationId, eventIndex, event) {
 
 function completeJsonFetch(port, request, body) {
   port.postMessage({
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     request_id: request.request_id,
     result: {
       kind: "fetch_started",

@@ -42,6 +42,9 @@ test("local OpenAI proxy preserves a streaming chat response", async () => {
     );
     assert.equal(init.method, "POST");
     assert.equal(init.headers.get("content-type"), "application/json");
+    assert.equal(init.headers.get("session_id"), "session-1");
+    assert.equal(init.headers.get("x-client-request-id"), "session-1");
+    assert.equal(init.headers.get("x-session-affinity"), "session-1");
     assert.equal(await new Response(init.body).text(), '{"model":"gpt-test"}');
     return new Response(
       new ReadableStream({
@@ -66,6 +69,9 @@ test("local OpenAI proxy preserves a streaming chat response", async () => {
           method: "POST",
           headers: {
             "content-type": "application/json",
+            session_id: "session-1",
+            "x-client-request-id": "session-1",
+            "x-session-affinity": "session-1",
             "x-researchbox-provider": "local-openai",
           },
           body: '{"model":"gpt-test"}',

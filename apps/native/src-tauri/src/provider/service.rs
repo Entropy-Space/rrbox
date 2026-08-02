@@ -8,7 +8,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use futures_util::StreamExt;
 use reqwest::{
   Client, Response, StatusCode,
-  header::{ACCEPT, CONTENT_TYPE},
+  header::{ACCEPT, CONTENT_TYPE, HeaderName, HeaderValue},
   redirect::Policy,
 };
 use serde_json::Value;
@@ -50,6 +50,7 @@ struct PreparedFetch {
   operation_id: String,
   endpoint: NativeProviderEndpoint,
   body: Option<String>,
+  session_affinity_headers: BTreeMap<String, String>,
   timeout: Duration,
 }
 
@@ -191,11 +192,13 @@ impl ProviderService {
         ));
       }
     };
+    validate_session_affinity_headers(request.endpoint, &request.session_affinity_headers)?;
 
     Ok(PreparedFetch {
       operation_id: request.operation_id,
       endpoint: request.endpoint,
       body: request.body,
+      session_affinity_headers: request.session_affinity_headers,
       timeout,
     })
   }
@@ -235,7 +238,7 @@ impl ProviderService {
     emitter: &mut EventEmitter,
   ) -> RunOutcome {
     let url = format!("{}{}", self.inner.base_url, prepared.endpoint.path());
-    let request = match prepared.endpoint {
+    let mut request = match prepared.endpoint {
       NativeProviderEndpoint::Models => self
         .inner
         .client
@@ -248,8 +251,11 @@ impl ProviderService {
         .header(ACCEPT, "text/event-stream")
         .header(CONTENT_TYPE, "application/json")
         .body(prepared.body.clone().unwrap_or_default()),
+    };
+    for (name, value) in &prepared.session_affinity_headers {
+      request = request.header(name, value);
     }
-    .timeout(prepared.timeout);
+    let request = request.timeout(prepared.timeout);
 
     let response = tokio::select! {
       biased;
@@ -367,6 +373,55 @@ impl ProviderService {
       .expect("lock active operations")
       .len()
   }
+}
+
+fn validate_session_affinity_headers(
+  endpoint: NativeProviderEndpoint,
+  headers: &BTreeMap<String, String>,
+) -> Result<(), ProviderServiceError> {
+  if headers.is_empty() {
+    return Ok(());
+  }
+  if endpoint != NativeProviderEndpoint::ChatCompletions {
+    return Err(ProviderServiceError::InvalidRequest(
+      "Session-affinity headers are only valid for chat completions.".into(),
+    ));
+  }
+
+  let allowed = ["session_id", "x-client-request-id", "x-session-affinity"];
+  let mut affinity_value: Option<&str> = None;
+  for (name, value) in headers {
+    if !allowed.contains(&name.as_str()) {
+      return Err(ProviderServiceError::InvalidRequest(format!(
+        "Unsupported native provider request header: {name}."
+      )));
+    }
+    HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
+      ProviderServiceError::InvalidRequest(format!(
+        "Invalid native provider request header name: {name}."
+      ))
+    })?;
+    HeaderValue::from_str(value).map_err(|_| {
+      ProviderServiceError::InvalidRequest(format!(
+        "Invalid native provider request header value for {name}."
+      ))
+    })?;
+    if value.is_empty() {
+      return Err(ProviderServiceError::InvalidRequest(format!(
+        "Native provider request header {name} must not be empty."
+      )));
+    }
+    if let Some(previous) = affinity_value {
+      if previous != value {
+        return Err(ProviderServiceError::InvalidRequest(
+          "Native provider session-affinity headers must use the same value.".into(),
+        ));
+      }
+    } else {
+      affinity_value = Some(value);
+    }
+  }
+  Ok(())
 }
 
 impl EventEmitter {

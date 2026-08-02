@@ -16,6 +16,7 @@ import {
   type NativeProviderMethod,
   type NativeProviderRequest,
   type NativeProviderResponse,
+  type NativeProviderSessionAffinityHeaders,
 } from "./wire-types.ts";
 
 const NATIVE_PROVIDER_ERROR_CODES =
@@ -52,7 +53,7 @@ export function parseNativeProviderFetchRequest(
       "endpoint",
       "method",
     ],
-    ["body"],
+    ["body", "session_affinity_headers"],
   );
 
   const providerId = requireString(record, "provider_id");
@@ -65,9 +66,20 @@ export function parseNativeProviderFetchRequest(
     record.body === undefined
       ? undefined
       : requireString(record, "body", true);
+  const sessionAffinityHeaders =
+    record.session_affinity_headers === undefined
+      ? undefined
+      : parseSessionAffinityHeaders(record.session_affinity_headers);
 
-  if (endpoint === "models" && (method !== "get" || body !== undefined)) {
-    throw new Error("The models endpoint requires GET without a body.");
+  if (
+    endpoint === "models" &&
+    (method !== "get" ||
+      body !== undefined ||
+      sessionAffinityHeaders !== undefined)
+  ) {
+    throw new Error(
+      "The models endpoint requires GET without a body or session-affinity headers.",
+    );
   }
   if (
     endpoint === "chat_completions" &&
@@ -86,6 +98,9 @@ export function parseNativeProviderFetchRequest(
     endpoint,
     method,
     ...(body === undefined ? {} : { body }),
+    ...(sessionAffinityHeaders === undefined
+      ? {}
+      : { session_affinity_headers: sessionAffinityHeaders }),
   };
 }
 
@@ -482,6 +497,37 @@ function parseHeaders(value: unknown): Record<string, string> {
     );
   }
   return Object.fromEntries(entries);
+}
+
+function parseSessionAffinityHeaders(
+  value: unknown,
+): NativeProviderSessionAffinityHeaders {
+  const record = requireRecord(value, "session_affinity_headers");
+  const allowed = new Set([
+    "session_id",
+    "x-client-request-id",
+    "x-session-affinity",
+  ]);
+  const entries = Object.entries(record).map(([name, headerValue]) => {
+    if (!allowed.has(name)) {
+      throw new Error(
+        `Unsupported native provider session-affinity header: ${name}.`,
+      );
+    }
+    if (typeof headerValue !== "string" || headerValue.length === 0) {
+      throw new Error(
+        `Native provider session-affinity header ${name} must be a non-empty string.`,
+      );
+    }
+    return [name, headerValue] as const;
+  });
+  const values = new Set(entries.map(([, headerValue]) => headerValue));
+  if (values.size > 1) {
+    throw new Error(
+      "Native provider session-affinity headers must use the same value.",
+    );
+  }
+  return Object.fromEntries(entries) as NativeProviderSessionAffinityHeaders;
 }
 
 function parseVersionedRecord(

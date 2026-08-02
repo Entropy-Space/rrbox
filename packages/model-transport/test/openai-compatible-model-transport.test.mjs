@@ -177,6 +177,40 @@ test("serializes the complete conversation and tool schemas", async () => {
   });
 });
 
+test("sends Pi-compatible session-affinity headers when enabled", async () => {
+  let sentHeaders;
+  const transport = createTransport(
+    async (_input, init) => {
+      sentHeaders = new Headers(init.headers);
+      return sseResponse([
+        'data: {"choices":[{"index":0,"delta":{"content":"Done"}}]}\n\n',
+        "data: [DONE]\n\n",
+      ]);
+    },
+    { send_session_affinity_headers: true },
+  );
+
+  await collect(transport);
+
+  assert.equal(sentHeaders.get("session_id"), "session-1");
+  assert.equal(sentHeaders.get("x-client-request-id"), "session-1");
+  assert.equal(sentHeaders.get("x-session-affinity"), "session-1");
+});
+
+test("does not send nonstandard session-affinity headers by default", async () => {
+  let sentHeaders;
+  const transport = createTransport(async (_input, init) => {
+    sentHeaders = new Headers(init.headers);
+    return sseResponse(["data: [DONE]\n\n"]);
+  });
+
+  await collect(transport);
+
+  assert.equal(sentHeaders.has("session_id"), false);
+  assert.equal(sentHeaders.has("x-client-request-id"), false);
+  assert.equal(sentHeaders.has("x-session-affinity"), false);
+});
+
 test("only projects canonical reasoning when explicitly enabled", async () => {
   let sentBody;
   const transport = createTransport(

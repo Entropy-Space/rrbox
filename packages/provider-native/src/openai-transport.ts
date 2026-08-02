@@ -28,6 +28,7 @@ export class NativeOpenAiCompatibleModelTransport
       chat_completions_endpoint:
         NATIVE_PROVIDER_CHAT_COMPLETIONS_URL,
       fetch_request: client.fetch_request,
+      send_session_affinity_headers: true,
     });
   }
 

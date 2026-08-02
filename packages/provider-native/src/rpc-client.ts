@@ -13,6 +13,7 @@ import {
   type NativeProviderRequest,
   type NativeProviderResponse,
   type NativeProviderResponseStartedEvent,
+  type NativeProviderSessionAffinityHeaders,
 } from "./wire-types.ts";
 
 export const NATIVE_PROVIDER_MODELS_URL =
@@ -117,6 +118,10 @@ export class NativeProviderRpcClient {
     request.signal.throwIfAborted();
     const endpoint = parseFetchEndpoint(request.url);
     validateRequestHeaders(request.headers, endpoint);
+    const sessionAffinityHeaders = readSessionAffinityHeaders(
+      request.headers,
+      endpoint,
+    );
     const body = await readRequestBody(request, endpoint);
     request.signal.throwIfAborted();
     return this.startFetch(
@@ -124,6 +129,7 @@ export class NativeProviderRpcClient {
       endpoint === "models" ? "get" : "post",
       body,
       request.signal,
+      sessionAffinityHeaders,
     );
   };
 
@@ -165,6 +171,7 @@ export class NativeProviderRpcClient {
     method: "get" | "post",
     body: string | undefined,
     signal: AbortSignal,
+    sessionAffinityHeaders: NativeProviderSessionAffinityHeaders,
   ): Promise<Response> {
     if (this.closed) {
       return Promise.reject(
@@ -250,6 +257,9 @@ export class NativeProviderRpcClient {
         endpoint,
         method,
         ...(body === undefined ? {} : { body }),
+        ...(Object.keys(sessionAffinityHeaders).length === 0
+          ? {}
+          : { session_affinity_headers: sessionAffinityHeaders }),
       };
       try {
         this.endpoint.postMessage(request);
@@ -667,7 +677,13 @@ function validateRequestHeaders(
   const allowed = new Set(
     endpoint === "models"
       ? ["accept"]
-      : ["accept", "content-type"],
+      : [
+          "accept",
+          "content-type",
+          "session_id",
+          "x-client-request-id",
+          "x-session-affinity",
+        ],
   );
   for (const [name] of headers) {
     if (!allowed.has(name)) {
@@ -692,6 +708,32 @@ function validateRequestHeaders(
       "Native provider chat_completions requires Content-Type: application/json.",
     );
   }
+}
+
+function readSessionAffinityHeaders(
+  headers: Headers,
+  endpoint: NativeProviderEndpoint,
+): NativeProviderSessionAffinityHeaders {
+  if (endpoint === "models") return {};
+
+  const names = [
+    "session_id",
+    "x-client-request-id",
+    "x-session-affinity",
+  ] as const;
+  const sessionAffinityHeaders: NativeProviderSessionAffinityHeaders = {};
+  for (const name of names) {
+    const value = headers.get(name);
+    if (value !== null) sessionAffinityHeaders[name] = value;
+  }
+
+  const values = new Set(Object.values(sessionAffinityHeaders));
+  if (values.size > 1) {
+    throw new NativeProviderProtocolError(
+      "Native provider session-affinity headers must use the same value.",
+    );
+  }
+  return sessionAffinityHeaders;
 }
 
 async function readRequestBody(

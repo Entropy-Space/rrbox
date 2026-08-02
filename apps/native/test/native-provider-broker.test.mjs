@@ -91,7 +91,7 @@ test("defers close cancellation until fetch start settles", async () => {
   const closedMessage = nextPortMessage(channel.port2);
   broker.close();
   assert.deepEqual(await closedMessage, {
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     kind: "connection_error",
     error_message: "The native provider broker was closed.",
   });
@@ -137,7 +137,7 @@ test("isolates malformed channel events and cancels after start ack", async () =
     }),
   );
   assert.deepEqual(await terminalMessage, {
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     operation_id: "operation-1",
     event_index: 0,
     kind: "body_finished",
@@ -171,12 +171,12 @@ test("turns cancel command rejection into a correlated error", async () => {
 
   const response = nextPortMessage(channel.port2);
   channel.port2.postMessage({
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     request_id: "cancel-request",
     operation_id: "operation-1",
   });
   assert.deepEqual(await response, {
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     request_id: "cancel-request",
     result: {
       kind: "error",
@@ -294,7 +294,7 @@ test("treats a duplicate pending request id as a fatal protocol error", async ()
   const failure = nextPortMessage(channel.port2);
   channel.port2.postMessage(fetchRequest("duplicate", "operation-2"));
   assert.deepEqual(await failure, {
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     kind: "connection_error",
     error_message:
       "Native provider request_id is already pending: duplicate.",
@@ -321,12 +321,12 @@ test("closes on a malformed request that cannot be correlated safely", async () 
 
   const failure = nextPortMessage(channel.port2);
   channel.port2.postMessage({
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     request_id: " unsafe ",
     operation_id: "operation-1",
   });
   assert.deepEqual(await failure, {
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     kind: "connection_error",
     error_message:
       "request_id must not contain surrounding whitespace.",
@@ -356,7 +356,7 @@ test("rejects duplicate operation ids without disturbing the active fetch", asyn
   const rejection = nextPortMessage(channel.port2);
   channel.port2.postMessage(fetchRequest("request-2", "operation-1"));
   assert.deepEqual(await rejection, {
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     request_id: "request-2",
     result: {
       kind: "error",
@@ -388,7 +388,7 @@ function fetchRequest(requestId, operationId) {
 
 function fetchStarted(request) {
   return {
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     request_id: request.request_id,
     result: {
       kind: "fetch_started",
@@ -399,7 +399,7 @@ function fetchStarted(request) {
 
 function cancelled(request, wasActive) {
   return {
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     request_id: request.request_id,
     result: {
       kind: "operation_cancelled",
@@ -411,7 +411,7 @@ function cancelled(request, wasActive) {
 
 function providerEvent(operationId, eventIndex, event) {
   return {
-    protocol_version: 1,
+    protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     operation_id: operationId,
     event_index: eventIndex,
     ...event,

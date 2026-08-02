@@ -21,6 +21,7 @@ const localOpenAiTransport = new OpenAiCompatibleModelTransport({
   chat_completions_endpoint:
     "/api/providers/local-openai/chat/completions",
   request_headers: { "x-researchbox-provider": "local-openai" },
+  send_session_affinity_headers: true,
 });
 const transports = new Map<string, ModelTransport>([
   [researchBoxMockModel.provider, mockTransport],

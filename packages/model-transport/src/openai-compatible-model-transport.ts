@@ -18,6 +18,12 @@ export type OpenAiCompatibleModelTransportOptions = {
   request_headers?: Record<string, string>;
   fetch_request?: typeof fetch;
   /**
+   * Send Pi-compatible session-affinity headers on chat completions requests.
+   * OpenAI-compatible providers vary in whether they accept these headers, so
+   * this must be enabled by the provider composition that opts into them.
+   */
+  send_session_affinity_headers?: boolean;
+  /**
    * Opt in only for endpoints that accept reasoning_content on assistant
    * history messages. Canonical reasoning is retained when this is false.
    */
@@ -52,6 +58,7 @@ export class OpenAiCompatibleModelTransport
   private readonly chatCompletionsEndpoint: string;
   private readonly requestHeaders: Record<string, string>;
   private readonly fetchRequest: typeof fetch;
+  private readonly sendSessionAffinityHeaders: boolean;
   private readonly sendReasoningContent: boolean;
 
   constructor(options: OpenAiCompatibleModelTransportOptions) {
@@ -70,6 +77,14 @@ export class OpenAiCompatibleModelTransport
     );
     this.requestHeaders = { ...options.request_headers };
     this.fetchRequest = (options.fetch_request ?? fetch).bind(globalThis);
+    if (
+      options.send_session_affinity_headers !== undefined &&
+      typeof options.send_session_affinity_headers !== "boolean"
+    ) {
+      throw new Error("send_session_affinity_headers must be a boolean.");
+    }
+    this.sendSessionAffinityHeaders =
+      options.send_session_affinity_headers ?? false;
     if (
       options.send_reasoning_content !== undefined &&
       typeof options.send_reasoning_content !== "boolean"
@@ -140,6 +155,9 @@ export class OpenAiCompatibleModelTransport
       method: "POST",
       headers: {
         ...this.requestHeaders,
+        ...(this.sendSessionAffinityHeaders
+          ? createSessionAffinityHeaders(request.session_id)
+          : {}),
         accept: "text/event-stream",
         "content-type": "application/json",
       },
@@ -412,6 +430,16 @@ function readReasoningDelta(
     );
   }
   return value;
+}
+
+function createSessionAffinityHeaders(
+  sessionId: string,
+): Record<string, string> {
+  return {
+    session_id: sessionId,
+    "x-client-request-id": sessionId,
+    "x-session-affinity": sessionId,
+  };
 }
 
 function toChatCompletionsRequest(

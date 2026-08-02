@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-pub const NATIVE_PROVIDER_PROTOCOL_VERSION: u32 = 1;
+pub const NATIVE_PROVIDER_PROTOCOL_VERSION: u32 = 2;
 pub const LOCAL_OPENAI_PROVIDER_ID: &str = "local-openai";
 
 #[derive(Debug, Deserialize)]
@@ -16,6 +16,8 @@ pub struct NativeProviderFetchRequest {
   pub method: NativeProviderMethod,
   #[serde(default)]
   pub body: Option<String>,
+  #[serde(default)]
+  pub session_affinity_headers: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,7 +177,7 @@ mod tests {
     assert_eq!(
       serde_json::to_value(event).expect("serialize body event"),
       json!({
-        "protocol_version": 1,
+        "protocol_version": NATIVE_PROVIDER_PROTOCOL_VERSION,
         "operation_id": "operation-1",
         "event_index": 3,
         "kind": "body_finished",
@@ -188,7 +190,7 @@ mod tests {
   #[test]
   fn fetch_requests_reject_unknown_fields() {
     let error = serde_json::from_value::<NativeProviderFetchRequest>(json!({
-      "protocol_version": 1,
+      "protocol_version": NATIVE_PROVIDER_PROTOCOL_VERSION,
       "request_id": "request-1",
       "operation_id": "operation-1",
       "provider_id": "local-openai",

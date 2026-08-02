@@ -1,5 +1,14 @@
-export const NATIVE_PROVIDER_PROTOCOL_VERSION = 1 as const;
+export const NATIVE_PROVIDER_PROTOCOL_VERSION = 2 as const;
 export const NATIVE_OPENAI_PROVIDER_ID = "local-openai" as const;
+
+export type NativeProviderSessionAffinityHeaderName =
+  | "session_id"
+  | "x-client-request-id"
+  | "x-session-affinity";
+
+export type NativeProviderSessionAffinityHeaders = Partial<
+  Record<NativeProviderSessionAffinityHeaderName, string>
+>;
 
 export type NativeProviderEndpoint = "models" | "chat_completions";
 export type NativeProviderMethod = "get" | "post";
@@ -12,6 +21,7 @@ export type NativeProviderFetchRequest = {
   endpoint: NativeProviderEndpoint;
   method: NativeProviderMethod;
   body?: string;
+  session_affinity_headers?: NativeProviderSessionAffinityHeaders;
 };
 
 export type NativeProviderCancelRequest = {

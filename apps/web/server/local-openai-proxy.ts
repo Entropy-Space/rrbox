@@ -1,6 +1,11 @@
 const DEFAULT_LOCAL_OPENAI_BASE_URL = "http://127.0.0.1:4141/v1";
 const MAX_REQUEST_BYTES = 16 * 1024 * 1024;
 const PROVIDER_HEADER = "x-researchbox-provider";
+const SESSION_AFFINITY_HEADERS = [
+  "session_id",
+  "x-client-request-id",
+  "x-session-affinity",
+] as const;
 
 export async function proxyLocalOpenAiRequest(
   request: Request,
@@ -28,6 +33,12 @@ export async function proxyLocalOpenAiRequest(
   const headers = new Headers({ accept: request.headers.get("accept") ?? "*/*" });
   const contentType = request.headers.get("content-type");
   if (contentType) headers.set("content-type", contentType);
+  if (pathname === "/chat/completions") {
+    for (const name of SESSION_AFFINITY_HEADERS) {
+      const value = request.headers.get(name);
+      if (value !== null) headers.set(name, value);
+    }
+  }
 
   let body: ArrayBuffer | undefined;
   if (request.method !== "GET") {

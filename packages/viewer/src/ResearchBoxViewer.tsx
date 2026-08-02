@@ -585,14 +585,6 @@ export function ResearchBoxViewer({
             >
               <Menu size={20} />
             </button>
-            <ModelSelector
-              providers={coreState.providers}
-              selection={coreState.active_model}
-              selectionDisabled={isChatConfigurationDisabled}
-              onSelect={selectModel}
-              onRefresh={refreshProvider}
-              refreshingProviderIds={refreshingProviderIds}
-            />
           </div>
           <div className="topbar-actions">
             <span
@@ -753,13 +745,28 @@ export function ResearchBoxViewer({
                         <SlidersHorizontal size={16} />
                         <span>Tools</span>
                       </button>
-                      <ReasoningEffortSelector
-                        providers={coreState.providers}
-                        selection={coreState.active_model}
-                        effort={coreState.active_reasoning_effort}
-                        selectionDisabled={isChatConfigurationDisabled}
-                        onSelect={selectReasoningEffort}
-                      />
+                      <div
+                        className="composer-model-controls"
+                        role="group"
+                        aria-label="Model and reasoning settings"
+                      >
+                        <ModelSelector
+                          compact
+                          providers={coreState.providers}
+                          selection={coreState.active_model}
+                          selectionDisabled={isChatConfigurationDisabled}
+                          onSelect={selectModel}
+                          onRefresh={refreshProvider}
+                          refreshingProviderIds={refreshingProviderIds}
+                        />
+                        <ReasoningEffortSelector
+                          providers={coreState.providers}
+                          selection={coreState.active_model}
+                          effort={coreState.active_reasoning_effort}
+                          selectionDisabled={isChatConfigurationDisabled}
+                          onSelect={selectReasoningEffort}
+                        />
+                      </div>
                     </div>
                     <div className="composer-actions">
                       <button type="button" aria-label="Attach a file">

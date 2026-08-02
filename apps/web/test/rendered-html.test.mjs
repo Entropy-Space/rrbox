@@ -36,6 +36,7 @@ test("server-renders the rrbox application shell", async () => {
   assert.match(html, /Search the workspace/);
   assert.match(html, /Search chats/);
   assert.match(html, /role="combobox"/);
+  assert.match(html, /aria-label="Model and reasoning settings"/);
   assert.match(html, /aria-label="Search saved chats"/);
   assert.match(html, /role="listbox"/);
   assert.match(html, /aria-keyshortcuts="Control\+K Meta\+K"/);

@@ -23,6 +23,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 export type ModelSelectorProps = {
   providers: ProviderSummary[];
   selection: ModelSelection;
+  compact?: boolean;
   selectionDisabled?: boolean;
   onSelect: (providerId: string, modelId: string) => void;
   onRefresh: (providerId: string) => void;
@@ -47,6 +48,7 @@ function providerStatusLabel(provider: ProviderSummary) {
 export function ModelSelector({
   providers,
   selection,
+  compact = false,
   selectionDisabled = false,
   onSelect,
   onRefresh,
@@ -108,6 +110,13 @@ export function ModelSelector({
       ? "Discovering models"
       : `${availableModelCount} model${availableModelCount === 1 ? "" : "s"} available`
     : selectedProvider?.display_name ?? "Provider unavailable";
+  const selectedModelPath = selectionPending
+    ? catalogIsLoading
+      ? "Discovering models"
+      : "Select a model"
+    : `${selectedProvider?.provider_id ?? selection.provider_id}/${
+        selectedModel?.model_id ?? selection.model_id
+      }`;
 
   const availableModelKeys = useMemo(
     () =>
@@ -231,7 +240,9 @@ export function ModelSelector({
 
   return (
     <div
-      className="model-selector-root"
+      className={`model-selector-root ${
+        compact ? "composer-model-selector-root" : ""
+      }`}
       ref={rootRef}
       onBlur={(event) => {
         const nextTarget = event.relatedTarget;
@@ -245,10 +256,12 @@ export function ModelSelector({
       }}
     >
       <button
-        className={`model-selector ${selectedAvailability}`}
+        className={`model-selector ${
+          compact ? "composer-model-selector" : ""
+        } ${selectedAvailability}`}
         type="button"
         ref={triggerRef}
-        aria-label={`${selectedTitle}. ${selectedStatus}.`}
+        aria-label={`${compact ? selectedModelPath : selectedTitle}. ${selectedStatus}.`}
         aria-haspopup="dialog"
         aria-expanded={isOpen}
         aria-controls={isOpen ? popoverId : undefined}
@@ -256,11 +269,13 @@ export function ModelSelector({
       >
         <span className="model-selector-copy">
           <strong className="model-selector-title">
-            {selectedTitle}
+            {compact ? selectedModelPath : selectedTitle}
           </strong>
-          <small className="model-selector-provider">
-            {selectedProviderLabel}
-          </small>
+          {!compact && (
+            <small className="model-selector-provider">
+              {selectedProviderLabel}
+            </small>
+          )}
         </span>
         <span
           className={`model-selector-active-status ${selectedAvailability}`}

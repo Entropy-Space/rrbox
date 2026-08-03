@@ -12,9 +12,15 @@ import {
   parseReasoningEffort,
   parseTimeline,
 } from "@researchbox/protocol";
+import {
+  assertSessionHistoryInvariants,
+  createSessionHistory,
+  parseSessionHistory,
+  type SessionHistory,
+} from "./history.ts";
 
 export const PROJECT_STORE_SCHEMA_VERSION = 4 as const;
-export const SESSION_DOCUMENT_FORMAT_VERSION = 4 as const;
+export const SESSION_DOCUMENT_FORMAT_VERSION = 5 as const;
 
 export const DEFAULT_MODEL_SELECTION: ModelSelection = {
   provider_id: "researchbox",
@@ -29,6 +35,7 @@ const MODEL_SELECTION_PROJECT_STORE_SCHEMA_VERSION = 3 as const;
 const LEGACY_SESSION_DOCUMENT_FORMAT_VERSION = 1 as const;
 const TRANSCRIPT_SESSION_DOCUMENT_FORMAT_VERSION = 2 as const;
 const TIMELINE_SESSION_DOCUMENT_FORMAT_VERSION = 3 as const;
+const LINEAR_SESSION_DOCUMENT_FORMAT_VERSION = 4 as const;
 
 export type ProjectRecord = {
   project_id: string;
@@ -58,6 +65,7 @@ export type SessionDocument = {
   project_id: string;
   input_draft: string;
   timeline: TimelineEntry[];
+  history: SessionHistory;
 };
 
 export type ProjectStoreState = {
@@ -195,6 +203,7 @@ export function assertProjectStoreInvariants(state: ProjectStoreState): void {
       throw new Error("Unsubmitted new chats must not be persisted as sessions.");
     }
     assertTimelineInvariants(document.timeline);
+    assertSessionHistoryInvariants(document.history);
   }
 
   if (documents.size !== sessions.size) {
@@ -268,7 +277,8 @@ function parseSessionDocument(
   const isLegacyFormat =
     formatVersion === LEGACY_SESSION_DOCUMENT_FORMAT_VERSION ||
     formatVersion === TRANSCRIPT_SESSION_DOCUMENT_FORMAT_VERSION ||
-    formatVersion === TIMELINE_SESSION_DOCUMENT_FORMAT_VERSION;
+    formatVersion === TIMELINE_SESSION_DOCUMENT_FORMAT_VERSION ||
+    formatVersion === LINEAR_SESSION_DOCUMENT_FORMAT_VERSION;
   if (
     formatVersion !== SESSION_DOCUMENT_FORMAT_VERSION &&
     (!isLegacyFormat ||
@@ -283,25 +293,36 @@ function parseSessionDocument(
       ? ""
       : requireString(value, "input_draft", true);
   if (formatVersion === SESSION_DOCUMENT_FORMAT_VERSION) {
+    const timeline = parseTimeline(value.timeline);
+    const parsedHistory = parseSessionHistory(value.history, timeline);
     return {
       document: {
         format_version: SESSION_DOCUMENT_FORMAT_VERSION,
         session_id: sessionId,
         project_id: projectId,
         input_draft: inputDraft,
-        timeline: parseTimeline(value.timeline),
+        timeline,
+        history: parsedHistory.history,
       },
-      was_migrated: false,
+      was_migrated: parsedHistory.was_migrated,
     };
   }
-  if (formatVersion === TIMELINE_SESSION_DOCUMENT_FORMAT_VERSION) {
+  if (
+    formatVersion === TIMELINE_SESSION_DOCUMENT_FORMAT_VERSION ||
+    formatVersion === LINEAR_SESSION_DOCUMENT_FORMAT_VERSION
+  ) {
+    const timeline =
+      formatVersion === TIMELINE_SESSION_DOCUMENT_FORMAT_VERSION
+        ? migrateNormalizedTimeline(value.timeline)
+        : parseTimeline(value.timeline);
     return {
       document: {
         format_version: SESSION_DOCUMENT_FORMAT_VERSION,
         session_id: sessionId,
         project_id: projectId,
         input_draft: inputDraft,
-        timeline: migrateNormalizedTimeline(value.timeline),
+        timeline,
+        history: createSessionHistory(timeline),
       },
       was_migrated: true,
     };
@@ -311,18 +332,20 @@ function parseSessionDocument(
   const activities = requireArray(value, "activities").map((activity, index) =>
     parseToolActivity(activity, `legacy:${sessionId}:${index}`),
   );
+  const timeline = migrateLegacyTimeline(
+    sessionId,
+    messages,
+    activities,
+    requireArray(value, "agent_messages"),
+  );
   return {
     document: {
       format_version: SESSION_DOCUMENT_FORMAT_VERSION,
       session_id: sessionId,
       project_id: projectId,
       input_draft: inputDraft,
-      timeline: migrateLegacyTimeline(
-        sessionId,
-        messages,
-        activities,
-        requireArray(value, "agent_messages"),
-      ),
+      timeline,
+      history: createSessionHistory(timeline),
     },
     was_migrated: true,
   };

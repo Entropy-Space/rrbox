@@ -8,7 +8,9 @@ use super::super::StorageError;
 
 pub(super) const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const PROJECT_STORE_SCHEMA_VERSION: u64 = 4;
-const SESSION_DOCUMENT_FORMAT_VERSION: u64 = 4;
+const LINEAR_SESSION_DOCUMENT_FORMAT_VERSION: u64 = 4;
+const SESSION_DOCUMENT_FORMAT_VERSION: u64 = 5;
+const SESSION_HISTORY_FORMAT_VERSION: u64 = 1;
 
 #[derive(Debug)]
 pub(super) struct ValidatedProjectState<'a> {
@@ -217,7 +219,9 @@ fn validate_reasoning_effort(value: Option<&Value>, field: &str) -> Result<(), S
 fn validate_session_document(document: &Value) -> Result<&Vec<Value>, StorageError> {
   let format_version =
     deserialize_u64_from_json(document, "format_version").map_err(StorageError::InvalidRequest)?;
-  if format_version != SESSION_DOCUMENT_FORMAT_VERSION {
+  if format_version != SESSION_DOCUMENT_FORMAT_VERSION
+    && format_version != LINEAR_SESSION_DOCUMENT_FORMAT_VERSION
+  {
     return Err(StorageError::InvalidRequest(format!(
       "Unsupported session document format version: {format_version}."
     )));
@@ -225,7 +229,94 @@ fn validate_session_document(document: &Value) -> Result<&Vec<Value>, StorageErr
   require_any_string(document, "input_draft")?;
   let timeline = require_array(document, "timeline").map_err(StorageError::InvalidRequest)?;
   validate_timeline(timeline)?;
+  if format_version == SESSION_DOCUMENT_FORMAT_VERSION {
+    validate_session_history(document)?;
+  }
   Ok(timeline)
+}
+
+fn validate_session_history(document: &Value) -> Result<(), StorageError> {
+  let history = document
+    .get("history")
+    .and_then(Value::as_object)
+    .ok_or_else(|| StorageError::InvalidRequest("Session history must be an object.".into()))?;
+  let format_version = history
+    .get("format_version")
+    .and_then(Value::as_u64)
+    .ok_or_else(|| {
+      StorageError::InvalidRequest("format_version must be a non-negative integer.".into())
+    })?;
+  if format_version != SESSION_HISTORY_FORMAT_VERSION {
+    return Err(StorageError::InvalidRequest(
+      "Unsupported session history format version.".into(),
+    ));
+  }
+  let active_leaf_id = match history.get("active_leaf_id") {
+    Some(Value::Null) => None,
+    Some(Value::String(value)) if !value.is_empty() => Some(value.clone()),
+    _ => {
+      return Err(StorageError::InvalidRequest(
+        "Session history active_leaf_id must be a non-empty string or null.".into(),
+      ));
+    }
+  };
+  let nodes = history
+    .get("nodes")
+    .and_then(Value::as_array)
+    .ok_or_else(|| {
+      StorageError::InvalidRequest("Session history nodes must be an array.".into())
+    })?;
+  let mut parents: HashMap<String, Option<String>> = HashMap::new();
+  for node in nodes {
+    let node_id = require_string(node, "node_id")
+      .map_err(StorageError::InvalidRequest)?
+      .to_string();
+    let entry_id = require_string(node, "entry_id").map_err(StorageError::InvalidRequest)?;
+    if node_id != entry_id {
+      return Err(StorageError::InvalidRequest(
+        "Session history node_id must match entry_id.".into(),
+      ));
+    }
+    if node.get("entry").and_then(Value::as_object).is_none() {
+      return Err(StorageError::InvalidRequest(
+        "Session history entry must be an object.".into(),
+      ));
+    }
+    let parent = match node.get("parent_node_id") {
+      Some(Value::Null) => None,
+      Some(Value::String(value)) if !value.is_empty() => Some(value.clone()),
+      _ => {
+        return Err(StorageError::InvalidRequest(
+          "Session history parent_node_id must be a non-empty string or null.".into(),
+        ));
+      }
+    };
+    if parents.insert(node_id, parent).is_some() {
+      return Err(StorageError::InvalidRequest(
+        "Duplicate session history node_id.".into(),
+      ));
+    }
+  }
+  if let Some(active_leaf_id) = &active_leaf_id
+    && !parents.contains_key(active_leaf_id)
+  {
+    return Err(StorageError::InvalidRequest(
+      "Session history active leaf does not exist.".into(),
+    ));
+  }
+  for node_id in parents.keys() {
+    let mut visited = HashSet::new();
+    let mut current = Some(node_id.clone());
+    while let Some(current_id) = current {
+      if !visited.insert(current_id.clone()) {
+        return Err(StorageError::InvalidRequest(
+          "Session history contains a cycle.".into(),
+        ));
+      }
+      current = parents.get(&current_id).cloned().flatten();
+    }
+  }
+  Ok(())
 }
 
 fn validate_timeline(timeline: &[Value]) -> Result<(), StorageError> {

@@ -15,6 +15,7 @@ import {
   type ProjectSummary,
   type ProviderSummary,
   type ReasoningEffort,
+  type SessionHistorySnapshot,
   type SessionSummary,
   type SummaryReviewRequest,
   type SummaryReviewResolution,
@@ -62,6 +63,7 @@ export type AgentSessionState = {
   input_draft_cleanup_scope: DraftScope | null;
   pending_prompt: PendingPrompt | null;
   timeline: TimelineEntry[];
+  history?: SessionHistorySnapshot;
   files: FileEntry[];
   current_path: string;
   selected_file: { path: string; content: string } | null;
@@ -100,6 +102,7 @@ export const initialAgentSessionState: AgentSessionState = {
   input_draft_cleanup_scope: null,
   pending_prompt: null,
   timeline: [],
+  history: undefined,
   files: [],
   current_path: "/",
   selected_file: null,
@@ -856,6 +859,19 @@ export function useAgentSession(
     [sendManagementCommand],
   );
 
+  const navigateConversationHistory = useCallback(
+    (projectId: string, sessionId: string, targetNodeId: string | null) => {
+      sendManagementCommand(
+        createCommand("session_history_navigate", {
+          project_id: projectId,
+          session_id: sessionId,
+          target_node_id: targetNodeId,
+        }),
+      );
+    },
+    [sendManagementCommand],
+  );
+
   const abortRun = useCallback(() => {
     if (!coreState.active_project_id || !coreState.active_session_id) return;
     sendCommand(
@@ -1026,6 +1042,7 @@ export function useAgentSession(
     renameSession,
     deleteSession,
     selectSession,
+    navigateConversationHistory,
     abortRun,
     openFile,
     navigateToParent,
@@ -1670,6 +1687,7 @@ function applySnapshot(
     pending_prompt:
       acceptedVirtualPrompt || scopeChanged ? null : state.pending_prompt,
     timeline: snapshot.timeline,
+    history: snapshot.history,
     files: preserveWorkspace ? state.files : snapshot.files,
     current_path: preserveWorkspace ? state.current_path : "/",
     selected_file: preserveWorkspace ? state.selected_file : null,

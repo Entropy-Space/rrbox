@@ -295,6 +295,7 @@ function commandLockScopes(
     case "reasoning_effort_select":
     case "session_update":
     case "session_delete":
+    case "session_history_navigate":
       return coordinated(
         shared(projectCommandLock(command.payload.project_id)),
         exclusive(

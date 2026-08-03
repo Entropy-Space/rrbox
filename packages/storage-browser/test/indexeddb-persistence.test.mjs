@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { IDBFactory } from "fake-indexeddb";
 import {
+  createSessionHistory,
   SESSION_DOCUMENT_FORMAT_VERSION,
 } from "@researchbox/project-store";
 import {
@@ -1138,7 +1139,7 @@ test("IndexedDB v1 project-store migration is persisted exactly once", async () 
   await verificationComplete;
 });
 
-test("IndexedDB v2 migration persists model selections and a v4 timeline exactly once", async () => {
+test("IndexedDB v2 migration persists model selections and conversation history exactly once", async () => {
   const factory = new IDBFactory();
   const databaseName = `researchbox-model-migration-${crypto.randomUUID()}`;
   const legacyDatabase = await openLegacyDatabase(factory, databaseName);
@@ -1213,6 +1214,7 @@ test("IndexedDB v2 migration persists model selections and a v4 timeline exactly
         project_id: "legacy-project",
         input_draft: "session draft",
         timeline: createMigratedTimeline(timestamp),
+        history: createSessionHistory(createMigratedTimeline(timestamp)),
       },
     ],
   };
@@ -2330,6 +2332,7 @@ function createState() {
         project_id: "project-1",
         input_draft: "",
         timeline: [],
+        history: createSessionHistory([]),
       },
     ],
   };

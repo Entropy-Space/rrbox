@@ -4,6 +4,7 @@ import {
   MemoryProjectStore,
   ProjectStoreConflictError,
   SESSION_DOCUMENT_FORMAT_VERSION,
+  createSessionHistory,
   parseProjectStoreState,
   parseProjectStoreStateWithMigration,
 } from "../src/index.ts";
@@ -11,7 +12,7 @@ import {
 const TIMESTAMP = "2026-07-22T00:00:00.000Z";
 const TIMESTAMP_MS = Date.parse(TIMESTAMP);
 
-test("memory project store clones v4 timelines and enforces revisions", async () => {
+test("memory project store clones tree-backed timelines and enforces revisions", async () => {
   const store = new MemoryProjectStore();
   const first = createState(1);
   await store.save(first, null);
@@ -92,7 +93,7 @@ test("memory project store publishes only committed changes", async () => {
   assert.equal(changes.length, 2);
 });
 
-test("v4 documents contain only the normalized timeline", () => {
+test("current documents contain a normalized timeline and conversation history", () => {
   const state = parseProjectStoreState(createState(1));
   const document = state.documents[0];
 
@@ -100,6 +101,14 @@ test("v4 documents contain only the normalized timeline", () => {
   assert.deepEqual(
     document.timeline.map((entry) => entry.type),
     ["user_message", "assistant_message"],
+  );
+  assert.deepEqual(
+    document.history.nodes.map((node) => node.node_id),
+    document.timeline.map((entry) => entry.entry_id),
+  );
+  assert.equal(
+    document.history.active_leaf_id,
+    document.timeline.at(-1).entry_id,
   );
   assert.equal("messages" in document, false);
   assert.equal("activities" in document, false);
@@ -126,15 +135,20 @@ test("v3 normalized timelines infer legacy file-change tool names", () => {
       SESSION_DOCUMENT_FORMAT_VERSION,
     );
     assert.equal(fileChange.tool_name, toolName);
+    assert.deepEqual(
+      migrated.documents[0].history.nodes.map((node) => node.node_id),
+      migrated.documents[0].timeline.map((entry) => entry.entry_id),
+    );
 
     migrated.documents[0].format_version = 3;
     delete fileChange.tool_name;
+    delete migrated.documents[0].history;
     assert.deepEqual(migrated, original);
     assert.deepEqual(stored, original);
   }
 });
 
-test("v4 normalized timelines require explicit matching file-change tools", () => {
+test("current normalized timelines require explicit matching file-change tools", () => {
   const missing = createVersionThreeFileChangeState(
     "write_file",
     "created",
@@ -485,7 +499,7 @@ test("v1 migration removes only an unambiguous empty placeholder", () => {
   assert.deepEqual(result.state, createVirtualState(legacy.state_revision));
 });
 
-test("v1 migration preserves nonempty sessions as v4 timelines", () => {
+test("v1 migration preserves nonempty sessions as current timelines", () => {
   const legacy = createLegacyState();
   legacy.sessions[0].title = "Kept chat";
   legacy.documents[0].messages.push(
@@ -589,13 +603,14 @@ test("project store rejects broken timeline and ownership invariants", () => {
   const persistedPlaceholder = createState(1);
   persistedPlaceholder.sessions[0].title = "New chat";
   persistedPlaceholder.documents[0].timeline = [];
+  persistedPlaceholder.documents[0].history = createSessionHistory([]);
   assert.throws(
     () => parseProjectStoreState(persistedPlaceholder),
     /Unsubmitted new chats must not be persisted/,
   );
 });
 
-test("v4 parser drops retired redundant document fields", () => {
+test("current parser drops retired redundant document fields", () => {
   const state = createState(1);
   const document = state.documents[0];
   document.messages = [];
@@ -734,39 +749,41 @@ function createSessionRecord(sessionId, title) {
 }
 
 function createSessionDocument(sessionId, inputDraft = "") {
+  const timeline = [
+    {
+      type: "user_message",
+      entry_id: `${sessionId}:user`,
+      run_id: `${sessionId}:run`,
+      created_at: TIMESTAMP,
+      content: "Hello",
+    },
+    {
+      type: "assistant_message",
+      entry_id: `${sessionId}:assistant`,
+      run_id: `${sessionId}:run`,
+      created_at: TIMESTAMP,
+      status: "complete",
+      api: "mock",
+      provider: "researchbox",
+      model: "researchbox-mock",
+      usage: emptyUsage(),
+      stop_reason: "stop",
+      blocks: [
+        {
+          type: "assistant_text",
+          block_id: `${sessionId}:text`,
+          text: "Done.",
+        },
+      ],
+    },
+  ];
   return {
     format_version: SESSION_DOCUMENT_FORMAT_VERSION,
     session_id: sessionId,
     project_id: "project-1",
     input_draft: inputDraft,
-    timeline: [
-      {
-        type: "user_message",
-        entry_id: `${sessionId}:user`,
-        run_id: `${sessionId}:run`,
-        created_at: TIMESTAMP,
-        content: "Hello",
-      },
-      {
-        type: "assistant_message",
-        entry_id: `${sessionId}:assistant`,
-        run_id: `${sessionId}:run`,
-        created_at: TIMESTAMP,
-        status: "complete",
-        api: "mock",
-        provider: "researchbox",
-        model: "researchbox-mock",
-        usage: emptyUsage(),
-        stop_reason: "stop",
-        blocks: [
-          {
-            type: "assistant_text",
-            block_id: `${sessionId}:text`,
-            text: "Done.",
-          },
-        ],
-      },
-    ],
+    timeline,
+    history: createSessionHistory(timeline),
   };
 }
 

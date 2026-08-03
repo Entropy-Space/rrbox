@@ -64,6 +64,32 @@ fn document(session_id: &str, project_id: &str) -> Value {
   })
 }
 
+fn history_document(session_id: &str, project_id: &str) -> Value {
+  let entry = json!({
+    "type": "user_message",
+    "entry_id": "entry-1",
+    "run_id": "run-1",
+    "created_at": "2026-07-28T00:00:00.000Z",
+    "content": "hello",
+  });
+  json!({
+    "format_version": 5,
+    "session_id": session_id,
+    "project_id": project_id,
+    "input_draft": "",
+    "timeline": [entry.clone()],
+    "history": {
+      "format_version": 1,
+      "active_leaf_id": "entry-1",
+      "nodes": [{
+        "node_id": "entry-1",
+        "parent_node_id": null,
+        "entry": entry,
+      }],
+    },
+  })
+}
+
 fn state(
   revision: u64,
   active_project_id: &str,
@@ -182,6 +208,26 @@ fn project_state_reopens_with_global_order_and_per_project_usage() {
     let name = entry.file_name().to_string_lossy().into_owned();
     name != "project-a" && name != "project-b"
   }));
+}
+
+#[test]
+fn project_state_accepts_tree_backed_session_history() {
+  let (_directory, storage) = service();
+  let initial = state(
+    1,
+    "project-1",
+    vec![project("project-1", "Project", Some("session-1"))],
+    vec![session("session-1", "project-1")],
+    vec![history_document("session-1", "project-1")],
+  );
+
+  storage
+    .save_project_state(&initial, None)
+    .expect("tree-backed session history should validate");
+  assert_eq!(
+    storage.load_project_state().expect("load project state"),
+    Some(initial)
+  );
 }
 
 #[test]

@@ -271,15 +271,16 @@ fn validate_session_history(document: &Value) -> Result<(), StorageError> {
     let node_id = require_string(node, "node_id")
       .map_err(StorageError::InvalidRequest)?
       .to_string();
-    let entry_id = require_string(node, "entry_id").map_err(StorageError::InvalidRequest)?;
+    let entry = node
+      .get("entry")
+      .filter(|entry| entry.is_object())
+      .ok_or_else(|| {
+        StorageError::InvalidRequest("Session history entry must be an object.".into())
+      })?;
+    let entry_id = require_string(entry, "entry_id").map_err(StorageError::InvalidRequest)?;
     if node_id != entry_id {
       return Err(StorageError::InvalidRequest(
         "Session history node_id must match entry_id.".into(),
-      ));
-    }
-    if node.get("entry").and_then(Value::as_object).is_none() {
-      return Err(StorageError::InvalidRequest(
-        "Session history entry must be an object.".into(),
       ));
     }
     let parent = match node.get("parent_node_id") {

@@ -18,11 +18,9 @@ import {
   MessageSquareText,
   Mic,
   PanelRight,
-  Paperclip,
   Plus,
   RotateCcw,
   Search,
-  SlidersHorizontal,
   Sparkles,
   ThumbsDown,
   ThumbsUp,
@@ -48,15 +46,14 @@ import type { FormEvent, KeyboardEvent, RefObject } from "react";
 import { ChatSearchDialog } from "./ChatSearchDialog.tsx";
 import { shouldFocusComposerAfterChatSearch } from "./chat-search.ts";
 import { ComposerCommandMenu } from "./ComposerCommandMenu.tsx";
+import { ComposerModelControl } from "./ComposerModelControl.tsx";
 import {
   isModalNavigationOpen,
   MOBILE_NAVIGATION_QUERY,
 } from "./navigation-state.ts";
 import { MarkdownContent } from "./MarkdownContent.tsx";
 import { isStreamingAssistantText } from "./markdown.ts";
-import { ModelSelector } from "./ModelSelector.tsx";
 import { PluginsPage } from "./PluginsPage.tsx";
-import { ReasoningEffortSelector } from "./ReasoningEffortSelector.tsx";
 import { SummaryReviewDialog } from "./SummaryReviewDialog.tsx";
 import {
   loadPluginSettings,
@@ -734,45 +731,30 @@ export function ResearchBoxViewer({
                   />
                   <div className="composer-controls">
                     <div className="composer-tools">
-                      <button type="button" aria-label="Add attachment">
+                      <button
+                        className="composer-icon-button"
+                        type="button"
+                        aria-label="Add tools or attachments"
+                      >
                         <Plus size={19} />
                       </button>
-                      <button
-                        type="button"
-                        className="tools-pill"
-                        aria-label="Tools"
-                      >
-                        <SlidersHorizontal size={16} />
-                        <span>Tools</span>
-                      </button>
-                    </div>
-                    <div
-                      className="composer-model-controls"
-                      role="group"
-                      aria-label="Model and reasoning settings"
-                    >
-                      <ModelSelector
-                        compact
-                        providers={coreState.providers}
-                        selection={coreState.active_model}
-                        selectionDisabled={isChatConfigurationDisabled}
-                        onSelect={selectModel}
-                        onRefresh={refreshProvider}
-                        refreshingProviderIds={refreshingProviderIds}
-                      />
-                      <ReasoningEffortSelector
+                      <ComposerModelControl
                         providers={coreState.providers}
                         selection={coreState.active_model}
                         effort={coreState.active_reasoning_effort}
                         selectionDisabled={isChatConfigurationDisabled}
-                        onSelect={selectReasoningEffort}
+                        onSelectModel={selectModel}
+                        onSelectEffort={selectReasoningEffort}
+                        onRefreshProvider={refreshProvider}
+                        refreshingProviderIds={refreshingProviderIds}
                       />
                     </div>
                     <div className="composer-actions">
-                      <button type="button" aria-label="Attach a file">
-                        <Paperclip size={18} />
-                      </button>
-                      <button type="button" aria-label="Voice input">
+                      <button
+                        className="composer-icon-button"
+                        type="button"
+                        aria-label="Voice input"
+                      >
                         <Mic size={19} />
                       </button>
                       {coreState.is_running ? (

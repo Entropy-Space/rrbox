@@ -47,6 +47,9 @@ importers:
       '@researchbox/provider-native':
         specifier: workspace:*
         version: link:../../packages/provider-native
+      '@researchbox/provider-settings':
+        specifier: workspace:*
+        version: link:../../packages/provider-settings
       '@researchbox/python-plugin':
         specifier: workspace:*
         version: link:../../packages/python-plugin
@@ -105,6 +108,9 @@ importers:
       '@researchbox/model-transport':
         specifier: workspace:*
         version: link:../../packages/model-transport
+      '@researchbox/provider-settings':
+        specifier: workspace:*
+        version: link:../../packages/provider-settings
       '@researchbox/python-plugin':
         specifier: workspace:*
         version: link:../../packages/python-plugin
@@ -196,6 +202,9 @@ importers:
       '@researchbox/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@researchbox/provider-settings':
+        specifier: workspace:*
+        version: link:../provider-settings
       '@researchbox/runtime-browser':
         specifier: workspace:*
         version: link:../runtime-browser
@@ -232,6 +241,15 @@ importers:
   packages/protocol: {}
 
   packages/provider-native:
+    dependencies:
+      '@researchbox/model-transport':
+        specifier: workspace:*
+        version: link:../model-transport
+      '@researchbox/provider-settings':
+        specifier: workspace:*
+        version: link:../provider-settings
+
+  packages/provider-settings:
     dependencies:
       '@researchbox/model-transport':
         specifier: workspace:*
@@ -315,6 +333,9 @@ importers:
       '@researchbox/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@researchbox/provider-settings':
+        specifier: workspace:*
+        version: link:../provider-settings
       lucide-react:
         specifier: 0.468.0
         version: 0.468.0(react@19.2.6)

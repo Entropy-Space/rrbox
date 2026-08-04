@@ -17,7 +17,7 @@ export type NativeProviderFetchRequest = {
   protocol_version: typeof NATIVE_PROVIDER_PROTOCOL_VERSION;
   request_id: string;
   operation_id: string;
-  provider_id: typeof NATIVE_OPENAI_PROVIDER_ID;
+  provider_id: string;
   endpoint: NativeProviderEndpoint;
   method: NativeProviderMethod;
   body?: string;

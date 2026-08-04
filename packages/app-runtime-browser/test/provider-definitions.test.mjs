@@ -64,3 +64,68 @@ test("keeps the shared mock descriptor aligned with the core model", () => {
     reasoning_efforts: [],
   });
 });
+
+test("builds independent OpenAI-compatible definitions from provider settings", () => {
+  const [mock, provider] = createResearchBoxProviderDefinitions({
+    providers: [{
+      provider_id: "example",
+      display_name: "Example",
+      preset_id: "custom",
+      base_url: "https://example.com/v1",
+      enabled: true,
+      manual_models: [{
+        model_id: "model-1",
+        display_name: "Model 1",
+        context_window: 32_000,
+        max_output_tokens: 4_000,
+        supports_tools: true,
+        supports_reasoning: true,
+        reasoning_efforts: ["low", "high"],
+      }],
+      send_reasoning_content: true,
+      send_session_affinity_headers: false,
+    }],
+  });
+
+  assert.equal(mock.provider_id, "researchbox");
+  assert.deepEqual(provider, {
+    provider_id: "example",
+    display_name: "Example",
+    kind: "openai_compatible",
+    discover_models: true,
+    models: [{
+      id: "model-1",
+      name: "Model 1",
+      api: "openai-completions",
+      provider: "example",
+      baseUrl: "",
+      reasoning: true,
+      supports_tools: true,
+      supports_reasoning_effort: true,
+      reasoning_efforts: ["low", "high"],
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 32_000,
+      maxTokens: 4_000,
+    }],
+  });
+});
+
+test("omits disabled provider settings from the agent catalog", () => {
+  const providers = createResearchBoxProviderDefinitions({
+    providers: [{
+      provider_id: "disabled",
+      display_name: "Disabled",
+      preset_id: "custom",
+      base_url: "https://example.com/v1",
+      enabled: false,
+      manual_models: [],
+      send_reasoning_content: false,
+      send_session_affinity_headers: false,
+    }],
+  });
+  assert.deepEqual(
+    providers.map((provider) => provider.provider_id),
+    ["researchbox"],
+  );
+});

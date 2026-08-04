@@ -13,6 +13,7 @@ test("keeps the mock catalog available when the native provider fails", async ()
   const attachment = attachNativeLlmWorker(
     host,
     providerChannel.port2,
+    [localProviderConfiguration()],
   );
   const transport = new WorkerModelTransport(worker);
   const providerRequest = nextPortMessage(providerChannel.port1);
@@ -93,4 +94,17 @@ function nextPortMessage(port) {
       { once: true },
     );
   });
+}
+
+function localProviderConfiguration() {
+  return {
+    provider_id: "local-openai",
+    display_name: "OpenAI-compatible · localhost:4141",
+    preset_id: "local",
+    base_url: "http://127.0.0.1:4141/v1",
+    enabled: true,
+    manual_models: [],
+    send_reasoning_content: true,
+    send_session_affinity_headers: true,
+  };
 }

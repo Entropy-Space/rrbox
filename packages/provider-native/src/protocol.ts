@@ -1,5 +1,4 @@
 import {
-  NATIVE_OPENAI_PROVIDER_ID,
   NATIVE_PROVIDER_PROTOCOL_VERSION,
   type NativeProviderBodyEvent,
   type NativeProviderBodyFinishedEvent,
@@ -56,10 +55,7 @@ export function parseNativeProviderFetchRequest(
     ["body", "session_affinity_headers"],
   );
 
-  const providerId = requireString(record, "provider_id");
-  if (providerId !== NATIVE_OPENAI_PROVIDER_ID) {
-    throw new Error(`Unsupported native provider: ${providerId}`);
-  }
+  const providerId = requireIdentifier(record, "provider_id");
   const endpoint = parseEndpoint(record.endpoint);
   const method = parseMethod(record.method);
   const body =
@@ -94,7 +90,7 @@ export function parseNativeProviderFetchRequest(
     protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     request_id: requireIdentifier(record, "request_id"),
     operation_id: requireIdentifier(record, "operation_id"),
-    provider_id: NATIVE_OPENAI_PROVIDER_ID,
+    provider_id: providerId,
     endpoint,
     method,
     ...(body === undefined ? {} : { body }),

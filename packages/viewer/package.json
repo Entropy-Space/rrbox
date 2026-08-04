@@ -10,6 +10,7 @@
   "dependencies": {
     "@researchbox/client": "workspace:*",
     "@researchbox/protocol": "workspace:*",
+    "@researchbox/provider-settings": "workspace:*",
     "lucide-react": "0.468.0",
     "react-markdown": "10.1.0",
     "remark-gfm": "4.0.1",

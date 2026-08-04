@@ -27,10 +27,25 @@ import {
   type NativeWebSearchExecuteRequest,
   type NativeWebSearchExecuteResponse,
 } from "@researchbox/web-search-plugin/native-protocol";
+import {
+  parseProviderSettingsSnapshot,
+  parseProviderTestResult,
+  type ProviderConfigurationInput,
+  type ProviderSettingsSnapshot,
+  type ProviderTestResult,
+} from "@researchbox/provider-settings";
 
 const NATIVE_STORAGE_COMMAND = "native_storage_request";
 const NATIVE_PROVIDER_FETCH_COMMAND = "native_provider_fetch";
 const NATIVE_PROVIDER_CANCEL_COMMAND = "native_provider_cancel";
+const NATIVE_PROVIDER_SETTINGS_LIST_COMMAND =
+  "native_provider_settings_list";
+const NATIVE_PROVIDER_SETTINGS_SAVE_COMMAND =
+  "native_provider_settings_save";
+const NATIVE_PROVIDER_SETTINGS_REMOVE_COMMAND =
+  "native_provider_settings_remove";
+const NATIVE_PROVIDER_SETTINGS_TEST_COMMAND =
+  "native_provider_settings_test";
 const NATIVE_PYTHON_EXECUTE_COMMAND = "native_python_execute";
 const NATIVE_PYTHON_CANCEL_COMMAND = "native_python_cancel";
 const NATIVE_WEB_SEARCH_EXECUTE_COMMAND = "native_web_search_execute";
@@ -79,6 +94,42 @@ export const nativeProviderCommands = {
   fetch: invokeNativeProviderFetch,
   cancel: invokeNativeProviderCancel,
 };
+
+export async function invokeNativeProviderSettingsList(): Promise<ProviderSettingsSnapshot> {
+  return parseProviderSettingsSnapshot(
+    await invoke<unknown>(NATIVE_PROVIDER_SETTINGS_LIST_COMMAND),
+  );
+}
+
+export async function invokeNativeProviderSettingsSave(
+  input: ProviderConfigurationInput,
+): Promise<ProviderSettingsSnapshot> {
+  return parseProviderSettingsSnapshot(
+    await invoke<unknown>(NATIVE_PROVIDER_SETTINGS_SAVE_COMMAND, {
+      input,
+    }),
+  );
+}
+
+export async function invokeNativeProviderSettingsRemove(
+  providerId: string,
+): Promise<ProviderSettingsSnapshot> {
+  return parseProviderSettingsSnapshot(
+    await invoke<unknown>(NATIVE_PROVIDER_SETTINGS_REMOVE_COMMAND, {
+      provider_id: providerId,
+    }),
+  );
+}
+
+export async function invokeNativeProviderSettingsTest(
+  input: ProviderConfigurationInput,
+): Promise<ProviderTestResult> {
+  return parseProviderTestResult(
+    await invoke<unknown>(NATIVE_PROVIDER_SETTINGS_TEST_COMMAND, {
+      input,
+    }),
+  );
+}
 
 export async function invokeNativePythonExecute(
   request: PythonExecuteRequest,

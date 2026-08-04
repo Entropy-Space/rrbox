@@ -55,6 +55,7 @@ import {
 import { MarkdownContent } from "./MarkdownContent.tsx";
 import { isStreamingAssistantText } from "./markdown.ts";
 import { PluginsPage } from "./PluginsPage.tsx";
+import { ProvidersPage } from "./ProvidersPage.tsx";
 import { SummaryReviewDialog } from "./SummaryReviewDialog.tsx";
 import {
   loadPluginSettings,
@@ -86,10 +87,14 @@ import {
   useWorkspaceTransfer,
   type WorkspaceTransferAdapter,
 } from "./workspace-transfer.ts";
+import type {
+  ProviderSettingsAdapter,
+} from "@researchbox/provider-settings";
 
 export type ResearchBoxViewerProps = {
   createTransport: CoreTransportFactory;
   plugins?: readonly PluginCatalogEntry[];
+  providerSettingsAdapter?: ProviderSettingsAdapter;
   workspaceTransferAdapter?: WorkspaceTransferAdapter;
 };
 
@@ -116,7 +121,7 @@ const suggestions = [
   },
 ];
 
-function getPluginSaveBlockedReason({
+function getRuntimeSettingsSaveBlockedReason({
   isCoreReady,
   isRunning,
   isManagementPending,
@@ -150,13 +155,13 @@ function getPluginSaveBlockedReason({
 export function ResearchBoxViewer({
   createTransport,
   plugins = [],
+  providerSettingsAdapter,
   workspaceTransferAdapter,
 }: ResearchBoxViewerProps) {
   const [pluginSettings, setPluginSettings] = useState(
     loadPluginSettings,
   );
-  const [pluginSettingsRevision, setPluginSettingsRevision] =
-    useState(0);
+  const [runtimeSettingsRevision, setRuntimeSettingsRevision] = useState(0);
   const {
     coreState,
     transportError,
@@ -191,11 +196,11 @@ export function ResearchBoxViewer({
     abortRun,
     openFile,
     navigateToParent,
-  } = useAgentSession(createTransport, pluginSettingsRevision);
+  } = useAgentSession(createTransport, runtimeSettingsRevision);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [activePage, setActivePage] = useState<"chat" | "plugins">(
-    "chat",
-  );
+  const [activePage, setActivePage] = useState<
+    "chat" | "plugins" | "providers"
+  >("chat");
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const [conversationHistorySession, setConversationHistorySession] =
     useState<string | null>(null);
@@ -268,7 +273,11 @@ export function ResearchBoxViewer({
     setActivePage("plugins");
     setSidebarOpen(false);
   }, []);
-  const closePlugins = useCallback(() => setActivePage("chat"), []);
+  const openProviders = useCallback(() => {
+    setActivePage("providers");
+    setSidebarOpen(false);
+  }, []);
+  const closeSettingsPage = useCallback(() => setActivePage("chat"), []);
   const savePlugin = useCallback(
     (pluginId: string, setting: PluginSetting): string | null => {
       try {
@@ -279,7 +288,7 @@ export function ResearchBoxViewer({
         );
         savePluginSettings(next);
         setPluginSettings(next);
-        setPluginSettingsRevision((current) => current + 1);
+        setRuntimeSettingsRevision((current) => current + 1);
         return null;
       } catch (error) {
         return error instanceof Error
@@ -373,7 +382,7 @@ export function ResearchBoxViewer({
     },
     [canSubmitDraft, submitPrompt],
   );
-  const pluginSaveBlockedReason = getPluginSaveBlockedReason({
+  const runtimeSettingsSaveBlockedReason = getRuntimeSettingsSaveBlockedReason({
     isCoreReady: coreState.is_ready,
     isRunning: coreState.is_running,
     isManagementPending,
@@ -535,6 +544,10 @@ export function ResearchBoxViewer({
         onOpenChatSearch={openChatSearch}
         onOpenPlugins={plugins.length > 0 ? openPlugins : undefined}
         isPluginsActive={activePage === "plugins"}
+        onOpenProviders={
+          providerSettingsAdapter ? openProviders : undefined
+        }
+        isProvidersActive={activePage === "providers"}
         onRenameSession={renameSession}
         onDeleteSession={deleteSession}
         onSelectSession={selectSession}
@@ -563,9 +576,20 @@ export function ResearchBoxViewer({
         <PluginsPage
           plugins={plugins}
           settings={pluginSettings}
-          saveBlockedReason={pluginSaveBlockedReason}
-          onClose={closePlugins}
+          saveBlockedReason={runtimeSettingsSaveBlockedReason}
+          onClose={closeSettingsPage}
           onSave={savePlugin}
+        />
+      )}
+
+      {activePage === "providers" && providerSettingsAdapter && (
+        <ProvidersPage
+          adapter={providerSettingsAdapter}
+          saveBlockedReason={runtimeSettingsSaveBlockedReason}
+          onClose={closeSettingsPage}
+          onChanged={() => {
+            setRuntimeSettingsRevision((current) => current + 1);
+          }}
         />
       )}
 

@@ -18,7 +18,8 @@ export type ProviderCatalogModel = Model<string> & {
   reasoning_efforts: ModelSummary["reasoning_efforts"];
 };
 
-type ProviderModelInput = Model<string> & {
+export type ProviderModelInput = Model<string> & {
+  supports_tools?: boolean;
   supports_reasoning_effort?: boolean;
   reasoning_efforts?: ModelSummary["reasoning_efforts"];
 };
@@ -58,6 +59,7 @@ type ProviderState = {
   discover_models: boolean;
   initial_refresh_started: boolean;
   is_configured: boolean;
+  configured_models: Map<string, RegisteredModel>;
   models: Map<string, RegisteredModel>;
 };
 
@@ -228,20 +230,27 @@ export class ProviderCatalogService {
       if (this.providers.has(definition.provider_id)) {
         throw new Error(`Duplicate model provider: ${definition.provider_id}`);
       }
-      const models = new Map<string, RegisteredModel>();
+      const configuredModels = new Map<string, RegisteredModel>();
       for (const candidate of definition.models ?? []) {
         const model = toProviderCatalogModel(candidate);
+        const supportsTools = candidate.supports_tools ?? true;
         if (model.provider !== definition.provider_id) {
           throw new Error(
             `Model ${model.id} does not belong to provider ${definition.provider_id}.`,
           );
         }
-        if (models.has(model.id)) {
+        if (configuredModels.has(model.id)) {
           throw new Error(`Duplicate model id: ${model.id}`);
         }
-        models.set(model.id, {
+        configuredModels.set(model.id, {
           model,
-          availability: "ready",
+          availability: supportsTools ? "ready" : "unavailable",
+          ...(supportsTools
+            ? {}
+            : {
+                status_message:
+                  "This model does not support the agent's tools.",
+              }),
           is_persisted_placeholder: false,
         });
       }
@@ -250,11 +259,14 @@ export class ProviderCatalogService {
         display_name: definition.display_name,
         kind: definition.kind,
         availability:
-          definition.discover_models && models.size === 0 ? "loading" : "ready",
+          definition.discover_models && configuredModels.size === 0
+            ? "loading"
+            : "ready",
         discover_models: definition.discover_models ?? false,
         initial_refresh_started: false,
         is_configured: true,
-        models,
+        configured_models: cloneRegisteredModels(configuredModels),
+        models: cloneRegisteredModels(configuredModels),
       });
     }
 
@@ -268,6 +280,7 @@ export class ProviderCatalogService {
         discover_models: false,
         initial_refresh_started: false,
         is_configured: true,
+        configured_models: new Map(),
         models: new Map(),
       };
       this.providers.set(defaultProvider.provider_id, defaultProvider);
@@ -293,17 +306,30 @@ export class ProviderCatalogService {
         controller.signal,
       );
       if (this.isClosed || controller.signal.aborted) return;
-      provider.models = modelsFromDescriptors(provider.provider_id, descriptors);
+      provider.models = mergeRegisteredModels(
+        provider.configured_models,
+        modelsFromDescriptors(provider.provider_id, descriptors),
+      );
       provider.availability = "ready";
       delete provider.status_message;
       this.ensurePersistedModelsRegistered();
     } catch (error) {
       if (this.isClosed || controller.signal.aborted) return;
-      provider.availability = "unavailable";
-      provider.status_message = toErrorMessage(
+      const message = toErrorMessage(
         error,
         "The provider could not be reached.",
       );
+      if (provider.configured_models.size > 0) {
+        provider.models = cloneRegisteredModels(
+          provider.configured_models,
+        );
+        provider.availability = "ready";
+        provider.status_message =
+          `Model discovery failed; configured models remain available. ${message}`;
+      } else {
+        provider.availability = "unavailable";
+        provider.status_message = message;
+      }
     } finally {
       if (!this.isClosed && !controller.signal.aborted) this.publish();
     }
@@ -323,6 +349,7 @@ export class ProviderCatalogService {
           discover_models: false,
           initial_refresh_started: false,
           is_configured: false,
+          configured_models: new Map(),
           models: new Map(),
         };
         this.providers.set(selection.provider_id, provider);
@@ -426,6 +453,38 @@ function modelsFromDescriptors(
     });
   }
   return models;
+}
+
+function cloneRegisteredModels(
+  source: Map<string, RegisteredModel>,
+): Map<string, RegisteredModel> {
+  return new Map(
+    [...source].map(([modelId, registered]) => [
+      modelId,
+      cloneRegisteredModel(registered),
+    ]),
+  );
+}
+
+function mergeRegisteredModels(
+  configured: Map<string, RegisteredModel>,
+  discovered: Map<string, RegisteredModel>,
+): Map<string, RegisteredModel> {
+  const merged = cloneRegisteredModels(discovered);
+  for (const [modelId, model] of configured) {
+    merged.set(modelId, cloneRegisteredModel(model));
+  }
+  return merged;
+}
+
+function cloneRegisteredModel(model: RegisteredModel): RegisteredModel {
+  return {
+    ...model,
+    model: {
+      ...model.model,
+      reasoning_efforts: [...model.model.reasoning_efforts],
+    },
+  };
 }
 
 function modelFromDescriptor(

@@ -6,6 +6,10 @@ import {
   ResearchBoxViewer,
 } from "@researchbox/viewer";
 import {
+  createBrowserProviderSettingsAdapter,
+  loadBrowserProviderRuntimeConfigurations,
+} from "@researchbox/provider-settings/browser";
+import {
   pythonPluginCatalogEntry,
   resolvePythonPluginRuntimeConfiguration,
 } from "@researchbox/python-plugin/settings";
@@ -20,6 +24,7 @@ import {
 } from "../browser/core-worker-initialization.ts";
 
 const workspaceTransferAdapter = new BrowserWorkspaceTransferAdapter();
+const providerSettingsAdapter = createBrowserProviderSettingsAdapter();
 
 function createTransport(): WorkerCoreTransport {
   const worker = new Worker(new URL(
@@ -31,9 +36,11 @@ function createTransport(): WorkerCoreTransport {
   });
   const transport = new WorkerCoreTransport(worker);
   const settings = loadPluginSettings();
+  const providers = loadBrowserProviderRuntimeConfigurations();
   const initialization: WebCoreWorkerInitializeMessage = {
     protocol_version: WEB_CORE_WORKER_PROTOCOL_VERSION,
     kind: "web_core_initialize",
+    providers,
     python_plugin: resolvePythonPluginRuntimeConfiguration(
       settings.plugins.python,
     ),
@@ -59,6 +66,7 @@ export default function ResearchBoxApp() {
         webSearchPluginCatalogEntry,
       ]}
       workspaceTransferAdapter={workspaceTransferAdapter}
+      providerSettingsAdapter={providerSettingsAdapter}
     />
   );
 }

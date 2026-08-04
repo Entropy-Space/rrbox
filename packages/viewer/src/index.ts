@@ -5,6 +5,7 @@ export * from "./ReasoningEffortSelector.tsx";
 export * from "./ComposerModelControl.tsx";
 export * from "./ConversationHistory.tsx";
 export * from "./plugin-settings.ts";
+export * from "./ProvidersPage.tsx";
 export * from "./ResearchBoxViewer.tsx";
 export * from "./WorkspaceChangeReview.tsx";
 export * from "./line-diff.ts";

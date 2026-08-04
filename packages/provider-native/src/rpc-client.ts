@@ -107,31 +107,43 @@ export class NativeProviderRpcClient {
   private readonly operations = new Map<string, PendingOperation>();
   private closed = false;
 
-  readonly fetch_request: typeof fetch = async (input, init) => {
-    if (this.closed) {
+  readonly fetch_request: typeof fetch = this.create_fetch_request(
+    NATIVE_OPENAI_PROVIDER_ID,
+  );
+
+  create_fetch_request(providerId: string): typeof fetch {
+    if (!providerId.trim()) {
       throw new NativeProviderProtocolError(
-        "The native provider connection is closed.",
+        "Native provider_id must be a non-empty string.",
       );
     }
+    return async (input, init) => {
+      if (this.closed) {
+        throw new NativeProviderProtocolError(
+          "The native provider connection is closed.",
+        );
+      }
 
-    const request = new Request(input, init);
-    request.signal.throwIfAborted();
-    const endpoint = parseFetchEndpoint(request.url);
-    validateRequestHeaders(request.headers, endpoint);
-    const sessionAffinityHeaders = readSessionAffinityHeaders(
-      request.headers,
-      endpoint,
-    );
-    const body = await readRequestBody(request, endpoint);
-    request.signal.throwIfAborted();
-    return this.startFetch(
-      endpoint,
-      endpoint === "models" ? "get" : "post",
-      body,
-      request.signal,
-      sessionAffinityHeaders,
-    );
-  };
+      const request = new Request(input, init);
+      request.signal.throwIfAborted();
+      const endpoint = parseFetchEndpoint(request.url);
+      validateRequestHeaders(request.headers, endpoint);
+      const sessionAffinityHeaders = readSessionAffinityHeaders(
+        request.headers,
+        endpoint,
+      );
+      const body = await readRequestBody(request, endpoint);
+      request.signal.throwIfAborted();
+      return this.startFetch(
+        providerId,
+        endpoint,
+        endpoint === "models" ? "get" : "post",
+        body,
+        request.signal,
+        sessionAffinityHeaders,
+      );
+    };
+  }
 
   constructor(
     endpoint: NativeProviderRpcEndpoint,
@@ -167,6 +179,7 @@ export class NativeProviderRpcClient {
   }
 
   private startFetch(
+    providerId: string,
     endpoint: NativeProviderEndpoint,
     method: "get" | "post",
     body: string | undefined,
@@ -253,7 +266,7 @@ export class NativeProviderRpcClient {
         protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
         request_id: requestId,
         operation_id: operationId,
-        provider_id: NATIVE_OPENAI_PROVIDER_ID,
+        provider_id: providerId,
         endpoint,
         method,
         ...(body === undefined ? {} : { body }),

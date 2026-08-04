@@ -22,6 +22,19 @@ test("default settings preserve the legacy local provider", () => {
   assert.equal(settings.providers[0].base_url, "http://127.0.0.1:4141/v1");
 });
 
+test("browser settings remain safe to import and render without localStorage", async () => {
+  const settings = loadBrowserProviderRuntimeConfigurations();
+  assert.equal(settings[0].provider_id, LEGACY_LOCAL_PROVIDER_ID);
+
+  const adapter = createBrowserProviderSettingsAdapter();
+  const snapshot = await adapter.load();
+  assert.equal(snapshot.providers[0].provider_id, LEGACY_LOCAL_PROVIDER_ID);
+  await assert.rejects(
+    adapter.save(configuration()),
+    /Browser provider settings storage is unavailable/,
+  );
+});
+
 test("browser settings keep public configuration and secrets separate", async () => {
   const storage = memoryStorage();
   const adapter = createBrowserProviderSettingsAdapter({ storage });

@@ -27,10 +27,12 @@ export type ProviderSettingsStorage = Pick<
 >;
 
 export function loadBrowserProviderSettings(
-  storage: ProviderSettingsStorage = localStorage,
+  storage?: ProviderSettingsStorage,
 ): ProviderSettingsDocument {
+  const target = storage ?? browserStorage();
+  if (target === null) return defaultProviderSettings();
   return loadDocument(
-    storage,
+    target,
     PROVIDER_SETTINGS_STORAGE_KEY,
     defaultProviderSettings,
     parseProviderSettingsDocument,
@@ -38,10 +40,12 @@ export function loadBrowserProviderSettings(
 }
 
 export function loadBrowserProviderSecrets(
-  storage: ProviderSettingsStorage = localStorage,
+  storage?: ProviderSettingsStorage,
 ): ProviderSecretsDocument {
+  const target = storage ?? browserStorage();
+  if (target === null) return emptyProviderSecrets();
   return loadDocument(
-    storage,
+    target,
     PROVIDER_SECRETS_STORAGE_KEY,
     emptyProviderSecrets,
     parseProviderSecretsDocument,
@@ -49,7 +53,7 @@ export function loadBrowserProviderSecrets(
 }
 
 export function loadBrowserProviderRuntimeConfigurations(
-  storage: ProviderSettingsStorage = localStorage,
+  storage?: ProviderSettingsStorage,
 ): ProviderRuntimeConfiguration[] {
   return resolveProviderRuntimeConfigurations(
     loadBrowserProviderSettings(storage),
@@ -61,7 +65,7 @@ export function createBrowserProviderSettingsAdapter(options: {
   storage?: ProviderSettingsStorage;
   fetch_request?: typeof fetch;
 } = {}): ProviderSettingsAdapter {
-  const storage = options.storage ?? localStorage;
+  const storage = options.storage ?? browserStorage();
   const fetchRequest = (options.fetch_request ?? fetch).bind(globalThis);
 
   return {
@@ -70,26 +74,30 @@ export function createBrowserProviderSettingsAdapter(options: {
     },
     async save(rawInput) {
       const input = parseProviderConfigurationInput(rawInput);
+      const target = requireBrowserStorage(storage);
       const next = upsertProviderConfiguration(
-        loadBrowserProviderSettings(storage),
-        loadBrowserProviderSecrets(storage),
+        loadBrowserProviderSettings(target),
+        loadBrowserProviderSecrets(target),
         input,
       );
-      persist(storage, next.settings, next.secrets);
+      persist(target, next.settings, next.secrets);
       return createProviderSettingsSnapshot(next.settings, next.secrets);
     },
     async remove(providerId) {
+      const target = requireBrowserStorage(storage);
       const next = removeProviderConfiguration(
-        loadBrowserProviderSettings(storage),
-        loadBrowserProviderSecrets(storage),
+        loadBrowserProviderSettings(target),
+        loadBrowserProviderSecrets(target),
         providerId,
       );
-      persist(storage, next.settings, next.secrets);
+      persist(target, next.settings, next.secrets);
       return createProviderSettingsSnapshot(next.settings, next.secrets);
     },
     async test(rawInput) {
       const input = parseProviderConfigurationInput(rawInput);
-      const savedSecrets = loadBrowserProviderSecrets(storage);
+      const savedSecrets = loadBrowserProviderSecrets(
+        requireBrowserStorage(storage),
+      );
       const apiKey = input.remove_api_key
         ? undefined
         : input.api_key ?? savedSecrets.api_keys[input.provider_id];
@@ -147,11 +155,28 @@ async function testProvider(
   return { model_ids: [...new Set(modelIds)].sort() };
 }
 
-function snapshot(storage: ProviderSettingsStorage): ProviderSettingsSnapshot {
+function snapshot(
+  storage: ProviderSettingsStorage | null,
+): ProviderSettingsSnapshot {
   return createProviderSettingsSnapshot(
-    loadBrowserProviderSettings(storage),
-    loadBrowserProviderSecrets(storage),
+    storage === null
+      ? defaultProviderSettings()
+      : loadBrowserProviderSettings(storage),
+    storage === null
+      ? emptyProviderSecrets()
+      : loadBrowserProviderSecrets(storage),
   );
+}
+
+function browserStorage(): ProviderSettingsStorage | null {
+  return typeof window === "undefined" ? null : window.localStorage;
+}
+
+function requireBrowserStorage(
+  storage: ProviderSettingsStorage | null,
+): ProviderSettingsStorage {
+  if (storage !== null) return storage;
+  throw new Error("Browser provider settings storage is unavailable.");
 }
 
 function persist(

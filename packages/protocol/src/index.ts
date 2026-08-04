@@ -221,6 +221,21 @@ export type SessionSummary = {
   message_count: number;
 };
 
+export type SessionHistoryNodeSummary = {
+  node_id: string;
+  parent_node_id: string | null;
+  entry_id: string;
+  entry_type: TimelineEntry["type"];
+  run_id: string;
+  created_at: string;
+  preview: string;
+};
+
+export type SessionHistorySnapshot = {
+  active_leaf_id: string | null;
+  nodes: SessionHistoryNodeSummary[];
+};
+
 export type ModelSelection = {
   provider_id: string;
   model_id: string;
@@ -280,6 +295,7 @@ export type CoreStateSnapshot = {
   active_session_id: string | null;
   input_draft: string;
   timeline: TimelineEntry[];
+  history?: SessionHistorySnapshot;
   files: FileEntry[];
   is_running: boolean;
 };
@@ -336,6 +352,14 @@ export type ViewerCommand =
   | CommandEnvelope<
       "session_select",
       { project_id: string; session_id: string }
+    >
+  | CommandEnvelope<
+      "session_history_navigate",
+      {
+        project_id: string;
+        session_id: string;
+        target_node_id: string | null;
+      }
     >
   | CommandEnvelope<
       "prompt",
@@ -640,6 +664,12 @@ export function parseViewerCommand(value: unknown): ViewerCommand {
       return commandEnvelope("session_select", requestId, {
         project_id: requireString(payload, "project_id"),
         session_id: requireString(payload, "session_id"),
+      });
+    case "session_history_navigate":
+      return commandEnvelope("session_history_navigate", requestId, {
+        project_id: requireString(payload, "project_id"),
+        session_id: requireString(payload, "session_id"),
+        target_node_id: requireNullableString(payload, "target_node_id"),
       });
     case "prompt":
       return commandEnvelope("prompt", requestId, {
@@ -1691,11 +1721,76 @@ function parseCoreStateSnapshot(value: unknown): CoreStateSnapshot {
     active_session_id: requireNullableString(value, "active_session_id"),
     input_draft: requireString(value, "input_draft", true),
     timeline: parseTimeline(value.timeline),
+    ...(value.history === undefined
+      ? {}
+      : { history: parseSessionHistorySnapshot(value.history) }),
     files: requireArray(value, "files").map(parseFileEntry),
     is_running: requireBoolean(value, "is_running"),
   };
   assertCoreStateInvariants(snapshot);
   return snapshot;
+}
+
+function parseSessionHistorySnapshot(
+  value: unknown,
+): SessionHistorySnapshot {
+  if (!isRecord(value)) {
+    throw new Error("Session history snapshot must be an object.");
+  }
+  const activeLeafId = requireNullableString(value, "active_leaf_id");
+  const nodes = requireArray(value, "nodes").map((candidate) => {
+    if (!isRecord(candidate)) {
+      throw new Error("Session history node summary must be an object.");
+    }
+    const entryType = candidate.entry_type;
+    if (
+      entryType !== "user_message" &&
+      entryType !== "assistant_message" &&
+      entryType !== "tool_result"
+    ) {
+      throw new Error("Invalid session history entry type.");
+    }
+    const createdAt = requireString(candidate, "created_at");
+    assertIsoTimestamp(createdAt, "Session history node created_at");
+    return {
+      node_id: requireString(candidate, "node_id"),
+      parent_node_id: requireNullableString(candidate, "parent_node_id"),
+      entry_id: requireString(candidate, "entry_id"),
+      entry_type: entryType,
+      run_id: requireString(candidate, "run_id"),
+      created_at: createdAt,
+      preview: requireBoundedString(candidate, "preview", 240, true),
+    } satisfies SessionHistoryNodeSummary;
+  });
+  const nodeIds = new Set(nodes.map((node) => node.node_id));
+  if (nodeIds.size !== nodes.length) {
+    throw new Error("Session history node ids must be unique.");
+  }
+  if (activeLeafId !== null && !nodeIds.has(activeLeafId)) {
+    throw new Error("Session history active leaf does not exist.");
+  }
+  for (const node of nodes) {
+    if (node.node_id !== node.entry_id) {
+      throw new Error("Session history node_id must match entry_id.");
+    }
+    if (
+      node.parent_node_id !== null &&
+      !nodeIds.has(node.parent_node_id)
+    ) {
+      throw new Error("Session history parent does not exist.");
+    }
+    const visited = new Set<string>();
+    let currentId: string | null = node.node_id;
+    while (currentId !== null) {
+      if (visited.has(currentId)) {
+        throw new Error("Session history contains a cycle.");
+      }
+      visited.add(currentId);
+      currentId = nodes.find((candidate) => candidate.node_id === currentId)
+        ?.parent_node_id ?? null;
+    }
+  }
+  return { active_leaf_id: activeLeafId, nodes };
 }
 
 function assertCoreStateInvariants(snapshot: CoreStateSnapshot): void {
@@ -1743,6 +1838,9 @@ function assertCoreStateInvariants(snapshot: CoreStateSnapshot): void {
     if (snapshot.is_running) {
       throw new Error("Virtual new chat cannot have an active run.");
     }
+    if (snapshot.history !== undefined) {
+      assertSessionHistorySnapshotInvariants(snapshot.history, snapshot.timeline);
+    }
     return;
   }
 
@@ -1758,6 +1856,46 @@ function assertCoreStateInvariants(snapshot: CoreStateSnapshot): void {
     throw new Error(
       "Active session message_count must equal its user prompt count.",
     );
+  }
+  if (snapshot.history !== undefined) {
+    assertSessionHistorySnapshotInvariants(snapshot.history, snapshot.timeline);
+  }
+}
+
+function assertSessionHistorySnapshotInvariants(
+  history: SessionHistorySnapshot,
+  timeline: readonly TimelineEntry[],
+): void {
+  const nodes = new Map(history.nodes.map((node) => [node.node_id, node]));
+  if (nodes.size !== history.nodes.length) {
+    throw new Error("Session history node ids must be unique.");
+  }
+  if (history.active_leaf_id === null) {
+    if (timeline.length > 0) {
+      throw new Error("Session history active leaf cannot be empty.");
+    }
+    return;
+  }
+  const path: string[] = [];
+  const visited = new Set<string>();
+  let currentId: string | null = history.active_leaf_id;
+  while (currentId !== null) {
+    if (visited.has(currentId)) {
+      throw new Error("Session history contains a cycle.");
+    }
+    visited.add(currentId);
+    const node = nodes.get(currentId);
+    if (!node) throw new Error("Session history active leaf does not exist.");
+    path.push(node.entry_id);
+    currentId = node.parent_node_id;
+  }
+  path.reverse();
+  const timelineIds = timeline.map((entry) => entry.entry_id);
+  if (
+    path.length !== timelineIds.length ||
+    path.some((entryId, index) => entryId !== timelineIds[index])
+  ) {
+    throw new Error("Session history does not match the active timeline.");
   }
 }
 

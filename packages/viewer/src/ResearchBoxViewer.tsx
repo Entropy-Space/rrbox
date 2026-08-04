@@ -47,6 +47,7 @@ import { ChatSearchDialog } from "./ChatSearchDialog.tsx";
 import { shouldFocusComposerAfterChatSearch } from "./chat-search.ts";
 import { ComposerCommandMenu } from "./ComposerCommandMenu.tsx";
 import { ComposerModelControl } from "./ComposerModelControl.tsx";
+import { ConversationHistory } from "./ConversationHistory.tsx";
 import {
   isModalNavigationOpen,
   MOBILE_NAVIGATION_QUERY,
@@ -186,6 +187,7 @@ export function ResearchBoxViewer({
     renameSession,
     deleteSession,
     selectSession,
+    navigateConversationHistory,
     abortRun,
     openFile,
     navigateToParent,
@@ -195,6 +197,8 @@ export function ResearchBoxViewer({
     "chat",
   );
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
+  const [conversationHistorySession, setConversationHistorySession] =
+    useState<string | null>(null);
   const [isMobileViewport, setMobileViewport] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -214,6 +218,10 @@ export function ResearchBoxViewer({
     read_change: readWorkspaceChange,
     revert_change: revertWorkspaceChange,
   });
+  const conversationHistoryKey =
+    `${coreState.active_project_id ?? ""}:${coreState.active_session_id ?? ""}`;
+  const conversationHistoryOpen =
+    conversationHistorySession === conversationHistoryKey;
   const timelineRows = useMemo(
     () => buildTimelineRows(coreState.timeline),
     [coreState.timeline],
@@ -584,6 +592,34 @@ export function ResearchBoxViewer({
             </button>
           </div>
           <div className="topbar-actions">
+            <ConversationHistory
+              history={coreState.history}
+              is_open={conversationHistoryOpen}
+              is_pending={isManagementPending}
+              is_running={coreState.is_running}
+              onToggle={() =>
+                setConversationHistorySession((current) =>
+                  current === conversationHistoryKey
+                    ? null
+                    : conversationHistoryKey,
+                )
+              }
+              onClose={() => setConversationHistorySession(null)}
+              onNavigate={(targetNodeId) => {
+                if (
+                  coreState.active_project_id === null ||
+                  coreState.active_session_id === null
+                ) {
+                  return;
+                }
+                navigateConversationHistory(
+                  coreState.active_project_id,
+                  coreState.active_session_id,
+                  targetNodeId,
+                );
+                setConversationHistorySession(null);
+              }}
+            />
             <span
               className={`core-status ${coreState.is_ready ? "online" : coreState.core_lifecycle}`}
               title={

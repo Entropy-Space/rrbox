@@ -2341,6 +2341,75 @@ test("timeline preserves reasoning, text, tool, result, and final text order acr
   );
 });
 
+test("conversation history navigation keeps old branches while continuing from a checkpoint", async () => {
+  const store = new MemoryProjectStore();
+  const provider = createWorkspaceProvider();
+  const events = [];
+  const core = createCore(store, provider, events);
+
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await core.handle(createCommand("prompt", {
+    project_id: initial.active_project_id,
+    session_id: null,
+    text: "First question",
+  }));
+  const first = latestState(events);
+  const sessionId = first.active_session_id;
+  assert.ok(sessionId);
+
+  await core.handle(createCommand("prompt", {
+    project_id: first.active_project_id,
+    session_id: sessionId,
+    text: "Second question",
+  }));
+  const second = latestState(events);
+  const firstAssistantId = second.history.nodes.find(
+    (node) => node.entry_type === "assistant_message",
+  ).node_id;
+
+  await core.handle(createCommand("session_history_navigate", {
+    project_id: second.active_project_id,
+    session_id: sessionId,
+    target_node_id: firstAssistantId,
+  }));
+  const checkpoint = latestState(events);
+  assert.equal(checkpoint.history.active_leaf_id, firstAssistantId);
+  assert.deepEqual(
+    checkpoint.timeline.map((entry) => entry.content ?? entry.type),
+    ["First question", "assistant_message"],
+  );
+
+  await core.handle(createCommand("prompt", {
+    project_id: checkpoint.active_project_id,
+    session_id: sessionId,
+    text: "Alternative question",
+  }));
+  const branched = latestState(events);
+  const persisted = (await store.load()).documents[0];
+
+  assert.deepEqual(
+    branched.timeline
+      .filter((entry) => entry.type === "user_message")
+      .map((entry) => entry.content),
+    ["First question", "Alternative question"],
+  );
+  assert.equal(
+    branched.history.nodes.some((node) => node.node_id === firstAssistantId),
+    true,
+  );
+  assert.equal(branched.history.nodes.length, 6);
+  assert.equal(branched.history.active_leaf_id, branched.timeline.at(-1).entry_id);
+  assert.deepEqual(
+    persisted.history.nodes.map((node) => node.node_id),
+    branched.history.nodes.map((node) => node.node_id),
+  );
+  assert.deepEqual(
+    persisted.timeline.map((entry) => entry.entry_id),
+    branched.timeline.map((entry) => entry.entry_id),
+  );
+});
+
 test("search_files returns bounded structured matches through the agent loop", async () => {
   const store = new MemoryProjectStore();
   const workspace = new MemoryFileSystem({

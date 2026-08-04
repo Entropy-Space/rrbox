@@ -10,7 +10,10 @@ import {
   type ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import type { ModelTransport } from "@researchbox/model-transport";
-import type { SessionDocument } from "@researchbox/project-store";
+import {
+  synchronizeSessionHistory,
+  type SessionDocument,
+} from "@researchbox/project-store";
 import {
   PROTOCOL_VERSION,
   type AssistantBlock,
@@ -1723,6 +1726,10 @@ export function stagePrompt(
   };
   document.input_draft = "";
   document.timeline.push(userEntry);
+  document.history = synchronizeSessionHistory(
+    document.history,
+    document.timeline,
+  );
   return {
     user_entry: userEntry,
     run_id: runId,

@@ -47,6 +47,11 @@ test("round-trips every protocol-v24 command", () => {
     }),
     createCommand("session_delete", { project_id: "p1", session_id: "s1" }),
     createCommand("session_select", { project_id: "p1", session_id: "s1" }),
+    createCommand("session_history_navigate", {
+      project_id: "p1",
+      session_id: "s1",
+      target_node_id: "assistant-1",
+    }),
     createCommand("input_draft_update", {
       project_id: "p1",
       session_id: null,
@@ -899,6 +904,31 @@ test("validates timeline snapshots and user-prompt message counts", () => {
   assert.throws(
     () => parseCoreEvent(coreEvent("state_snapshot", { state: mismatch })),
     /message_count must equal its user prompt count/,
+  );
+});
+
+test("validates conversation history snapshots against the active timeline", () => {
+  const state = createPersistedState();
+  state.history = {
+    active_leaf_id: "assistant-2",
+    nodes: state.timeline.map((entry, index) => ({
+      node_id: entry.entry_id,
+      parent_node_id: index === 0 ? null : state.timeline[index - 1].entry_id,
+      entry_id: entry.entry_id,
+      entry_type: entry.type,
+      run_id: entry.run_id,
+      created_at: entry.created_at,
+      preview: entry.type === "user_message" ? entry.content : "checkpoint",
+    })),
+  };
+  const parsed = parseCoreEvent(coreEvent("state_snapshot", { state }));
+  assert.equal(parsed.payload.state.history.active_leaf_id, "assistant-2");
+
+  const mismatch = structuredClone(state);
+  mismatch.history.active_leaf_id = "assistant-1";
+  assert.throws(
+    () => parseCoreEvent(coreEvent("state_snapshot", { state: mismatch })),
+    /history does not match the active timeline/,
   );
 });
 

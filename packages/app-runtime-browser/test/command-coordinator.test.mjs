@@ -284,7 +284,7 @@ test("project deletion does not wait for a run in another project", async () => 
   await Promise.all([prompt, deletion]);
 });
 
-test("tab-local navigation takes only a shared project lifecycle gate", async () => {
+test("selection and history navigation use their appropriate project and session gates", async () => {
   const lockManager = new TestLockManager();
   const coordinator = new BrowserCommandCoordinator(lockManager);
   const handled = [];
@@ -304,16 +304,32 @@ test("tab-local navigation takes only a shared project lifecycle gate", async ()
     }),
     async () => handled.push("session_select"),
   );
+  await coordinator.run(
+    createCommand("session_history_navigate", {
+      project_id: "project-1",
+      session_id: "session-1",
+      target_node_id: null,
+    }),
+    async () => handled.push("session_history_navigate"),
+  );
 
   assert.deepEqual(handled, [
     "project_select",
     "new_chat",
     "session_select",
+    "session_history_navigate",
   ]);
   assert.deepEqual(lockManager.requests, [
     { name: projectCommandLock("project-1"), mode: "shared" },
     { name: projectCommandLock("project-1"), mode: "shared" },
     { name: projectCommandLock("project-1"), mode: "shared" },
+    { name: RESEARCHBOX_LEGACY_WRITER_LOCK, mode: "shared" },
+    { name: RESEARCHBOX_MAINTENANCE_LOCK, mode: "shared" },
+    { name: projectCommandLock("project-1"), mode: "shared" },
+    {
+      name: sessionRunCommandLock("project-1", "session-1"),
+      mode: "exclusive",
+    },
   ]);
 });
 

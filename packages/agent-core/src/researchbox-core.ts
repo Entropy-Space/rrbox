@@ -1,9 +1,12 @@
 import type { Model } from "@earendil-works/pi-ai";
 import type { ModelTransport } from "@researchbox/model-transport";
 import {
+  createSessionHistory,
+  navigateSessionHistory,
   PROJECT_STORE_SCHEMA_VERSION,
   ProjectStoreConflictError,
   SESSION_DOCUMENT_FORMAT_VERSION,
+  synchronizeSessionHistory,
   type ProjectRecord,
   type ProjectStoreChange,
   type ProjectStore,
@@ -18,6 +21,8 @@ import {
   type FileEntry,
   type ModelSelection,
   type ReasoningEffort,
+  type SessionHistorySnapshot,
+  type TimelineEntry,
   type ToolCallBlock,
   type ToolResultEntry,
   type ViewerCommand,
@@ -560,6 +565,14 @@ export class ResearchBoxCore {
         await this.selectSession(
           command.payload.project_id,
           command.payload.session_id,
+          command.request_id,
+        );
+        return;
+      case "session_history_navigate":
+        await this.navigateSessionHistory(
+          command.payload.project_id,
+          command.payload.session_id,
+          command.payload.target_node_id,
           command.request_id,
         );
         return;
@@ -1331,6 +1344,46 @@ export class ResearchBoxCore {
     await this.emitStateSnapshot(requestId);
   }
 
+  private async navigateSessionHistory(
+    projectId: string,
+    sessionId: string,
+    targetNodeId: string | null,
+    requestId: string,
+  ): Promise<void> {
+    if (!this.getSession(projectId, sessionId, requestId)) return;
+    if (!this.validateActiveSession(projectId, sessionId, requestId)) return;
+    if (!this.ensureManagementIdle(requestId)) return;
+    await this.stopActiveRun();
+
+    try {
+      const currentDocument = this.requireDocument(sessionId);
+      const navigation = navigateSessionHistory(
+        currentDocument.history,
+        targetNodeId,
+      );
+      const now = new Date().toISOString();
+      await this.commitMutation((draft) => {
+        const document = findDocument(draft, sessionId);
+        document.history = navigation.history;
+        document.timeline = navigation.timeline;
+        const session = findSession(draft, sessionId);
+        session.updated_at = now;
+        findProject(draft, projectId).updated_at = now;
+        return draft;
+      });
+      await this.activateSelection();
+      await this.emitStateSnapshot(requestId);
+    } catch (error) {
+      this.emitError(
+        "session_history_navigation_failed",
+        toErrorMessage(error, "The conversation history could not be opened."),
+        requestId,
+        projectId,
+        sessionId,
+      );
+    }
+  }
+
   private startProviderRefreshes(): void {
     if (this.providerRefreshObserverStarted) return;
     this.providerRefreshObserverStarted = true;
@@ -1499,9 +1552,13 @@ export class ResearchBoxCore {
       throw new Error("The running session is no longer active.");
     }
 
-    const runtimeDocument = structuredClone(
-      findDocument(state, sessionId),
+    const stateDocument = findDocument(state, sessionId);
+    const runtimeDocument = structuredClone(stateDocument);
+    const synchronizedHistory = synchronizeSessionHistory(
+      runtimeDocument.history,
+      runtimeDocument.timeline,
     );
+    stateDocument.history = structuredClone(synchronizedHistory);
     const requestedSelection = {
       project_id: state.active_project_id,
       session_id: state.active_session_id,
@@ -1512,6 +1569,7 @@ export class ResearchBoxCore {
       const session = findSession(draft, sessionId);
       const document = findDocument(draft, sessionId);
       document.timeline = structuredClone(runtimeDocument.timeline);
+      document.history = structuredClone(synchronizedHistory);
       if (
         phase === "staged" &&
         submittedDraft?.project_id === projectId &&
@@ -1739,6 +1797,9 @@ export class ResearchBoxCore {
           ? activeProject.new_chat_draft
           : document.input_draft,
       timeline: structuredClone(document?.timeline ?? []),
+      ...(document === null
+        ? {}
+        : { history: summarizeSessionHistory(document.history) }),
       files,
       is_running: this.runtime?.is_running ?? false,
     };
@@ -2443,6 +2504,53 @@ export class ResearchBoxCore {
 
 export { ResearchBoxCore as AgentCore };
 
+function summarizeSessionHistory(
+  history: SessionDocument["history"],
+): SessionHistorySnapshot {
+  return {
+    active_leaf_id: history.active_leaf_id,
+    nodes: history.nodes.map((node) => ({
+      node_id: node.node_id,
+      parent_node_id: node.parent_node_id,
+      entry_id: node.entry.entry_id,
+      entry_type: node.entry.type,
+      run_id: node.entry.run_id,
+      created_at: node.entry.created_at,
+      preview: sessionHistoryPreview(node.entry),
+    })),
+  };
+}
+
+function sessionHistoryPreview(entry: TimelineEntry): string {
+  switch (entry.type) {
+    case "user_message":
+      return truncateHistoryPreview(entry.content);
+    case "assistant_message": {
+      const block = entry.blocks.find(
+        (candidate) => candidate.type === "assistant_text",
+      );
+      if (block) return truncateHistoryPreview(block.text);
+      const tool = entry.blocks.find(
+        (candidate) => candidate.type === "tool_call",
+      );
+      return tool
+        ? truncateHistoryPreview(`Tool: ${tool.tool_name}`)
+        : "Assistant response";
+    }
+    case "tool_result":
+      return truncateHistoryPreview(
+        entry.summary ?? (entry.is_error ? "Tool failed" : "Tool result"),
+      );
+  }
+}
+
+function truncateHistoryPreview(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > 120
+    ? `${normalized.slice(0, 117)}…`
+    : normalized;
+}
+
 function createInitialState(
   modelSelection: ModelSelection,
 ): ProjectStoreState {
@@ -2502,6 +2610,7 @@ function createSessionRecord(
       project_id: projectId,
       input_draft: "",
       timeline: [],
+      history: createSessionHistory([]),
     },
   };
 }
@@ -2575,10 +2684,12 @@ async function repairPersistedStateOnStartup(
       await reconcileWorkspaceChanges(state, workspaceBackend);
     const repairedTranscripts = repairInvalidTranscripts(state);
     const repairedRuns = repairInterruptedSessions(state);
+    const synchronizedHistories = synchronizePersistedSessionHistories(state);
     const stateChanged =
       workspaceChangeReconciliation.state_changed ||
       repairedTranscripts ||
-      repairedRuns;
+      repairedRuns ||
+      synchronizedHistories;
 
     if (!stateChanged) {
       return {
@@ -3013,6 +3124,24 @@ function repairInvalidTranscripts(state: ProjectStoreState): boolean {
     repaired = repairInvalidTranscript(document) || repaired;
   }
   return repaired;
+}
+
+function synchronizePersistedSessionHistories(
+  state: ProjectStoreState,
+): boolean {
+  let synchronized = false;
+  for (const document of state.documents) {
+    const nextHistory = synchronizeSessionHistory(
+      document.history,
+      document.timeline,
+    );
+    if (JSON.stringify(nextHistory) === JSON.stringify(document.history)) {
+      continue;
+    }
+    document.history = nextHistory;
+    synchronized = true;
+  }
+  return synchronized;
 }
 
 function repairInvalidTranscript(document: SessionDocument): boolean {

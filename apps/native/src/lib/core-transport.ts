@@ -21,8 +21,11 @@ import {
   NATIVE_CORE_WORKER_PROTOCOL_VERSION,
   type NativeCoreWorkerInitializeMessage,
 } from "./types.ts";
+import type { ProviderRuntimeConfiguration } from "@researchbox/provider-settings";
 
-export const createNativeCoreTransport: CoreTransportFactory = () => {
+export function createNativeCoreTransport(
+  providers: ProviderRuntimeConfiguration[],
+): ReturnType<CoreTransportFactory> {
   const worker = new Worker(
     new URL("../workers/core.worker.ts", import.meta.url),
     {
@@ -58,6 +61,7 @@ export const createNativeCoreTransport: CoreTransportFactory = () => {
   const initialization: NativeCoreWorkerInitializeMessage = {
     protocol_version: NATIVE_CORE_WORKER_PROTOCOL_VERSION,
     kind: "native_core_initialize",
+    providers,
     storage_port: storageChannel.port2,
     provider_port: providerChannel.port2,
     python_port: pythonChannel.port2,
@@ -87,4 +91,4 @@ export const createNativeCoreTransport: CoreTransportFactory = () => {
   }
 
   return workerTransport;
-};
+}

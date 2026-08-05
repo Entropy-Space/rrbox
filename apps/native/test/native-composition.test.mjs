@@ -41,7 +41,9 @@ test("mounts the shared viewer through the native worker transport", async () =>
   assert.match(appSource, /@researchbox\/viewer\/styles\.css/);
   assert.match(appSource, /<ResearchBoxPage \/>/);
   assert.match(pageSource, /<ResearchBoxViewer/);
-  assert.match(pageSource, /createTransport=\{createNativeCoreTransport\}/);
+  assert.match(pageSource, /loadNativeProviderRuntimeConfigurations/);
+  assert.match(pageSource, /createNativeCoreTransport\(providers \?\? \[\]\)/);
+  assert.match(pageSource, /providerSettingsAdapter=\{providerSettingsAdapter\}/);
   assert.match(transportSource, /CoreTransportFactory/);
   assert.match(transportSource, /new WorkerCoreTransport/);
   assert.match(transportSource, /new MessageChannel/);
@@ -69,7 +71,7 @@ test("mounts the shared viewer through the native worker transport", async () =>
     coreWorkerSource,
     /workerNavigator\.locks \?\? new InMemoryCommandLockManager\(\)/,
   );
-  assert.match(coreWorkerSource, /include_local_openai:\s*true/);
+  assert.match(coreWorkerSource, /providers:\s*initialization\.providers/);
   assert.match(coreWorkerSource, /native_llm_initialize/);
   assert.match(coreWorkerSource, /initialization\.provider_port/);
   assert.match(coreWorkerSource, /NativePythonRpcClient/);

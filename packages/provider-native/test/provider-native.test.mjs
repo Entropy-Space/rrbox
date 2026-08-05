@@ -146,7 +146,13 @@ test("discovers models through the constrained native fetch adapter", async () =
     create_operation_id: ids,
     create_request_id: ids,
   });
-  const transport = new NativeOpenAiCompatibleModelTransport(client);
+  const transport = new NativeOpenAiCompatibleModelTransport(
+    client,
+    nativeProviderConfiguration({
+      provider_id: "provider-1",
+      display_name: "Provider 1",
+    }),
+  );
   const requestPromise = nextPortMessage(channel.port1);
   const modelsPromise = transport.listModels(new AbortController().signal);
   const request = await requestPromise;
@@ -155,7 +161,7 @@ test("discovers models through the constrained native fetch adapter", async () =
     protocol_version: NATIVE_PROVIDER_PROTOCOL_VERSION,
     request_id: "models-request",
     operation_id: "models-operation",
-    provider_id: "local-openai",
+    provider_id: "provider-1",
     endpoint: "models",
     method: "get",
   });
@@ -200,9 +206,8 @@ test("discovers models through the constrained native fetch adapter", async () =
 
   assert.deepEqual(await modelsPromise, [
     {
-      provider_id: "local-openai",
-      provider_display_name:
-        "OpenAI-compatible · localhost:4141",
+      provider_id: "provider-1",
+      provider_display_name: "Provider 1",
       model_id: "gpt-test",
       display_name: "gpt-test",
       context_window: 8192,
@@ -228,7 +233,10 @@ test("preserves incremental SSE ordering through the native body stream", async 
     create_operation_id: ids,
     create_request_id: ids,
   });
-  const transport = new NativeOpenAiCompatibleModelTransport(client);
+  const transport = new NativeOpenAiCompatibleModelTransport(
+    client,
+    nativeProviderConfiguration(),
+  );
   const requestPromise = nextPortMessage(channel.port1);
   const eventsPromise = collectEvents(
     transport.stream(modelRequest(), new AbortController().signal),
@@ -615,6 +623,20 @@ function modelRequest() {
     reasoning_effort: "high",
     messages: [{ role: "user", content: "Hello" }],
     tools: [],
+  };
+}
+
+function nativeProviderConfiguration(overrides = {}) {
+  return {
+    provider_id: "local-openai",
+    display_name: "OpenAI-compatible · localhost:4141",
+    preset_id: "local",
+    base_url: "http://127.0.0.1:4141/v1",
+    enabled: true,
+    manual_models: [],
+    send_reasoning_content: true,
+    send_session_affinity_headers: true,
+    ...overrides,
   };
 }
 

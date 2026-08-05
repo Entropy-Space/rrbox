@@ -21,6 +21,8 @@ import {
 } from "@researchbox/web-search-plugin/providers/exa";
 import {
   parseWebCoreWorkerInitializeMessage,
+  WEB_LLM_WORKER_PROTOCOL_VERSION,
+  type WebLlmWorkerInitializeMessage,
 } from "./core-worker-initialization.ts";
 
 const host = self as unknown as WorkerHost;
@@ -94,13 +96,25 @@ host.onmessage = (event) => {
           }
         : undefined,
     providers: createResearchBoxProviderDefinitions({
-      include_local_openai: true,
+      providers: initialization.providers,
     }),
     create_model_worker() {
-      return new Worker(new URL("./llm.worker.ts", import.meta.url), {
+      const worker = new Worker(new URL("./llm.worker.ts", import.meta.url), {
         type: "module",
         name: "researchbox-llm",
       });
+      const llmInitialization: WebLlmWorkerInitializeMessage = {
+        protocol_version: WEB_LLM_WORKER_PROTOCOL_VERSION,
+        kind: "web_llm_initialize",
+        providers: initialization.providers,
+      };
+      try {
+        worker.postMessage(llmInitialization);
+      } catch (error) {
+        worker.terminate();
+        throw error;
+      }
+      return worker;
     },
   });
 };

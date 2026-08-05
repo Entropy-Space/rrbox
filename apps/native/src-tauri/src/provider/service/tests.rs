@@ -49,11 +49,18 @@ fn rejects_routes_methods_providers_and_oversized_bodies_before_networking() {
     ),
   ];
 
-  for request in cases {
+  for (index, request) in cases.into_iter().enumerate() {
     let error = service
       .start_fetch(request, |_| Ok(()))
       .expect_err("invalid provider request must be rejected");
-    assert_eq!(error.code(), "invalid_request");
+    assert_eq!(
+      error.code(),
+      if index == 0 {
+        "provider_unavailable"
+      } else {
+        "invalid_request"
+      }
+    );
   }
 
   let oversized = "x".repeat(MAX_REQUEST_BYTES + 1);

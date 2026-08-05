@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 pub const NATIVE_PROVIDER_PROTOCOL_VERSION: u32 = 2;
+#[cfg(test)]
 pub const LOCAL_OPENAI_PROVIDER_ID: &str = "local-openai";
 
 #[derive(Debug, Deserialize)]

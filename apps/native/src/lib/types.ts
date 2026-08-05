@@ -28,13 +28,18 @@ import type {
   NativeWebSearchExecuteRequest,
   NativeWebSearchExecuteResponse,
 } from "@researchbox/web-search-plugin/native-protocol";
+import {
+  parseProviderRuntimeConfiguration,
+  type ProviderRuntimeConfiguration,
+} from "@researchbox/provider-settings";
 
-export const NATIVE_CORE_WORKER_PROTOCOL_VERSION = 8 as const;
-export const NATIVE_LLM_WORKER_PROTOCOL_VERSION = 1 as const;
+export const NATIVE_CORE_WORKER_PROTOCOL_VERSION = 9 as const;
+export const NATIVE_LLM_WORKER_PROTOCOL_VERSION = 2 as const;
 
 export type NativeCoreWorkerInitializeMessage = {
   protocol_version: typeof NATIVE_CORE_WORKER_PROTOCOL_VERSION;
   kind: "native_core_initialize";
+  providers: ProviderRuntimeConfiguration[];
   storage_port: MessagePort;
   provider_port: MessagePort;
   python_port: MessagePort;
@@ -47,6 +52,7 @@ export type NativeLlmWorkerInitializeMessage = {
   protocol_version: typeof NATIVE_LLM_WORKER_PROTOCOL_VERSION;
   kind: "native_llm_initialize";
   provider_port: MessagePort;
+  providers: ProviderRuntimeConfiguration[];
 };
 
 export type NativeStorageCommand = (
@@ -87,6 +93,7 @@ export function parseNativeCoreWorkerInitializeMessage(
   if (!isExactRecord(value, [
     "protocol_version",
     "kind",
+    "providers",
     "storage_port",
     "provider_port",
     "python_port",
@@ -109,6 +116,7 @@ export function parseNativeCoreWorkerInitializeMessage(
   return {
     protocol_version: NATIVE_CORE_WORKER_PROTOCOL_VERSION,
     kind: "native_core_initialize",
+    providers: parseProviderRuntimeConfigurations(value.providers),
     storage_port: value.storage_port,
     provider_port: value.provider_port,
     python_port: value.python_port,
@@ -129,6 +137,7 @@ export function parseNativeLlmWorkerInitializeMessage(
     "protocol_version",
     "kind",
     "provider_port",
+    "providers",
   ])) {
     throw new Error("Invalid native LLM worker initialization.");
   }
@@ -139,7 +148,28 @@ export function parseNativeLlmWorkerInitializeMessage(
   ) {
     throw new Error("Invalid native LLM worker initialization.");
   }
-  return value as NativeLlmWorkerInitializeMessage;
+  return {
+    protocol_version: NATIVE_LLM_WORKER_PROTOCOL_VERSION,
+    kind: "native_llm_initialize",
+    provider_port: value.provider_port,
+    providers: parseProviderRuntimeConfigurations(value.providers),
+  };
+}
+
+function parseProviderRuntimeConfigurations(
+  value: unknown,
+): ProviderRuntimeConfiguration[] {
+  if (!Array.isArray(value)) {
+    throw new Error("Provider runtime configurations must be an array.");
+  }
+  const providers = value.map(parseProviderRuntimeConfiguration);
+  const providerIds = new Set(
+    providers.map((provider) => provider.provider_id),
+  );
+  if (providerIds.size !== providers.length) {
+    throw new Error("Provider runtime configuration IDs must be unique.");
+  }
+  return providers;
 }
 
 function isExactRecord(

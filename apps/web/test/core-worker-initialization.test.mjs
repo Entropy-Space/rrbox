@@ -9,6 +9,7 @@ test("validates exact web core plugin initialization", () => {
   const initialization = {
     protocol_version: WEB_CORE_WORKER_PROTOCOL_VERSION,
     kind: "web_core_initialize",
+    providers: [providerConfiguration()],
     python_plugin: {
       enabled: true,
       timeout_ms: 12_000,
@@ -26,7 +27,7 @@ test("validates exact web core plugin initialization", () => {
       max_output_bytes: 64 * 1024,
     },
   };
-  assert.equal(WEB_CORE_WORKER_PROTOCOL_VERSION, 5);
+  assert.equal(WEB_CORE_WORKER_PROTOCOL_VERSION, 6);
   assert.deepEqual(
     parseWebCoreWorkerInitializeMessage(initialization),
     initialization,
@@ -40,3 +41,16 @@ test("validates exact web core plugin initialization", () => {
     /Invalid web core worker initialization/u,
   );
 });
+
+function providerConfiguration() {
+  return {
+    provider_id: "provider-1",
+    display_name: "Provider",
+    preset_id: "custom",
+    base_url: "https://example.com/v1",
+    enabled: true,
+    manual_models: [],
+    send_reasoning_content: false,
+    send_session_affinity_headers: false,
+  };
+}

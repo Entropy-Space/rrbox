@@ -122,7 +122,7 @@ host.onmessage = (event) => {
     host,
     lock_manager: lockManager,
     providers: createResearchBoxProviderDefinitions({
-      include_local_openai: true,
+      providers: initialization.providers,
     }),
     plugins,
     close_plugins:
@@ -156,6 +156,7 @@ host.onmessage = (event) => {
         protocol_version: NATIVE_LLM_WORKER_PROTOCOL_VERSION,
         kind: "native_llm_initialize",
         provider_port: initialization.provider_port,
+        providers: initialization.providers,
       };
       try {
         worker.postMessage(llmInitialization, [

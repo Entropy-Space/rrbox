@@ -12,7 +12,11 @@ host.onmessage = (event) => {
   const initialization = parseNativeLlmWorkerInitializeMessage(
     event.data,
   );
-  attachNativeLlmWorker(host, initialization.provider_port);
+  attachNativeLlmWorker(
+    host,
+    initialization.provider_port,
+    initialization.providers,
+  );
 };
 
 export {};

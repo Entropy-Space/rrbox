@@ -1,5 +1,6 @@
 use std::{
   collections::{BTreeMap, HashMap},
+  path::PathBuf,
   sync::{Arc, Mutex},
   time::Duration,
 };
@@ -8,7 +9,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use futures_util::StreamExt;
 use reqwest::{
   Client, Response, StatusCode,
-  header::{ACCEPT, CONTENT_TYPE, HeaderName, HeaderValue},
+  header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderName, HeaderValue},
   redirect::Policy,
 };
 use serde_json::Value;
@@ -16,12 +17,15 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 use super::protocol::{
-  LOCAL_OPENAI_PROVIDER_ID, NATIVE_PROVIDER_PROTOCOL_VERSION, NativeProviderBodyEvent,
-  NativeProviderBodyEventPayload, NativeProviderBodyStatus, NativeProviderCancelRequest,
-  NativeProviderEndpoint, NativeProviderFetchRequest, NativeProviderMethod,
+  NATIVE_PROVIDER_PROTOCOL_VERSION, NativeProviderBodyEvent, NativeProviderBodyEventPayload,
+  NativeProviderBodyStatus, NativeProviderCancelRequest, NativeProviderEndpoint,
+  NativeProviderFetchRequest, NativeProviderMethod,
+};
+use super::settings::{
+  ProviderConfiguration, ProviderConfigurationInput, ProviderSettingsError,
+  ProviderSettingsSnapshot, ProviderSettingsStore, ProviderTestResult,
 };
 
-const DEFAULT_LOCAL_OPENAI_BASE_URL: &str = "http://127.0.0.1:4141/v1";
 const MAX_IDENTIFIER_BYTES: usize = 256;
 const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
@@ -40,7 +44,7 @@ pub struct ProviderService {
 
 struct ProviderServiceInner {
   client: Client,
-  base_url: String,
+  settings: ProviderSettingsStore,
   active_operations: Mutex<HashMap<String, CancellationToken>>,
   models_timeout: Duration,
   chat_completions_timeout: Duration,
@@ -48,6 +52,7 @@ struct ProviderServiceInner {
 
 struct PreparedFetch {
   operation_id: String,
+  provider: ProviderConfiguration,
   endpoint: NativeProviderEndpoint,
   body: Option<String>,
   session_affinity_headers: BTreeMap<String, String>,
@@ -72,6 +77,8 @@ pub enum ProviderServiceError {
   #[error("{0}")]
   InvalidRequest(String),
   #[error("{0}")]
+  ProviderUnavailable(String),
+  #[error("{0}")]
   Internal(String),
 }
 
@@ -79,34 +86,33 @@ impl ProviderServiceError {
   pub fn code(&self) -> &'static str {
     match self {
       Self::InvalidRequest(_) => "invalid_request",
+      Self::ProviderUnavailable(_) => "provider_unavailable",
       Self::Internal(_) => "internal",
     }
   }
 }
 
 impl ProviderService {
-  pub fn new() -> Result<Self, reqwest::Error> {
-    Self::with_configuration(
-      DEFAULT_LOCAL_OPENAI_BASE_URL.to_owned(),
-      MODELS_TIMEOUT,
-      CHAT_COMPLETIONS_TIMEOUT,
-    )
+  pub fn new(root: PathBuf) -> Result<Self, ProviderServiceError> {
+    let settings = ProviderSettingsStore::load(root)?;
+    Self::with_configuration(settings, MODELS_TIMEOUT, CHAT_COMPLETIONS_TIMEOUT)
   }
 
   fn with_configuration(
-    base_url: String,
+    settings: ProviderSettingsStore,
     models_timeout: Duration,
     chat_completions_timeout: Duration,
-  ) -> Result<Self, reqwest::Error> {
+  ) -> Result<Self, ProviderServiceError> {
     let client = Client::builder()
       .redirect(Policy::none())
       .no_proxy()
       .connect_timeout(CONNECT_TIMEOUT)
-      .build()?;
+      .build()
+      .map_err(|error| ProviderServiceError::Internal(error.to_string()))?;
     Ok(Self {
       inner: Arc::new(ProviderServiceInner {
         client,
-        base_url,
+        settings,
         active_operations: Mutex::new(HashMap::new()),
         models_timeout,
         chat_completions_timeout,
@@ -141,6 +147,88 @@ impl ProviderService {
     Ok(operation_id)
   }
 
+  pub fn settings_snapshot(&self) -> Result<ProviderSettingsSnapshot, ProviderServiceError> {
+    self.inner.settings.snapshot().map_err(Into::into)
+  }
+
+  pub fn save_settings(
+    &self,
+    input: ProviderConfigurationInput,
+  ) -> Result<ProviderSettingsSnapshot, ProviderServiceError> {
+    self.inner.settings.save(input).map_err(Into::into)
+  }
+
+  pub fn remove_settings(
+    &self,
+    provider_id: &str,
+  ) -> Result<ProviderSettingsSnapshot, ProviderServiceError> {
+    self.inner.settings.remove(provider_id).map_err(Into::into)
+  }
+
+  pub async fn test_settings(
+    &self,
+    input: ProviderConfigurationInput,
+  ) -> Result<ProviderTestResult, ProviderServiceError> {
+    let provider = self.inner.settings.resolve_input(input)?;
+    let mut request = self
+      .inner
+      .client
+      .get(format!("{}/models", provider.base_url))
+      .header(ACCEPT, "application/json")
+      .timeout(self.inner.models_timeout);
+    if let Some(api_key) = &provider.api_key {
+      request = request.header(AUTHORIZATION, bearer_header(api_key)?);
+    }
+    let response = request
+      .send()
+      .await
+      .map_err(|error| ProviderServiceError::ProviderUnavailable(provider_request_error(error)))?;
+    let status = response.status();
+    let body = collect_bounded_body(response).await?;
+    if !status.is_success() {
+      let detail = String::from_utf8_lossy(&body);
+      return Err(ProviderServiceError::ProviderUnavailable(format!(
+        "Models endpoint returned {}{}",
+        status.as_u16(),
+        if detail.is_empty() {
+          ".".into()
+        } else {
+          format!(": {}", bound_error_message(detail.into_owned()))
+        }
+      )));
+    }
+    let payload: Value = serde_json::from_slice(&body).map_err(|error| {
+      ProviderServiceError::ProviderUnavailable(format!(
+        "Models endpoint returned malformed JSON: {error}"
+      ))
+    })?;
+    let models = payload
+      .get("data")
+      .and_then(Value::as_array)
+      .ok_or_else(|| {
+        ProviderServiceError::ProviderUnavailable(
+          "Models endpoint response must contain a data array.".into(),
+        )
+      })?;
+    let mut model_ids = Vec::with_capacity(models.len());
+    for (index, model) in models.iter().enumerate() {
+      let model_id = model
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| {
+          ProviderServiceError::ProviderUnavailable(format!(
+            "Models endpoint data[{index}].id must be a non-empty string."
+          ))
+        })?;
+      if !model_ids.iter().any(|existing| existing == model_id) {
+        model_ids.push(model_id.to_owned());
+      }
+    }
+    model_ids.sort();
+    Ok(ProviderTestResult { model_ids })
+  }
+
   pub fn cancel(
     &self,
     request: &NativeProviderCancelRequest,
@@ -166,12 +254,16 @@ impl ProviderService {
   ) -> Result<PreparedFetch, ProviderServiceError> {
     validate_protocol_and_identifier(request.protocol_version, &request.request_id, "request_id")?;
     validate_identifier(&request.operation_id, "operation_id")?;
-    if request.provider_id != LOCAL_OPENAI_PROVIDER_ID {
-      return Err(ProviderServiceError::InvalidRequest(format!(
-        "Unsupported native provider: {}.",
-        request.provider_id
-      )));
-    }
+    let provider = self
+      .inner
+      .settings
+      .resolve(&request.provider_id)?
+      .ok_or_else(|| {
+        ProviderServiceError::ProviderUnavailable(format!(
+          "Provider {} is not configured or is disabled.",
+          request.provider_id
+        ))
+      })?;
 
     let timeout = match (request.endpoint, request.method, request.body.as_ref()) {
       (NativeProviderEndpoint::Models, NativeProviderMethod::Get, None) => {
@@ -193,9 +285,15 @@ impl ProviderService {
       }
     };
     validate_session_affinity_headers(request.endpoint, &request.session_affinity_headers)?;
+    if !provider.send_session_affinity_headers && !request.session_affinity_headers.is_empty() {
+      return Err(ProviderServiceError::InvalidRequest(
+        "Session-affinity headers are disabled for this provider.".into(),
+      ));
+    }
 
     Ok(PreparedFetch {
       operation_id: request.operation_id,
+      provider,
       endpoint: request.endpoint,
       body: request.body,
       session_affinity_headers: request.session_affinity_headers,
@@ -237,7 +335,7 @@ impl ProviderService {
     cancellation: &CancellationToken,
     emitter: &mut EventEmitter,
   ) -> RunOutcome {
-    let url = format!("{}{}", self.inner.base_url, prepared.endpoint.path());
+    let url = format!("{}{}", prepared.provider.base_url, prepared.endpoint.path());
     let mut request = match prepared.endpoint {
       NativeProviderEndpoint::Models => self
         .inner
@@ -254,6 +352,13 @@ impl ProviderService {
     };
     for (name, value) in &prepared.session_affinity_headers {
       request = request.header(name, value);
+    }
+    if let Some(api_key) = &prepared.provider.api_key {
+      let authorization = match bearer_header(api_key) {
+        Ok(value) => value,
+        Err(error) => return RunOutcome::Error(error.to_string()),
+      };
+      request = request.header(AUTHORIZATION, authorization);
     }
     let request = request.timeout(prepared.timeout);
 
@@ -285,14 +390,14 @@ impl ProviderService {
       && !response.status().is_client_error()
       && !response.status().is_server_error()
     {
-      return RunOutcome::Error("The local provider returned an unsupported HTTP status.".into());
+      return RunOutcome::Error("The provider returned an unsupported HTTP status.".into());
     }
     let declared_length = response.content_length();
     if !emitter.response_started(response.status(), filtered_response_headers(&response)) {
       return RunOutcome::ChannelClosed;
     }
     if declared_length.is_some_and(|length| length > MAX_RESPONSE_BYTES as u64) {
-      return RunOutcome::Error("The local provider response body is too large.".into());
+      return RunOutcome::Error("The provider response body is too large.".into());
     }
 
     let mut received_bytes = 0_usize;
@@ -319,7 +424,7 @@ impl ProviderService {
       received_bytes = match received_bytes.checked_add(chunk.len()) {
         Some(size) if size <= MAX_RESPONSE_BYTES => size,
         _ => {
-          return RunOutcome::Error("The local provider response body is too large.".into());
+          return RunOutcome::Error("The provider response body is too large.".into());
         }
       };
       for part in chunk.chunks(MAX_CHANNEL_CHUNK_BYTES) {
@@ -360,8 +465,12 @@ impl ProviderService {
     models_timeout: Duration,
     chat_completions_timeout: Duration,
   ) -> Self {
-    Self::with_configuration(base_url, models_timeout, chat_completions_timeout)
-      .expect("create test provider service")
+    Self::with_configuration(
+      ProviderSettingsStore::in_memory(base_url),
+      models_timeout,
+      chat_completions_timeout,
+    )
+    .expect("create test provider service")
   }
 
   #[cfg(test)]
@@ -422,6 +531,47 @@ fn validate_session_affinity_headers(
     }
   }
   Ok(())
+}
+
+impl From<ProviderSettingsError> for ProviderServiceError {
+  fn from(error: ProviderSettingsError) -> Self {
+    match error {
+      ProviderSettingsError::Invalid(message) => Self::InvalidRequest(message),
+      ProviderSettingsError::Internal(message) => Self::Internal(message),
+    }
+  }
+}
+
+fn bearer_header(api_key: &str) -> Result<HeaderValue, ProviderServiceError> {
+  HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|_| {
+    ProviderServiceError::InvalidRequest(
+      "The configured provider API key cannot be used as an authorization header.".into(),
+    )
+  })
+}
+
+async fn collect_bounded_body(response: Response) -> Result<Vec<u8>, ProviderServiceError> {
+  if response
+    .content_length()
+    .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+  {
+    return Err(ProviderServiceError::ProviderUnavailable(
+      "The provider response body is too large.".into(),
+    ));
+  }
+  let mut body = Vec::new();
+  let mut stream = response.bytes_stream();
+  while let Some(chunk) = stream.next().await {
+    let chunk = chunk
+      .map_err(|error| ProviderServiceError::ProviderUnavailable(provider_request_error(error)))?;
+    if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+      return Err(ProviderServiceError::ProviderUnavailable(
+        "The provider response body is too large.".into(),
+      ));
+    }
+    body.extend_from_slice(&chunk);
+  }
+  Ok(body)
 }
 
 impl EventEmitter {
@@ -525,9 +675,9 @@ fn filtered_response_headers(response: &Response) -> BTreeMap<String, String> {
 
 fn provider_request_error(error: reqwest::Error) -> String {
   if error.is_timeout() {
-    "The local provider request timed out.".into()
+    "The provider request timed out.".into()
   } else {
-    "The local OpenAI provider is unavailable.".into()
+    "The provider is unavailable.".into()
   }
 }
 

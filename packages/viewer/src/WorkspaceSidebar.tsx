@@ -8,6 +8,7 @@ import {
   MessageSquareText,
   MoreHorizontal,
   Puzzle,
+  ServerCog,
   Plus,
   Search,
   SquarePen,
@@ -50,6 +51,8 @@ export function WorkspaceSidebar({
   onOpenChatSearch,
   onOpenPlugins,
   isPluginsActive = false,
+  onOpenProviders,
+  isProvidersActive = false,
   onRenameSession,
   onDeleteSession,
   onSelectSession,
@@ -74,6 +77,8 @@ export function WorkspaceSidebar({
   onOpenChatSearch: () => void;
   onOpenPlugins?: () => void;
   isPluginsActive?: boolean;
+  onOpenProviders?: () => void;
+  isProvidersActive?: boolean;
   onRenameSession: (projectId: string, sessionId: string, title: string) => void;
   onDeleteSession: (projectId: string, sessionId: string) => void;
   onSelectSession: (projectId: string, sessionId: string) => void;
@@ -437,6 +442,20 @@ export function WorkspaceSidebar({
             >
               <Puzzle size={18} />
               <span>Plugins</span>
+            </button>
+          )}
+          {onOpenProviders && (
+            <button
+              className={isProvidersActive ? "active" : undefined}
+              type="button"
+              aria-current={isProvidersActive ? "page" : undefined}
+              onClick={() => {
+                setOpenMenu(null);
+                onOpenProviders();
+              }}
+            >
+              <ServerCog size={18} />
+              <span>Providers</span>
             </button>
           )}
         </nav>

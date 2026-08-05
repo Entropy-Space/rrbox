@@ -15,6 +15,7 @@ test("uses distinct strict versions for core and LLM worker initialization", () 
   const coreInitialization = {
     protocol_version: NATIVE_CORE_WORKER_PROTOCOL_VERSION,
     kind: "native_core_initialize",
+    providers: [providerConfiguration()],
     storage_port: storageChannel.port1,
     provider_port: providerChannel.port1,
     python_port: pythonChannel.port1,
@@ -37,7 +38,7 @@ test("uses distinct strict versions for core and LLM worker initialization", () 
     },
   };
 
-  assert.equal(NATIVE_CORE_WORKER_PROTOCOL_VERSION, 8);
+  assert.equal(NATIVE_CORE_WORKER_PROTOCOL_VERSION, 9);
   assert.deepEqual(
     parseNativeCoreWorkerInitializeMessage(coreInitialization),
     coreInitialization,
@@ -55,8 +56,9 @@ test("uses distinct strict versions for core and LLM worker initialization", () 
     protocol_version: NATIVE_LLM_WORKER_PROTOCOL_VERSION,
     kind: "native_llm_initialize",
     provider_port: providerChannel.port2,
+    providers: [providerConfiguration()],
   };
-  assert.equal(NATIVE_LLM_WORKER_PROTOCOL_VERSION, 1);
+  assert.equal(NATIVE_LLM_WORKER_PROTOCOL_VERSION, 2);
   assert.deepEqual(
     parseNativeLlmWorkerInitializeMessage(llmInitialization),
     llmInitialization,
@@ -79,3 +81,16 @@ test("uses distinct strict versions for core and LLM worker initialization", () 
   webSearchChannel.port1.close();
   webSearchChannel.port2.close();
 });
+
+function providerConfiguration() {
+  return {
+    provider_id: "provider-1",
+    display_name: "Provider",
+    preset_id: "custom",
+    base_url: "https://example.com/v1",
+    enabled: true,
+    manual_models: [],
+    send_reasoning_content: false,
+    send_session_affinity_headers: false,
+  };
+}

@@ -1,5 +1,4 @@
 import {
-  NATIVE_OPENAI_PROVIDER_ID,
   NativeOpenAiCompatibleModelTransport,
   NativeProviderRpcClient,
   type NativeProviderRpcEndpoint,
@@ -18,21 +17,30 @@ import {
   IN_PROCESS_MOCK_MODEL_ENDPOINT,
   nativeMockModel,
 } from "./native-mock-llm.ts";
+import type { ProviderRuntimeConfiguration } from "@researchbox/provider-settings";
 
 export function attachNativeLlmWorker(
   host: LlmWorkerHost,
   providerEndpoint: NativeProviderRpcEndpoint,
+  providers: readonly ProviderRuntimeConfiguration[],
 ): { close(): void } {
   const providerClient = new NativeProviderRpcClient(providerEndpoint);
   const mockTransport = new HttpNdjsonModelTransport(
     IN_PROCESS_MOCK_MODEL_ENDPOINT,
     createInProcessFetch(),
   );
-  const localOpenAiTransport =
-    new NativeOpenAiCompatibleModelTransport(providerClient);
+  const providerTransports = new Map(
+    providers.map((provider) => [
+      provider.provider_id,
+      new NativeOpenAiCompatibleModelTransport(
+        providerClient,
+        provider,
+      ),
+    ]),
+  );
   const transports = new Map<string, ModelTransport>([
     [nativeMockModel.provider_id, mockTransport],
-    [NATIVE_OPENAI_PROVIDER_ID, localOpenAiTransport],
+    ...providerTransports,
   ]);
   const transport: ModelTransport = {
     stream(request, signal) {
@@ -54,10 +62,11 @@ export function attachNativeLlmWorker(
         signal.throwIfAborted();
         return [nativeMockModel];
       }
-      if (providerId === NATIVE_OPENAI_PROVIDER_ID) {
-        return localOpenAiTransport.listModels(signal);
+      const provider = providerTransports.get(providerId);
+      if (!provider) {
+        throw new Error(`Unknown model provider: ${providerId}`);
       }
-      throw new Error(`Unknown model provider: ${providerId}`);
+      return provider.listModels(signal);
     },
   });
 

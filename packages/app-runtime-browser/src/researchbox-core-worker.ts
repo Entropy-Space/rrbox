@@ -15,6 +15,7 @@ import {
   ResearchBoxDatabase,
 } from "@researchbox/storage-browser";
 import type { ProjectStore } from "@researchbox/project-store";
+import type { ProviderRuntimeConfiguration } from "@researchbox/provider-settings";
 import type { WorkspaceBackend } from "@researchbox/vfs";
 import {
   startBrowserRuntime,
@@ -125,7 +126,8 @@ function createBrowserStorageServices(): ResearchBoxStorageServices {
 }
 
 export function createResearchBoxProviderDefinitions(options: {
-  include_local_openai: boolean;
+  include_local_openai?: boolean;
+  providers?: readonly ProviderRuntimeConfiguration[];
 }): ModelProviderDefinition[] {
   const providers: ModelProviderDefinition[] = [
     {
@@ -136,7 +138,39 @@ export function createResearchBoxProviderDefinitions(options: {
     },
   ];
 
-  if (options.include_local_openai) {
+  if (options.providers) {
+    for (const provider of options.providers.filter(
+      (provider) => provider.enabled,
+    )) {
+      providers.push({
+        provider_id: provider.provider_id,
+        display_name: provider.display_name,
+        kind: "openai_compatible",
+        discover_models: true,
+        models: provider.manual_models.map((model) => ({
+          id: model.model_id,
+          name: model.display_name,
+          api: "openai-completions",
+          provider: provider.provider_id,
+          baseUrl: "",
+          reasoning: model.supports_reasoning,
+          supports_tools: model.supports_tools,
+          supports_reasoning_effort:
+            model.reasoning_efforts.length > 0,
+          reasoning_efforts: [...model.reasoning_efforts],
+          input: ["text"],
+          cost: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+          },
+          contextWindow: model.context_window ?? 128_000,
+          maxTokens: model.max_output_tokens ?? 8_192,
+        })),
+      });
+    }
+  } else if (options.include_local_openai) {
     providers.push({
       provider_id: "local-openai",
       display_name: "OpenAI-compatible · localhost:4141",

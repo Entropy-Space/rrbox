@@ -101,6 +101,32 @@ test("preserves reasoning-effort support independently from reasoning", async ()
   assert.equal(reasoningEffort?.supports_reasoning_effort, true);
 });
 
+test("keeps manually configured non-tool models unavailable", () => {
+  const catalog = new ProviderCatalogService({
+    model: defaultModel,
+    providers: [{
+      provider_id: "researchbox",
+      display_name: "rrbox",
+      kind: "mock",
+      models: [defaultModel],
+    }, {
+      provider_id: "manual",
+      display_name: "Manual",
+      kind: "openai_compatible",
+      models: [{
+        ...defaultModel,
+        id: "text-only",
+        provider: "manual",
+        supports_tools: false,
+      }],
+    }],
+  });
+
+  const configured = model(provider(catalog, "manual"), "text-only");
+  assert.equal(configured.availability, "unavailable");
+  assert.match(configured.status_message, /does not support/u);
+});
+
 test("forced refreshes expose failures and recover without changing providers", async () => {
   let failure = new Error("gateway offline");
   const catalog = new ProviderCatalogService({

@@ -18,6 +18,30 @@ export type TimelineRow =
       entries: Array<AssistantMessageEntry | ToolResultEntry>;
     };
 
+export type PendingPromptPresentation = {
+  request_id: string;
+  input_draft: string;
+  created_at: string;
+};
+
+export function withPendingPrompt(
+  timeline: TimelineEntry[],
+  pendingPrompt: PendingPromptPresentation | null,
+): TimelineEntry[] {
+  if (!pendingPrompt) return timeline;
+
+  return [
+    ...timeline,
+    {
+      type: "user_message",
+      entry_id: `pending:${pendingPrompt.request_id}`,
+      run_id: `pending:${pendingPrompt.request_id}`,
+      created_at: pendingPrompt.created_at,
+      content: pendingPrompt.input_draft.trim(),
+    },
+  ];
+}
+
 export type AssistantTurnPresentation = {
   entry: AssistantMessageEntry;
   blocks: Array<{

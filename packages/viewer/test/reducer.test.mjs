@@ -1609,6 +1609,62 @@ test("draft acknowledgements are scoped and only confirm the latest exact value"
   assert.equal(state.pending_input_draft_request_id, null);
 });
 
+test("local draft edits are marked for a coalesced save before a command exists", () => {
+  let state = coreReducer(
+    initialAgentSessionState,
+    event("ready", { state: snapshot("p1", "s1", 1) }),
+  );
+
+  state = coreReducer(state, {
+    type: "input_draft_changed",
+    request_id: null,
+    project_id: "p1",
+    session_id: "s1",
+    input_draft: "typing locally",
+  });
+
+  assert.equal(state.input_draft, "typing locally");
+  assert.equal(state.pending_input_draft_request_id, null);
+  assert.equal(state.input_draft_needs_sync, true);
+
+  state = coreReducer(state, {
+    type: "input_draft_sync_started",
+    request_id: "draft-1",
+    project_id: "p1",
+    session_id: "s1",
+    input_draft: "typing locally",
+  });
+
+  assert.equal(state.pending_input_draft_request_id, "draft-1");
+  assert.equal(state.input_draft_needs_sync, false);
+});
+
+test("submitting a locally edited draft cancels its queued draft save", () => {
+  let state = coreReducer(
+    initialAgentSessionState,
+    event("ready", { state: snapshot("p1", "s1", 1) }),
+  );
+  state = coreReducer(state, {
+    type: "input_draft_changed",
+    request_id: null,
+    project_id: "p1",
+    session_id: "s1",
+    input_draft: "send this now",
+  });
+  state = coreReducer(state, {
+    type: "prompt_submitted",
+    request_id: "prompt-1",
+    project_id: "p1",
+    session_id: "s1",
+    input_draft: "send this now",
+    input_draft_generation: state.input_draft_generation,
+    created_at: "2026-08-05T00:00:00.000Z",
+  });
+
+  assert.equal(state.input_draft_needs_sync, false);
+  assert.equal(state.pending_prompt?.request_id, "prompt-1");
+});
+
 test("draft persistence events preserve unrelated errors", () => {
   let state = coreReducer(
     initialAgentSessionState,

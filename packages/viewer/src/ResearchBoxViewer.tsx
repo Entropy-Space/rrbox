@@ -68,6 +68,7 @@ import {
   buildAssistantRunPresentation,
   buildTimelineRows,
   getToolResultCopy,
+  withPendingPrompt,
   type AssistantTurnPresentation,
 } from "./timeline-rendering.ts";
 import { useAgentSession } from "./use-agent-session.ts";
@@ -227,9 +228,13 @@ export function ResearchBoxViewer({
     `${coreState.active_project_id ?? ""}:${coreState.active_session_id ?? ""}`;
   const conversationHistoryOpen =
     conversationHistorySession === conversationHistoryKey;
+  const visibleTimeline = useMemo(
+    () => withPendingPrompt(coreState.timeline, coreState.pending_prompt),
+    [coreState.pending_prompt, coreState.timeline],
+  );
   const timelineRows = useMemo(
-    () => buildTimelineRows(coreState.timeline),
-    [coreState.timeline],
+    () => buildTimelineRows(visibleTimeline),
+    [visibleTimeline],
   );
   const activeRunId = coreState.is_running
     ? coreState.timeline.at(-1)?.run_id ?? null
@@ -247,7 +252,7 @@ export function ResearchBoxViewer({
   } = useConversationScroll({
     activeProjectId: coreState.active_project_id,
     activeSessionId: coreState.active_session_id,
-    timeline: coreState.timeline,
+    timeline: visibleTimeline,
   });
 
   useEffect(() => {
@@ -338,10 +343,15 @@ export function ResearchBoxViewer({
     exportWorkspace,
     isDisabled: isWorkspaceTransferDisabled,
   });
-  const isSidebarPending =
+  const isManagementDisabled =
+    !coreState.is_ready ||
     isManagementPending ||
     coreState.is_running ||
     coreState.pending_prompt !== null ||
+    isWorkspaceTransferPending;
+  const isSidebarNavigationDisabled =
+    !coreState.is_ready ||
+    isManagementPending ||
     isWorkspaceTransferPending;
   const canSubmitDraft =
     coreState.is_ready &&
@@ -391,8 +401,8 @@ export function ResearchBoxViewer({
     isWorkspaceTransferPending,
   });
   const openChatSearch = useCallback(() => {
-    if (!isSidebarPending) setChatSearchOpen(true);
-  }, [isSidebarPending]);
+    if (!isSidebarNavigationDisabled) setChatSearchOpen(true);
+  }, [isSidebarNavigationDisabled]);
   const closeChatSearch = useCallback(() => {
     setChatSearchOpen(false);
   }, []);
@@ -449,7 +459,7 @@ export function ResearchBoxViewer({
         event.shiftKey ||
         (!event.ctrlKey && !event.metaKey) ||
         event.key.toLowerCase() !== "k" ||
-        isSidebarPending ||
+        isSidebarNavigationDisabled ||
         document.querySelector("dialog[open]")
       ) {
         return;
@@ -459,7 +469,7 @@ export function ResearchBoxViewer({
     };
     document.addEventListener("keydown", openWithKeyboard);
     return () => document.removeEventListener("keydown", openWithKeyboard);
-  }, [isSidebarPending]);
+  }, [isSidebarNavigationDisabled]);
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -479,7 +489,7 @@ export function ResearchBoxViewer({
     }
   }
 
-  const hasConversation = coreState.timeline.length > 0;
+  const hasConversation = visibleTimeline.length > 0;
   const visibleError =
     transportError ??
     coreState.error_message ??
@@ -519,7 +529,7 @@ export function ResearchBoxViewer({
         sessions={coreState.sessions}
         activeProjectId={coreState.active_project_id}
         activeSessionId={coreState.active_session_id}
-        isPending={isSidebarPending}
+        isManagementDisabled={isManagementDisabled}
         isWorkspaceTransferDisabled={
           isWorkspaceTransferDisabled || isWorkspaceTransferPending
         }
@@ -555,7 +565,7 @@ export function ResearchBoxViewer({
 
       <ChatSearchDialog
         isOpen={chatSearchOpen}
-        isPending={isSidebarPending}
+        isPending={isManagementDisabled}
         projects={coreState.projects}
         sessions={coreState.sessions}
         onClose={closeChatSearch}
@@ -810,6 +820,16 @@ export function ResearchBoxViewer({
                       />
                     </div>
                     <div className="composer-actions">
+                      {coreState.pending_prompt !== null &&
+                        !coreState.is_running && (
+                          <span
+                            className="composer-submit-status"
+                            role="status"
+                          >
+                            <LoaderCircle size={14} aria-hidden={true} />
+                            Starting
+                          </span>
+                        )}
                       <button
                         className="composer-icon-button"
                         type="button"

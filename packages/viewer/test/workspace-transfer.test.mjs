@@ -271,9 +271,14 @@ test("keeps transfer guards separate from project and chat navigation", async ()
     "const isWorkspaceTransferDisabled =",
     "const {",
   );
-  const sidebarGuard = requireSourceBlock(
+  const managementGuard = requireSourceBlock(
     viewer,
-    "const isSidebarPending =",
+    "const isManagementDisabled =",
+    "const isSidebarNavigationDisabled =",
+  );
+  const sidebarNavigationGuard = requireSourceBlock(
+    viewer,
+    "const isSidebarNavigationDisabled =",
     "const canSubmitDraft =",
   );
 
@@ -286,10 +291,14 @@ test("keeps transfer guards separate from project and chat navigation", async ()
     /isInputDraftPending|pending_fs_list|pending_fs_read|pending_workspace_refresh|refreshingProviderIds/u,
   );
   assert.doesNotMatch(
-    sidebarGuard,
+    managementGuard,
     /isInputDraftPending|pending_fs_list|pending_fs_read|pending_workspace_refresh|refreshingProviderIds/u,
   );
-  assert.match(viewer, /isPending=\{isSidebarPending\}/);
+  assert.doesNotMatch(
+    sidebarNavigationGuard,
+    /coreState\.is_running|coreState\.pending_prompt/u,
+  );
+  assert.match(viewer, /isManagementDisabled=\{isManagementDisabled\}/);
   assert.match(
     viewer,
     /isWorkspaceTransferDisabled=\{\s*isWorkspaceTransferDisabled \|\| isWorkspaceTransferPending\s*\}/,

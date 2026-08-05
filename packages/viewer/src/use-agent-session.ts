@@ -36,6 +36,7 @@ import {
 } from "./workspace-transfer.ts";
 
 const SESSION_SELECTION_STORAGE_KEY = "researchbox:session-selection:v1";
+const INPUT_DRAFT_DEBOUNCE_MS = 300;
 
 export type SummaryReviewView = SummaryReviewRequest & {
   project_id: string;
@@ -125,6 +126,7 @@ type PendingPrompt = {
   session_id: string | null;
   input_draft: string;
   input_draft_generation: number;
+  created_at: string;
 };
 
 type DraftScope = {
@@ -164,7 +166,7 @@ type AgentSessionAction =
   | { type: "workspace_refresh_started"; workspace_revision: number }
   | {
       type: "input_draft_changed";
-      request_id: string;
+      request_id: string | null;
       project_id: string;
       session_id: string | null;
       input_draft: string;
@@ -183,6 +185,7 @@ type AgentSessionAction =
       session_id: string | null;
       input_draft: string;
       input_draft_generation: number;
+      created_at: string;
     }
   | { type: "transport_failed"; message: string };
 
@@ -266,13 +269,16 @@ export function useAgentSession(
       return;
     }
     const retryDelay =
-      coreState.input_draft_retry_count === 0
+      coreState.input_draft_cleanup_scope !== null &&
+      !coreState.input_draft_needs_sync
         ? 0
-        : Math.min(
-            500 * 2 ** (coreState.input_draft_retry_count - 1),
-            5_000,
-          );
-    const retryTimer = window.setTimeout(() => {
+        : coreState.input_draft_retry_count === 0
+          ? INPUT_DRAFT_DEBOUNCE_MS
+          : Math.min(
+              500 * 2 ** (coreState.input_draft_retry_count - 1),
+              5_000,
+            );
+    const syncDraft = () => {
       const cleanupCommand = coreState.input_draft_cleanup_scope
         ? createCommand("input_draft_update", {
             ...coreState.input_draft_cleanup_scope,
@@ -295,8 +301,17 @@ export function useAgentSession(
       });
       if (cleanupCommand) sendCommand(cleanupCommand);
       if (syncCommand) sendCommand(syncCommand);
-    }, retryDelay);
-    return () => window.clearTimeout(retryTimer);
+    };
+    const retryTimer = window.setTimeout(syncDraft, retryDelay);
+    const flushDraftBeforePageHide = () => {
+      window.clearTimeout(retryTimer);
+      syncDraft();
+    };
+    window.addEventListener("pagehide", flushDraftBeforePageHide);
+    return () => {
+      window.clearTimeout(retryTimer);
+      window.removeEventListener("pagehide", flushDraftBeforePageHide);
+    };
   }, [
     coreState.active_project_id,
     coreState.active_session_id,
@@ -586,6 +601,7 @@ export function useAgentSession(
         session_id: command.payload.session_id,
         input_draft: prompt,
         input_draft_generation: coreState.input_draft_generation,
+        created_at: new Date().toISOString(),
       });
       sendCommand(command);
       return true;
@@ -606,25 +622,15 @@ export function useAgentSession(
   const updateInputDraft = useCallback(
     (inputDraft: string) => {
       if (!coreState.active_project_id) return;
-      const command = createCommand("input_draft_update", {
+      dispatch({
+        type: "input_draft_changed",
+        request_id: null,
         project_id: coreState.active_project_id,
         session_id: coreState.active_session_id,
         input_draft: inputDraft,
       });
-      dispatch({
-        type: "input_draft_changed",
-        request_id: command.request_id,
-        project_id: command.payload.project_id,
-        session_id: command.payload.session_id,
-        input_draft: command.payload.input_draft,
-      });
-      sendCommand(command);
     },
-    [
-      coreState.active_project_id,
-      coreState.active_session_id,
-      sendCommand,
-    ],
+    [coreState.active_project_id, coreState.active_session_id],
   );
 
   const createProject = useCallback(
@@ -1247,8 +1253,9 @@ export function coreReducer(
         ...state,
         input_draft: event.input_draft,
         input_draft_generation: state.input_draft_generation + 1,
-        pending_input_draft_request_id: event.request_id,
-        input_draft_needs_sync: false,
+        pending_input_draft_request_id:
+          event.request_id ?? state.pending_input_draft_request_id,
+        input_draft_needs_sync: event.request_id === null,
         input_draft_retry_count: 0,
       };
     case "input_draft_sync_started":
@@ -1277,9 +1284,11 @@ export function coreReducer(
           session_id: event.session_id,
           input_draft: event.input_draft,
           input_draft_generation: event.input_draft_generation,
+          created_at: event.created_at,
         },
         error_message: null,
         input_draft_error_message: null,
+        input_draft_needs_sync: false,
       };
     case "fs_list_requested":
       return {

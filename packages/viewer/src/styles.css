@@ -3306,6 +3306,20 @@
   flex: 0 0 auto;
 }
 
+.composer-submit-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.composer-submit-status svg {
+  animation: composer-submit-spin 900ms linear infinite;
+}
+
 .composer-icon-button,
 .composer-controls .send-button {
   display: grid;
@@ -4144,6 +4158,12 @@
   height: 10px;
   border-radius: 2px;
   background: white;
+}
+
+@keyframes composer-submit-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .composer-note {

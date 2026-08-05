@@ -36,7 +36,7 @@ export function WorkspaceSidebar({
   sessions,
   activeProjectId,
   activeSessionId,
-  isPending,
+  isManagementDisabled,
   isWorkspaceTransferDisabled,
   onClose,
   onCreateProject,
@@ -62,7 +62,7 @@ export function WorkspaceSidebar({
   sessions: SessionSummary[];
   activeProjectId: string | null;
   activeSessionId: string | null;
-  isPending: boolean;
+  isManagementDisabled: boolean;
   isWorkspaceTransferDisabled: boolean;
   onClose: () => void;
   onCreateProject: (name: string) => void;
@@ -409,7 +409,7 @@ export function WorkspaceSidebar({
         <nav className="primary-nav" aria-label="Primary navigation">
           <button
             type="button"
-            disabled={!activeProjectId || isPending}
+            disabled={!activeProjectId || isManagementDisabled}
             onClick={() => selectNewChat()}
           >
             <SquarePen size={18} />
@@ -419,7 +419,6 @@ export function WorkspaceSidebar({
             type="button"
             title="Search chats (Ctrl or Command + K)"
             aria-keyshortcuts="Control+K Meta+K"
-            disabled={isPending}
             onClick={() => {
               setOpenMenu(null);
               onOpenChatSearch();
@@ -434,7 +433,6 @@ export function WorkspaceSidebar({
               className={isPluginsActive ? "active" : undefined}
               type="button"
               aria-current={isPluginsActive ? "page" : undefined}
-              disabled={isPending}
               onClick={() => {
                 setOpenMenu(null);
                 onOpenPlugins();
@@ -486,7 +484,7 @@ export function WorkspaceSidebar({
               <button
                 type="button"
                 aria-label="Create project"
-                disabled={isPending}
+                disabled={isManagementDisabled}
                 onClick={() => setDialog({ kind: "project_create" })}
               >
                 <Plus size={16} />
@@ -530,7 +528,7 @@ export function WorkspaceSidebar({
                       <button
                         className="entity-select project-select"
                         type="button"
-                        disabled={isPending}
+                        disabled={isManagementDisabled}
                         title={project.name}
                         onClick={() => selectProject(project.project_id)}
                       >
@@ -546,7 +544,7 @@ export function WorkspaceSidebar({
                         type="button"
                         aria-label={`New chat in ${project.name}`}
                         title={`New chat in ${project.name}`}
-                        disabled={isPending}
+                        disabled={isManagementDisabled}
                         onClick={() => selectNewChat(project.project_id)}
                       >
                         <SquarePen size={14} />
@@ -560,7 +558,6 @@ export function WorkspaceSidebar({
                         aria-label={`Options for ${project.name}`}
                         aria-expanded={resolvedOpenMenu === menuId}
                         aria-controls={`${menuId}:options`}
-                        disabled={isPending}
                         onClick={() =>
                           setOpenMenu(
                             resolvedOpenMenu === menuId ? null : menuId,
@@ -598,6 +595,7 @@ export function WorkspaceSidebar({
                         )}
                         <button
                           type="button"
+                          disabled={isManagementDisabled}
                           onClick={() => {
                             setOpenMenu(null);
                             setDialog({
@@ -612,6 +610,7 @@ export function WorkspaceSidebar({
                         <button
                           className="danger"
                           type="button"
+                          disabled={isManagementDisabled}
                           onClick={() => {
                             setOpenMenu(null);
                             setDialog({
@@ -649,7 +648,7 @@ export function WorkspaceSidebar({
                                   ? "page"
                                   : undefined
                               }
-                              disabled={isPending}
+                              disabled={isManagementDisabled}
                               onClick={() =>
                                 selectNewChat(project.project_id)
                               }
@@ -681,7 +680,7 @@ export function WorkspaceSidebar({
                                 }
                                 aria-label={`${session.title}, ${project.name}`}
                                 title={session.title}
-                                disabled={isPending}
+                                disabled={isManagementDisabled}
                                 onClick={() =>
                                   selectSession(
                                     session.project_id,
@@ -708,7 +707,6 @@ export function WorkspaceSidebar({
                                   resolvedOpenMenu === sessionMenuId
                                 }
                                 aria-controls={`${sessionMenuId}:options`}
-                                disabled={isPending}
                                 onClick={() =>
                                   setOpenMenu(
                                     resolvedOpenMenu === sessionMenuId
@@ -728,6 +726,7 @@ export function WorkspaceSidebar({
                                 >
                                   <button
                                     type="button"
+                                    disabled={isManagementDisabled}
                                     onClick={() => {
                                       setOpenMenu(null);
                                       setDialog({
@@ -743,6 +742,7 @@ export function WorkspaceSidebar({
                                   <button
                                     className="danger"
                                     type="button"
+                                    disabled={isManagementDisabled}
                                     onClick={() => {
                                       setOpenMenu(null);
                                       setDialog({
@@ -765,7 +765,7 @@ export function WorkspaceSidebar({
                           <button
                             className="project-empty-action"
                             type="button"
-                            disabled={isPending}
+                            disabled={isManagementDisabled}
                             onClick={() =>
                               selectNewChat(project.project_id)
                             }
@@ -822,7 +822,7 @@ export function WorkspaceSidebar({
 
       <ManagementDialog
         state={resolvedDialog}
-        isPending={isPending}
+        isPending={isManagementDisabled}
         onClose={() => setDialog(null)}
         onSubmit={submitDialog}
       />

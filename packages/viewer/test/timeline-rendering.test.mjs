@@ -7,6 +7,7 @@ import {
   getAssistantText,
   getToolResultCopy,
   indexToolResults,
+  withPendingPrompt,
 } from "../src/timeline-rendering.ts";
 
 test("timeline rows preserve canonical order and group assistant turns by run", () => {
@@ -105,6 +106,25 @@ test("tool results are matched by internal block ID, not provider call ID", () =
   assert.equal(results.size, 2);
   assert.equal(results.get("call-block-1")?.content, "first");
   assert.equal(results.get("call-block-2")?.content, "second");
+});
+
+test("a pending prompt is presented immediately without changing stored timeline", () => {
+  const timeline = [userEntry("user-1", "run-1")];
+  const visibleTimeline = withPendingPrompt(timeline, {
+    request_id: "prompt-1",
+    input_draft: "  Start the research.  ",
+    created_at: "2026-08-05T00:00:00.000Z",
+  });
+
+  assert.equal(timeline.length, 1);
+  assert.equal(visibleTimeline.length, 2);
+  assert.deepEqual(visibleTimeline.at(-1), {
+    type: "user_message",
+    entry_id: "pending:prompt-1",
+    run_id: "pending:prompt-1",
+    created_at: "2026-08-05T00:00:00.000Z",
+    content: "Start the research.",
+  });
 });
 
 test("presentation marks only the latest reasoning block as active", () => {

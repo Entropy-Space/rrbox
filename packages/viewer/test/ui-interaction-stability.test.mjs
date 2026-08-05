@@ -62,11 +62,26 @@ test("form controls use one neutral keyboard focus treatment", () => {
 test("draft persistence never becomes a global navigation lock", () => {
   const sidebarGuard = sourceBlock(
     viewerSource,
-    "const isSidebarPending =",
+    "const isManagementDisabled =",
+    "const isSidebarNavigationDisabled =",
+  );
+  const sidebarNavigationGuard = sourceBlock(
+    viewerSource,
+    "const isSidebarNavigationDisabled =",
     "const canSubmitDraft =",
   );
   assert.doesNotMatch(sidebarGuard, /isInputDraftPending/u);
+  assert.doesNotMatch(
+    sidebarNavigationGuard,
+    /coreState\.is_running|coreState\.pending_prompt/u,
+  );
+  assert.match(sidebarSource, /isManagementDisabled/u);
   assert.doesNotMatch(sidebarSource, /inputDraft/u);
+});
+
+test("a submitted prompt has immediate local feedback", () => {
+  assert.match(viewerSource, /withPendingPrompt\(coreState\.timeline/u);
+  assert.match(viewerSource, /className="composer-submit-status"/u);
 });
 
 test("the active virtual chat row does not mount and unmount while typing", () => {

@@ -16,6 +16,9 @@ import {
 import {
   createNativeWebSearchPortBroker,
 } from "./native-web-search-broker.ts";
+import {
+  createNativeUrlReaderPortBroker,
+} from "./native-url-reader-broker.ts";
 import { createNativeStoragePortBroker } from "./native-storage-broker.ts";
 import {
   NATIVE_CORE_WORKER_PROTOCOL_VERSION,
@@ -37,6 +40,7 @@ export function createNativeCoreTransport(
   const providerChannel = new MessageChannel();
   const pythonChannel = new MessageChannel();
   const webSearchChannel = new MessageChannel();
+  const urlReaderChannel = new MessageChannel();
   const storageBroker = createNativeStoragePortBroker(
     storageChannel.port1,
   );
@@ -49,6 +53,9 @@ export function createNativeCoreTransport(
   const webSearchBroker = createNativeWebSearchPortBroker(
     webSearchChannel.port1,
   );
+  const urlReaderBroker = createNativeUrlReaderPortBroker(
+    urlReaderChannel.port1,
+  );
   const pluginSettings = loadPluginSettings();
   const workerTransport = new WorkerCoreTransport(worker, {
     onClosed() {
@@ -56,6 +63,7 @@ export function createNativeCoreTransport(
       providerBroker.close();
       pythonBroker.close();
       webSearchBroker.close();
+      urlReaderBroker.close();
     },
   });
   const initialization: NativeCoreWorkerInitializeMessage = {
@@ -66,6 +74,7 @@ export function createNativeCoreTransport(
     provider_port: providerChannel.port2,
     python_port: pythonChannel.port2,
     web_search_port: webSearchChannel.port2,
+    url_reader_port: urlReaderChannel.port2,
     python_plugin: resolvePythonPluginRuntimeConfiguration(
       pluginSettings.plugins.python,
     ),
@@ -80,6 +89,7 @@ export function createNativeCoreTransport(
       providerChannel.port2,
       pythonChannel.port2,
       webSearchChannel.port2,
+      urlReaderChannel.port2,
     ]);
   } catch (error) {
     workerTransport.close();
@@ -87,6 +97,7 @@ export function createNativeCoreTransport(
     providerBroker.close();
     pythonBroker.close();
     webSearchBroker.close();
+    urlReaderBroker.close();
     throw error;
   }
 

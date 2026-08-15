@@ -65,7 +65,7 @@ packages/
   workspace-archive/   Deterministic workspace ZIP capture and codec
   project-store/       Project/session records and persistence contract
   python-plugin/       Opt-in Python tool, protocol, Rust core, and Wasm
-  web-search-plugin/   Clean, stateless pi-web-access search fork
+  web-search-plugin/   Clean, stateless pi-web-access search and URL-reading fork
 ```
 
 Applications are composition roots. Reusable packages do not import Next.js,

@@ -8,6 +8,8 @@
     "./executor": "./src/routing-executor.ts",
     "./native": "./src/native-anysearch-provider.ts",
     "./native-protocol": "./src/native-protocol.ts",
+    "./native-url-reader": "./src/native-url-reader.ts",
+    "./native-url-reader-protocol": "./src/native-url-reader-protocol.ts",
     "./providers/exa": "./src/exa-mcp-executor.ts",
     "./settings": "./src/plugin-settings.ts"
   },

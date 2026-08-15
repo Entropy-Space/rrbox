@@ -2,7 +2,7 @@ use std::{
   collections::BTreeMap,
   io::{self, Read, Write},
   net::{TcpListener, TcpStream},
-  sync::mpsc,
+  sync::{Mutex, MutexGuard, mpsc},
   thread,
   time::{Duration, Instant},
 };
@@ -16,7 +16,8 @@ use crate::provider::protocol::{
   NativeProviderEndpoint, NativeProviderFetchRequest, NativeProviderMethod,
 };
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(2);
+const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+static TEST_SERVER_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn rejects_routes_methods_providers_and_oversized_bodies_before_networking() {
@@ -574,10 +575,15 @@ struct TestServer {
   base_url: String,
   request_receiver: mpsc::Receiver<CapturedRequest>,
   thread: Option<thread::JoinHandle<()>>,
+  // Every server is driven through Tauri's process-wide async runtime. Keep
+  // these loopback fixtures serialized so slow CI workers cannot let one
+  // server's short accept deadline race another test's startup.
+  _exclusive: MutexGuard<'static, ()>,
 }
 
 impl TestServer {
   fn spawn(handler: impl FnOnce(TcpStream) + Send + 'static) -> Self {
+    let exclusive = TEST_SERVER_LOCK.lock().expect("lock test server");
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
     listener
       .set_nonblocking(true)
@@ -609,6 +615,7 @@ impl TestServer {
       base_url: format!("http://{address}/v1"),
       request_receiver,
       thread: Some(server_thread),
+      _exclusive: exclusive,
     }
   }
 

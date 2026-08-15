@@ -9,6 +9,7 @@ mod python;
 mod storage;
 #[cfg(feature = "storage-test-harness")]
 pub mod storage;
+mod url_reader;
 mod web_search;
 
 use commands::native_storage_request;
@@ -19,6 +20,7 @@ use provider::{
 use python::{PythonService, native_python_cancel, native_python_execute};
 use storage::StorageService;
 use tauri::Manager;
+use url_reader::{UrlReaderService, native_url_reader_cancel, native_url_reader_open};
 use web_search::{WebSearchService, native_web_search_cancel, native_web_search_execute};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -30,6 +32,7 @@ pub fn run() {
       app.manage(ProviderService::new(storage_root)?);
       app.manage(PythonService::new());
       app.manage(WebSearchService::new()?);
+      app.manage(UrlReaderService::new());
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![
@@ -44,6 +47,8 @@ pub fn run() {
       native_python_cancel,
       native_web_search_execute,
       native_web_search_cancel,
+      native_url_reader_open,
+      native_url_reader_cancel,
     ])
     .run(tauri::generate_context!())
     .expect("rrbox native runtime failed");

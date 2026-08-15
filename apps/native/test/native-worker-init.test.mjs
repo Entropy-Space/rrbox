@@ -12,6 +12,7 @@ test("uses distinct strict versions for core and LLM worker initialization", () 
   const providerChannel = new MessageChannel();
   const pythonChannel = new MessageChannel();
   const webSearchChannel = new MessageChannel();
+  const urlReaderChannel = new MessageChannel();
   const coreInitialization = {
     protocol_version: NATIVE_CORE_WORKER_PROTOCOL_VERSION,
     kind: "native_core_initialize",
@@ -20,6 +21,7 @@ test("uses distinct strict versions for core and LLM worker initialization", () 
     provider_port: providerChannel.port1,
     python_port: pythonChannel.port1,
     web_search_port: webSearchChannel.port1,
+    url_reader_port: urlReaderChannel.port1,
     python_plugin: {
       enabled: true,
       timeout_ms: 15_000,
@@ -38,7 +40,7 @@ test("uses distinct strict versions for core and LLM worker initialization", () 
     },
   };
 
-  assert.equal(NATIVE_CORE_WORKER_PROTOCOL_VERSION, 9);
+  assert.equal(NATIVE_CORE_WORKER_PROTOCOL_VERSION, 10);
   assert.deepEqual(
     parseNativeCoreWorkerInitializeMessage(coreInitialization),
     coreInitialization,
@@ -80,6 +82,8 @@ test("uses distinct strict versions for core and LLM worker initialization", () 
   pythonChannel.port2.close();
   webSearchChannel.port1.close();
   webSearchChannel.port2.close();
+  urlReaderChannel.port1.close();
+  urlReaderChannel.port2.close();
 });
 
 function providerConfiguration() {

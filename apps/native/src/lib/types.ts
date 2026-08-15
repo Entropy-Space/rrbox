@@ -28,12 +28,18 @@ import type {
   NativeWebSearchExecuteRequest,
   NativeWebSearchExecuteResponse,
 } from "@researchbox/web-search-plugin/native-protocol";
+import type {
+  NativeUrlReaderCancelRequest,
+  NativeUrlReaderCancelResponse,
+  NativeUrlReaderOpenRequest,
+  NativeUrlReaderOpenResponse,
+} from "@researchbox/web-search-plugin/native-url-reader-protocol";
 import {
   parseProviderRuntimeConfiguration,
   type ProviderRuntimeConfiguration,
 } from "@researchbox/provider-settings";
 
-export const NATIVE_CORE_WORKER_PROTOCOL_VERSION = 9 as const;
+export const NATIVE_CORE_WORKER_PROTOCOL_VERSION = 10 as const;
 export const NATIVE_LLM_WORKER_PROTOCOL_VERSION = 2 as const;
 
 export type NativeCoreWorkerInitializeMessage = {
@@ -44,6 +50,7 @@ export type NativeCoreWorkerInitializeMessage = {
   provider_port: MessagePort;
   python_port: MessagePort;
   web_search_port: MessagePort;
+  url_reader_port: MessagePort;
   python_plugin: PythonPluginRuntimeConfiguration;
   web_search_plugin: WebSearchPluginRuntimeConfiguration;
 };
@@ -87,6 +94,15 @@ export type NativeWebSearchCommands = {
   ): Promise<NativeWebSearchCancelResponse>;
 };
 
+export type NativeUrlReaderCommands = {
+  open(
+    request: NativeUrlReaderOpenRequest,
+  ): Promise<NativeUrlReaderOpenResponse>;
+  cancel(
+    request: NativeUrlReaderCancelRequest,
+  ): Promise<NativeUrlReaderCancelResponse>;
+};
+
 export function parseNativeCoreWorkerInitializeMessage(
   value: unknown,
 ): NativeCoreWorkerInitializeMessage {
@@ -98,6 +114,7 @@ export function parseNativeCoreWorkerInitializeMessage(
     "provider_port",
     "python_port",
     "web_search_port",
+    "url_reader_port",
     "python_plugin",
     "web_search_plugin",
   ])) {
@@ -109,7 +126,8 @@ export function parseNativeCoreWorkerInitializeMessage(
     !isMessagePort(value.storage_port) ||
     !isMessagePort(value.provider_port) ||
     !isMessagePort(value.python_port) ||
-    !isMessagePort(value.web_search_port)
+    !isMessagePort(value.web_search_port) ||
+    !isMessagePort(value.url_reader_port)
   ) {
     throw new Error("Invalid native core worker initialization.");
   }
@@ -121,6 +139,7 @@ export function parseNativeCoreWorkerInitializeMessage(
     provider_port: value.provider_port,
     python_port: value.python_port,
     web_search_port: value.web_search_port,
+    url_reader_port: value.url_reader_port,
     python_plugin: parsePythonPluginRuntimeConfiguration(
       value.python_plugin,
     ),

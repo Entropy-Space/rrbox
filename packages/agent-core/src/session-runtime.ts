@@ -1776,6 +1776,8 @@ function toolLabel(toolName: string, args: unknown): string {
       return "Running Python";
     case "web_search":
       return "Searching web";
+    case "open_url":
+      return "Opening URL";
     default:
       return toolName
         .split("_")

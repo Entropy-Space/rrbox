@@ -58,7 +58,7 @@ export function createWebSearchPluginCatalogEntry(options: {
     plugin_id: "web-search",
     display_name: "Web search",
     description:
-      "Search from one or several angles and synthesize cited findings.",
+      "Search across sources, open public pages, and synthesize cited findings.",
     default_enabled: false,
     configuration_fields: [
       {

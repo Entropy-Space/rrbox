@@ -3,6 +3,15 @@ const JINA_READER_BASE_URL = "https://r.jina.ai/";
 
 export type OpenUrlFormat = "html" | "markdown";
 
+export type OpenUrlExecutor = {
+  open(
+    url: string,
+    format: OpenUrlFormat,
+    signal?: AbortSignal,
+  ): Promise<OpenUrlResult>;
+  close?(): void | Promise<void>;
+};
+
 export type OpenUrlResult = {
   requested_url: string;
   final_url: string;
@@ -82,15 +91,29 @@ async function fetchDirectUrl(
   if (content.trim().length === 0) {
     throw new Error("The URL returned an empty response.");
   }
-  return {
+  return createDirectOpenUrlResult({
     requested_url: url,
     final_url: finalUrl,
     status: response.status,
     content_type: contentType || "text/plain",
-    title: extractTitle(content, finalUrl, contentType),
-    content: format === "markdown" && isHtmlContentType(contentType)
-      ? htmlToMarkdown(content)
-      : content,
+    content,
+  }, format);
+}
+
+export function createDirectOpenUrlResult(
+  value: Omit<OpenUrlResult, "title" | "source">,
+  format: OpenUrlFormat,
+): OpenUrlResult {
+  return {
+    ...value,
+    title: extractTitle(
+      value.content,
+      value.final_url,
+      value.content_type,
+    ),
+    content: format === "markdown" && isHtmlContentType(value.content_type)
+      ? htmlToMarkdown(value.content)
+      : value.content,
     source: "direct",
   };
 }

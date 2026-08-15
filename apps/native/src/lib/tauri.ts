@@ -28,6 +28,13 @@ import {
   type NativeWebSearchExecuteResponse,
 } from "@researchbox/web-search-plugin/native-protocol";
 import {
+  parseNativeUrlReaderResponse,
+  type NativeUrlReaderCancelRequest,
+  type NativeUrlReaderCancelResponse,
+  type NativeUrlReaderOpenRequest,
+  type NativeUrlReaderOpenResponse,
+} from "@researchbox/web-search-plugin/native-url-reader-protocol";
+import {
   parseProviderSettingsSnapshot,
   parseProviderTestResult,
   type ProviderConfigurationInput,
@@ -50,6 +57,8 @@ const NATIVE_PYTHON_EXECUTE_COMMAND = "native_python_execute";
 const NATIVE_PYTHON_CANCEL_COMMAND = "native_python_cancel";
 const NATIVE_WEB_SEARCH_EXECUTE_COMMAND = "native_web_search_execute";
 const NATIVE_WEB_SEARCH_CANCEL_COMMAND = "native_web_search_cancel";
+const NATIVE_URL_READER_OPEN_COMMAND = "native_url_reader_open";
+const NATIVE_URL_READER_CANCEL_COMMAND = "native_url_reader_cancel";
 
 export async function invokeNativeStorageRequest(
   request: NativeStorageRequest,
@@ -189,6 +198,37 @@ export async function invokeNativeWebSearchCancel(
 export const nativeWebSearchCommands = {
   execute: invokeNativeWebSearchExecute,
   cancel: invokeNativeWebSearchCancel,
+};
+
+export async function invokeNativeUrlReaderOpen(
+  request: NativeUrlReaderOpenRequest,
+): Promise<NativeUrlReaderOpenResponse> {
+  const response = parseNativeUrlReaderResponse(
+    await invoke<unknown>(NATIVE_URL_READER_OPEN_COMMAND, { request }),
+  );
+  assertMatchingRequestId(response.request_id, request.request_id);
+  if (response.kind !== "url_reader_open_result") {
+    throw new Error("Native URL reader returned the wrong response.");
+  }
+  return response;
+}
+
+export async function invokeNativeUrlReaderCancel(
+  request: NativeUrlReaderCancelRequest,
+): Promise<NativeUrlReaderCancelResponse> {
+  const response = parseNativeUrlReaderResponse(
+    await invoke<unknown>(NATIVE_URL_READER_CANCEL_COMMAND, { request }),
+  );
+  assertMatchingRequestId(response.request_id, request.request_id);
+  if (response.kind !== "url_reader_cancel_result") {
+    throw new Error("Native URL reader returned the wrong response.");
+  }
+  return response;
+}
+
+export const nativeUrlReaderCommands = {
+  open: invokeNativeUrlReaderOpen,
+  cancel: invokeNativeUrlReaderCancel,
 };
 
 function assertMatchingRequestId(

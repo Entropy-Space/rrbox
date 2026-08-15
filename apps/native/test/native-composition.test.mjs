@@ -16,6 +16,7 @@ test("mounts the shared viewer through the native worker transport", async () =>
     nativeLlmSource,
     pythonBrokerSource,
     webSearchBrokerSource,
+    urlReaderBrokerSource,
   ] = await Promise.all([
     readFile(new URL("App.tsx", sourceRoot), "utf8"),
     readFile(new URL("pages/ResearchBoxPage.tsx", sourceRoot), "utf8"),
@@ -36,6 +37,10 @@ test("mounts the shared viewer through the native worker transport", async () =>
       new URL("lib/native-web-search-broker.ts", sourceRoot),
       "utf8",
     ),
+    readFile(
+      new URL("lib/native-url-reader-broker.ts", sourceRoot),
+      "utf8",
+    ),
   ]);
 
   assert.match(appSource, /@researchbox\/viewer\/styles\.css/);
@@ -51,11 +56,16 @@ test("mounts the shared viewer through the native worker transport", async () =>
   assert.match(transportSource, /createNativeProviderPortBroker/);
   assert.match(transportSource, /createNativePythonPortBroker/);
   assert.match(transportSource, /createNativeWebSearchPortBroker/);
+  assert.match(transportSource, /createNativeUrlReaderPortBroker/);
   assert.match(transportSource, /provider_port:\s*providerChannel\.port2/);
   assert.match(transportSource, /python_port:\s*pythonChannel\.port2/);
   assert.match(
     transportSource,
     /web_search_port:\s*webSearchChannel\.port2/,
+  );
+  assert.match(
+    transportSource,
+    /url_reader_port:\s*urlReaderChannel\.port2/,
   );
   assert.match(
     transportSource,
@@ -79,6 +89,7 @@ test("mounts the shared viewer through the native worker transport", async () =>
   assert.match(coreWorkerSource, /RoutingWebSearchExecutor/);
   assert.match(coreWorkerSource, /ExaMcpWebSearchProvider/);
   assert.match(coreWorkerSource, /NativeAnySearchWebSearchProvider/);
+  assert.match(coreWorkerSource, /NativeUrlReader/);
   assert.match(coreWorkerSource, /createWebSearchAgentPlugin/);
   assert.match(
     coreWorkerSource,
@@ -103,9 +114,13 @@ test("mounts the shared viewer through the native worker transport", async () =>
   assert.match(tauriSource, /NATIVE_PYTHON_CANCEL_COMMAND/);
   assert.match(tauriSource, /NATIVE_WEB_SEARCH_EXECUTE_COMMAND/);
   assert.match(tauriSource, /NATIVE_WEB_SEARCH_CANCEL_COMMAND/);
+  assert.match(tauriSource, /NATIVE_URL_READER_OPEN_COMMAND/);
+  assert.match(tauriSource, /NATIVE_URL_READER_CANCEL_COMMAND/);
   assert.match(pythonBrokerSource, /parsePythonRequest/);
   assert.match(pythonBrokerSource, /nativePythonCommands/);
   assert.match(webSearchBrokerSource, /parseNativeWebSearchRequest/);
   assert.match(webSearchBrokerSource, /nativeWebSearchCommands/);
+  assert.match(urlReaderBrokerSource, /parseNativeUrlReaderRequest/);
+  assert.match(urlReaderBrokerSource, /nativeUrlReaderCommands/);
   assert.match(pageSource, /nativeWebSearchPluginCatalogEntry/);
 });

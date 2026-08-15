@@ -37,6 +37,9 @@ import {
   NativeAnySearchWebSearchProvider,
 } from "@researchbox/web-search-plugin/native";
 import {
+  NativeUrlReader,
+} from "@researchbox/web-search-plugin/native-url-reader";
+import {
   webSearchRoutingProviderIds,
 } from "@researchbox/web-search-plugin/settings";
 
@@ -92,6 +95,11 @@ host.onmessage = (event) => {
         },
       })
     : null;
+  const urlReader = initialization.web_search_plugin.enabled
+    ? new NativeUrlReader(initialization.url_reader_port, {
+        timeout_ms: initialization.web_search_plugin.timeout_ms,
+      })
+    : null;
   const plugins = [
     ...(pythonClient
       ? [createPythonAgentPlugin(pythonClient)]
@@ -113,6 +121,7 @@ host.onmessage = (event) => {
             review_timeout_ms:
               initialization.web_search_plugin.review_timeout_ms,
             summary_grace_ms: DEFAULT_WEB_SEARCH_SUMMARY_GRACE_MS,
+            ...(urlReader ? { url_reader: urlReader } : {}),
           },
         )]
       : []),
@@ -126,10 +135,11 @@ host.onmessage = (event) => {
     }),
     plugins,
     close_plugins:
-      pythonClient || webSearchExecutor
+      pythonClient || webSearchExecutor || urlReader
         ? async () => {
             await pythonClient?.close();
             await webSearchExecutor?.close();
+            await urlReader?.close();
           }
         : undefined,
     create_storage_services() {

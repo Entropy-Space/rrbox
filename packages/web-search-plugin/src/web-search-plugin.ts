@@ -11,6 +11,7 @@ import type {
 } from "@researchbox/agent-core";
 import {
   openUrl,
+  type OpenUrlExecutor,
   type OpenUrlResult,
 } from "./url-reader.ts";
 
@@ -89,6 +90,8 @@ export type WebSearchPluginOptions = {
   summary_grace_ms?: number;
   /** Test seam; production uses the worker's global fetch implementation. */
   fetch?: typeof globalThis.fetch;
+  /** Native builds own page networking outside the WebView process. */
+  url_reader?: OpenUrlExecutor;
 };
 
 type WebSearchToolDetails = {
@@ -1457,12 +1460,19 @@ export function createWebSearchAgentPlugin(
           };
           update("Opening URL…", "opening");
           try {
-            const result = await openUrl(
-              params.url,
-              format === "html" ? "html" : "markdown",
-              signal,
-              options.fetch,
-            );
+            const openFormat = format === "html" ? "html" : "markdown";
+            const result = options.url_reader
+              ? await options.url_reader.open(
+                  params.url,
+                  openFormat,
+                  signal,
+                )
+              : await openUrl(
+                  params.url,
+                  openFormat,
+                  signal,
+                  options.fetch,
+                );
             const details = createOpenUrlDetails(result, format);
             if (format !== "summary") {
               const output = truncateUtf8(

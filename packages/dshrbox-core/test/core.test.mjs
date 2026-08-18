@@ -1,50 +1,92 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  createDshrboxCore,
-  DSH_BROWSER_COMPATIBILITY,
-} from "../src/index.ts";
-import { ProbeLlmAdapter } from "../src/probe-adapter.ts";
-import { runDshrboxBrowserProbe } from "../src/probe.ts";
+import { LlmAdapter } from "@deepseek-ai/dsh-llm";
+import { createDshrboxCore } from "../src/index.ts";
 
-test("composes DSH components and preserves raw streaming session events", async () => {
-  const result = await runDshrboxBrowserProbe();
+class ScriptedAdapter extends LlmAdapter {
+  constructor(script) {
+    super();
+    this.script = script;
+    this.blocked = new Promise((resolve) => {
+      this.resolveBlocked = resolve;
+    });
+  }
 
-  assert.equal(result.ok, true);
-  assert.equal(result.dsh_version, "0.1.0-rc.6");
-  assert.equal(result.streaming.text, "DSH streams in a browser worker.");
-  assert.equal(result.streaming.turn_end_kind, "completed");
-  assert.ok(result.streaming.event_types.includes("assistant/chunk"));
-  assert.ok(result.streaming.event_types.includes("assistant/message"));
-  assert.equal(result.cancellation.text, "partial");
-  assert.equal(result.cancellation.turn_end_kind, "aborted");
-});
+  async waitUntilBlocked() {
+    await this.blocked;
+  }
 
-test("declares the constrained browser async-context contract", () => {
-  assert.deepEqual(DSH_BROWSER_COMPATIBILITY, {
-    async_context: "single_foreground_chain",
-    max_live_agents: 1,
-    max_parallel_tool_calls: 1,
+  async *stream(options) {
+    const text = this.script.kind === "text"
+      ? this.script.text
+      : this.script.partial_text;
+    yield { type: "block-start", index: 0, blockType: "text" };
+    for (const character of text) {
+      yield { type: "text-delta", index: 0, text: character };
+    }
+    if (this.script.kind === "wait_for_cancel") {
+      this.resolveBlocked();
+      await new Promise((_resolve, reject) => {
+        const abort = () => reject(new Error("test stream aborted"));
+        if (options.signal?.aborted) {
+          abort();
+          return;
+        }
+        options.signal?.addEventListener("abort", abort, { once: true });
+      });
+      return;
+    }
+    yield { type: "block-end", index: 0, block: { type: "text", text } };
+    yield {
+      type: "usage",
+      usage: { inputTokens: 1, outputTokens: text.length },
+    };
+    yield { type: "finish", reason: { kind: "stop" } };
+  }
+}
+
+test("composes DSH and preserves raw session events", async () => {
+  const core = await createDshrboxCore({
+    llm_adapter: new ScriptedAdapter({ kind: "text", text: "core reply" }),
+    max_parallel_tool_calls: 3,
+    model: "test-model",
+    provider: "core-streaming-test",
+    session_id: "core-streaming-test",
   });
+  const events = [];
+  const unsubscribe = core.runtime.subscribe((event) => events.push(event));
+  try {
+    await core.runtime.run("Test the core runtime.");
+    assert.equal(core.context.agentLoop.config.maxParallelToolCalls, 3);
+    assert.ok(events.some((event) => event.type === "assistant/chunk"));
+    assert.ok(events.some((event) => event.type === "assistant/message"));
+    assert.equal(
+      events.findLast((event) => event.type === "turn/end")?.data.reason.kind,
+      "completed",
+    );
+  } finally {
+    unsubscribe();
+    await core.dispose();
+  }
 });
 
-test("refuses an overlapping foreground turn", async () => {
-  const adapter = new ProbeLlmAdapter({
+test("refuses an overlapping run without a platform-specific policy", async () => {
+  const adapter = new ScriptedAdapter({
     kind: "wait_for_cancel",
     partial_text: "partial",
   });
   const core = await createDshrboxCore({
     llm_adapter: adapter,
     model: "fake-streaming-model",
-    provider: "dshrbox-overlap-probe",
-    session_id: "dshrbox-overlap-probe",
+    provider: "dshrbox-overlap-test",
+    session_id: "dshrbox-overlap-test",
   });
   try {
     const activeRun = core.runtime.run("First turn.");
     await adapter.waitUntilBlocked();
     await assert.rejects(
       core.runtime.run("Overlapping turn."),
-      /single_foreground_chain/u,
+      /already has an active run/u,
     );
     core.runtime.cancel();
     await activeRun;

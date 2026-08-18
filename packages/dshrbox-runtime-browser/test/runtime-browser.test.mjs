@@ -1,0 +1,43 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  createDshrboxBrowserCore,
+  DSH_BROWSER_COMPATIBILITY,
+} from "../src/index.ts";
+import { ProbeLlmAdapter } from "./fixtures/probe-adapter.ts";
+import { runDshrboxBrowserProbe } from "./fixtures/probe.ts";
+
+test("composes the constrained browser runtime over core", async () => {
+  const result = await runDshrboxBrowserProbe();
+
+  assert.equal(result.ok, true);
+  assert.equal(result.dsh_version, "0.1.0-rc.6");
+  assert.equal(result.streaming.text, "DSH streams in a browser worker.");
+  assert.equal(result.streaming.turn_end_kind, "completed");
+  assert.ok(result.streaming.event_types.includes("assistant/chunk"));
+  assert.ok(result.streaming.event_types.includes("assistant/message"));
+  assert.equal(result.cancellation.text, "partial");
+  assert.equal(result.cancellation.turn_end_kind, "aborted");
+});
+
+test("declares the constrained browser async-context contract", () => {
+  assert.deepEqual(DSH_BROWSER_COMPATIBILITY, {
+    async_context: "single_foreground_chain",
+    max_live_agents: 1,
+    max_parallel_tool_calls: 1,
+  });
+});
+
+test("fixes browser tool execution to the safe serial limit", async () => {
+  const core = await createDshrboxBrowserCore({
+    llm_adapter: new ProbeLlmAdapter({ kind: "text", text: "unused" }),
+    model: "fake-streaming-model",
+    provider: "dshrbox-browser-policy-test",
+    session_id: "dshrbox-browser-policy-test",
+  });
+  try {
+    assert.equal(core.context.agentLoop.config.maxParallelToolCalls, 1);
+  } finally {
+    await core.dispose();
+  }
+});

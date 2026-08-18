@@ -1,5 +1,5 @@
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
-import { createDshrboxCore } from "./index.ts";
+import { createDshrboxBrowserCore } from "../../src/index.ts";
 import { ProbeLlmAdapter } from "./probe-adapter.ts";
 
 const DSH_VERSION = "0.1.0-rc.6";
@@ -44,7 +44,7 @@ async function runStreamingProbe(): Promise<DshrboxProbeTurn> {
     kind: "text",
     text: "DSH streams in a browser worker.",
   });
-  const core = await createDshrboxCore({
+  const core = await createDshrboxBrowserCore({
     llm_adapter: adapter,
     model: PROBE_MODEL,
     provider: PROBE_PROVIDER,
@@ -66,7 +66,7 @@ async function runCancellationProbe(): Promise<DshrboxProbeTurn> {
     kind: "wait_for_cancel",
     partial_text: "partial",
   });
-  const core = await createDshrboxCore({
+  const core = await createDshrboxBrowserCore({
     llm_adapter: adapter,
     model: PROBE_MODEL,
     provider: PROBE_PROVIDER,

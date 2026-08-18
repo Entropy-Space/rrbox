@@ -9,7 +9,9 @@ export default defineConfig({
   build: {
     emptyOutDir: true,
     lib: {
-      entry: fileURLToPath(new URL("./src/browser-worker.ts", import.meta.url)),
+      entry: fileURLToPath(
+        new URL("./test/fixtures/browser-worker.ts", import.meta.url),
+      ),
       fileName: () => "worker.js",
       formats: ["es"],
     },

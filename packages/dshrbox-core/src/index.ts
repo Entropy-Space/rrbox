@@ -11,10 +11,7 @@ import SessionStore, {
 } from "@deepseek-ai/dsh-session";
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime from "@deepseek-ai/dsh-tools";
-import { DSH_BROWSER_COMPATIBILITY } from "./browser-compatibility.ts";
 
-export { DSH_BROWSER_COMPATIBILITY } from "./browser-compatibility.ts";
-export type { DshBrowserCompatibility } from "./browser-compatibility.ts";
 export type { SessionEvent } from "@deepseek-ai/dsh-session";
 
 export type DshrboxRuntimeConfig = {
@@ -84,9 +81,7 @@ export class DshrboxRuntime extends Service {
   async run(prompt: string): Promise<void> {
     if (this.disposed) throw new Error("dshrbox runtime is disposed");
     if (this.active) {
-      throw new Error(
-        `dshrbox browser runtime supports ${DSH_BROWSER_COMPATIBILITY.async_context}`,
-      );
+      throw new Error("dshrbox runtime already has an active run");
     }
     this.active = true;
     try {
@@ -109,6 +104,7 @@ export class DshrboxRuntime extends Service {
 export default DshrboxRuntime;
 
 export type CreateDshrboxCoreOptions = DshrboxRuntimeConfig & {
+  max_parallel_tool_calls?: number;
   persona?: string;
 };
 
@@ -123,20 +119,22 @@ export async function createDshrboxCore(
   options: CreateDshrboxCoreOptions,
 ): Promise<DshrboxCore> {
   const context = new Context();
-  const { persona, ...runtimeOptions } = options;
+  const { max_parallel_tool_calls, persona, ...runtimeOptions } = options;
   try {
     await context.plugin(LlmRuntime);
     await context.plugin(SessionStore);
     await context.plugin(SystemPrompt, {
       includeHarnessIdentity: false,
       includeRuntimeContext: false,
-      persona: persona ?? "You are the dshrbox browser-worker probe.",
+      ...(persona === undefined ? {} : { persona }),
     });
     await context.plugin(ToolRuntime, { mode: "native" });
     await context.plugin(AgentRegistry);
     await context.plugin(AgentLoop, {
       agents: [],
-      maxParallelToolCalls: DSH_BROWSER_COMPATIBILITY.max_parallel_tool_calls,
+      ...(max_parallel_tool_calls === undefined
+        ? {}
+        : { maxParallelToolCalls: max_parallel_tool_calls }),
     });
     await context.plugin(DshrboxRuntime, runtimeOptions);
     await context.dshrbox.ready();

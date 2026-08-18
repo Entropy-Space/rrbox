@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { SessionId } from "@deepseek-ai/dsh-session";
+import { MemoryDshrboxSessionBackend } from "@dshrbox/session-persistence";
 import { DshrboxSessionRuntimeProvider } from "@dshrbox/session-runtime";
 import { ResearchBoxCore } from "@researchbox/agent-core";
 import { MemoryProjectStore } from "@researchbox/project-store";
@@ -145,8 +147,16 @@ test("runs and restores a DSH session behind the existing rrbox core", async () 
   const store = new MemoryProjectStore();
   const workspace = createWorkspaceBackend();
   const transport = new ResumableWorkspaceTransport();
+  const sessionBackend = new MemoryDshrboxSessionBackend();
   const firstEvents = [];
-  const first = createCore(store, workspace, transport, firstEvents);
+  const first = createCore(
+    store,
+    workspace,
+    transport,
+    firstEvents,
+    true,
+    sessionBackend,
+  );
   await first.handle(createCommand("bootstrap", {}));
   const initial = latestState(firstEvents);
   await first.handle(createCommand("prompt", {
@@ -157,6 +167,7 @@ test("runs and restores a DSH session behind the existing rrbox core", async () 
 
   const firstState = latestState(firstEvents);
   assert.notEqual(firstState.active_session_id, null);
+  assert.equal(firstState.history, undefined);
   assert.deepEqual(
     firstState.timeline.map((entry) => entry.type),
     [
@@ -180,12 +191,33 @@ test("runs and restores a DSH session behind the existing rrbox core", async () 
   }
   const afterFirstRun = await store.load();
   const firstDocument = afterFirstRun.documents[0];
-  assert.equal(firstDocument.runtime_state.runtime_id, "dsh");
-  assert.ok(firstDocument.runtime_state.payload.events.length > 0);
+  assert.equal(firstDocument.runtime_id, "dsh");
+  assert.equal(firstDocument.timeline, undefined);
+  assert.equal(firstDocument.history, undefined);
+  assert.ok(
+    (await sessionBackend.loadStored(SessionId(firstDocument.session_id)))
+      .events.length > 0,
+  );
+  await first.handle(createCommand("session_history_navigate", {
+    project_id: firstState.active_project_id,
+    session_id: firstState.active_session_id,
+    target_node_id: null,
+  }));
+  const navigationError = firstEvents.findLast(
+    (event) => event.type === "error",
+  );
+  assert.equal(navigationError.payload.code, "session_history_navigation_failed");
   await first.dispose();
 
   const secondEvents = [];
-  const second = createCore(store, workspace, transport, secondEvents);
+  const second = createCore(
+    store,
+    workspace,
+    transport,
+    secondEvents,
+    true,
+    sessionBackend,
+  );
   await second.handle(createCommand("bootstrap", {
     active_project_id: firstState.active_project_id,
     active_session_id: firstState.active_session_id,
@@ -216,8 +248,16 @@ test("routes the existing abort command into DSH and checkpoints partial output"
   const store = new MemoryProjectStore();
   const workspace = createWorkspaceBackend();
   const transport = new BlockingTransport();
+  const sessionBackend = new MemoryDshrboxSessionBackend();
   const events = [];
-  const core = createCore(store, workspace, transport, events);
+  const core = createCore(
+    store,
+    workspace,
+    transport,
+    events,
+    true,
+    sessionBackend,
+  );
   await core.handle(createCommand("bootstrap", {}));
   const initial = latestState(events);
   const prompting = core.handle(createCommand("prompt", {
@@ -243,14 +283,12 @@ test("routes the existing abort command into DSH and checkpoints partial output"
   assert.equal(assistant.blocks[0].text, "partial DSH output");
   assert.equal(finished.is_running, false);
   const stored = await store.load();
-  assert.equal(
-    stored.documents[0].timeline.findLast(
-      (entry) => entry.type === "assistant_message",
-    ).status,
-    "aborted",
+  assert.equal(stored.documents[0].timeline, undefined);
+  const persisted = await sessionBackend.loadStored(
+    SessionId(stored.documents[0].session_id),
   );
   assert.equal(
-    stored.documents[0].runtime_state.payload.events.at(-1).type,
+    persisted.events.at(-1).type,
     "turn/end",
   );
   await core.dispose();
@@ -260,8 +298,16 @@ test("forwards the existing reasoning-effort selection through DSH", async () =>
   const store = new MemoryProjectStore();
   const workspace = createWorkspaceBackend();
   const transport = new ReasoningEffortTransport();
+  const sessionBackend = new MemoryDshrboxSessionBackend();
   const events = [];
-  const core = createCore(store, workspace, transport, events);
+  const core = createCore(
+    store,
+    workspace,
+    transport,
+    events,
+    true,
+    sessionBackend,
+  );
   await core.handle(createCommand("bootstrap", {}));
   const initial = latestState(events);
   await core.handle(createCommand("reasoning_effort_select", {
@@ -282,8 +328,16 @@ test("forwards the existing reasoning-effort selection through DSH", async () =>
 test("durably checkpoints a failed DSH turn", async () => {
   const store = new MemoryProjectStore();
   const workspace = createWorkspaceBackend();
+  const sessionBackend = new MemoryDshrboxSessionBackend();
   const events = [];
-  const core = createCore(store, workspace, new FailingTransport(), events);
+  const core = createCore(
+    store,
+    workspace,
+    new FailingTransport(),
+    events,
+    true,
+    sessionBackend,
+  );
   await core.handle(createCommand("bootstrap", {}));
   const initial = latestState(events);
   await core.handle(createCommand("prompt", {
@@ -300,9 +354,12 @@ test("durably checkpoints a failed DSH turn", async () => {
   assert.equal(assistant.stop_reason, "error");
   assert.equal(finished.is_running, false);
   const stored = await store.load();
-  assert.equal(stored.documents[0].timeline.at(-1).status, "error");
+  assert.equal(stored.documents[0].timeline, undefined);
+  const persisted = await sessionBackend.loadStored(
+    SessionId(stored.documents[0].session_id),
+  );
   assert.equal(
-    stored.documents[0].runtime_state.payload.events.at(-1).type,
+    persisted.events.at(-1).type,
     "turn/end",
   );
   await core.dispose();
@@ -331,11 +388,14 @@ test("keeps unmarked existing sessions on the legacy runtime", async () => {
   await legacy.dispose();
 
   const dshConfiguredEvents = [];
+  const sessionBackend = new MemoryDshrboxSessionBackend();
   const dshConfigured = createCore(
     store,
     workspace,
     transport,
     dshConfiguredEvents,
+    true,
+    sessionBackend,
   );
   await dshConfigured.handle(createCommand("bootstrap", {
     active_project_id: legacyState.active_project_id,
@@ -347,12 +407,19 @@ test("keeps unmarked existing sessions on the legacy runtime", async () => {
     text: "Continue without migrating runtimes.",
   }));
   const stored = await store.load();
-  assert.equal(stored.documents[0].runtime_state, undefined);
+  assert.equal(stored.documents[0].runtime_id, undefined);
   assert.ok(transport.toolNames.at(-1).includes("write_file"));
   await dshConfigured.dispose();
 });
 
-function createCore(store, workspace, transport, events, useDsh = true) {
+function createCore(
+  store,
+  workspace,
+  transport,
+  events,
+  useDsh = true,
+  sessionBackend = new MemoryDshrboxSessionBackend(),
+) {
   return new ResearchBoxCore({
     projectStore: store,
     workspaceBackend: workspace,
@@ -363,7 +430,7 @@ function createCore(store, workspace, transport, events, useDsh = true) {
     ...(useDsh
       ? {
           sessionRuntimeProvider: new DshrboxSessionRuntimeProvider({
-            project_store: store,
+            session_backend: sessionBackend,
             // Force the terminal batch through executeRun's explicit flush so
             // the final checkpoint overlaps a ProjectStore refresh.
             write_batch_max_delay_ms: 10_000,

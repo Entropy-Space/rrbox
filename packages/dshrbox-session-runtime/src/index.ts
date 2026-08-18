@@ -5,6 +5,7 @@ import {
   ReasoningEffortId,
   type LlmCallConfig,
 } from "@deepseek-ai/dsh-llm";
+import { SessionId } from "@deepseek-ai/dsh-session";
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import {
   createDshrboxCore,
@@ -12,35 +13,34 @@ import {
 } from "@dshrbox/core";
 import {
   DshrboxEventProjection,
-  type DshrboxProjectionSnapshot,
 } from "@dshrbox/event-projector";
 import { ModelTransportLlmAdapter } from "@dshrbox/model-adapter";
 import {
   DSHRBOX_RUNTIME_ID,
-  DSHRBOX_RUNTIME_STATE_FORMAT_VERSION,
   DshrboxSessionPersistence,
-  readDshrboxPersistedSession,
+  type PersistenceBackend,
 } from "@dshrbox/session-persistence";
 import { DshrboxWorkspace } from "@dshrbox/workspace";
 import type {
   SessionRuntimeOptions,
   SessionRuntimePort,
   SessionRuntimeProvider,
+  SessionRuntimeView,
 } from "@researchbox/agent-core";
 import {
-  synchronizeSessionHistory,
-  type ProjectStore,
+  RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION,
+  type LegacySessionDocument,
+  type RuntimeSessionDocument,
   type SessionDocument,
 } from "@researchbox/project-store";
 import type {
   CoreEvent,
   ReasoningEffort,
   SummaryReviewResolution,
-  TimelineEntry,
 } from "@researchbox/protocol";
 
 export type DshrboxSessionRuntimeProviderConfig = {
-  project_store: ProjectStore;
+  session_backend: PersistenceBackend;
   api?: string;
   max_parallel_tool_calls?: number;
   prepared_session_cache_size?: number;
@@ -58,14 +58,19 @@ export class DshrboxSessionRuntimeProvider implements SessionRuntimeProvider {
     this.config = config;
   }
 
-  initializeDocument(document: SessionDocument): void {
-    if (document.timeline.length > 0 || document.runtime_state !== undefined) {
+  initializeDocument(
+    document: LegacySessionDocument,
+  ): RuntimeSessionDocument {
+    if (document.timeline.length > 0) {
       throw new Error("Only a new empty session can be initialized for DSH.");
     }
-    document.runtime_state = {
+    return {
+      format_version: RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION,
+      session_id: document.session_id,
+      project_id: document.project_id,
+      input_draft: document.input_draft,
       runtime_id: DSHRBOX_RUNTIME_ID,
-      format_version: DSHRBOX_RUNTIME_STATE_FORMAT_VERSION,
-      payload: null,
+      message_count: 0,
     };
   }
 
@@ -73,14 +78,6 @@ export class DshrboxSessionRuntimeProvider implements SessionRuntimeProvider {
     return DshrboxSessionRuntime.create(options, this.config);
   }
 }
-
-type StagedAlias = {
-  projected_entry_id: string;
-  projected_run_id: string;
-  stored_created_at: string;
-  stored_entry_id: string;
-  stored_run_id: string;
-};
 
 class DshrboxSessionRuntime implements SessionRuntimePort {
   readonly project_id: string;
@@ -90,21 +87,21 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
   private readonly model: Model<string>;
   private readonly eventSink: SessionRuntimeOptions["event_sink"];
   private readonly checkpoint: SessionRuntimeOptions["checkpoint"];
-  private document: SessionDocument;
+  private document: RuntimeSessionDocument;
+  private readonly projectedView: SessionRuntimeView;
   private activeRequestId: string | null = null;
   private activeRun: Promise<void> | null = null;
-  private pendingStagedEntry: Extract<
-    TimelineEntry,
-    { type: "user_message" }
-  > | null = null;
-  private stagedAlias: StagedAlias | null = null;
   private disposal: Promise<void> | null = null;
 
   private constructor(core: DshrboxCore, options: SessionRuntimeOptions) {
     this.core = core;
     this.project_id = options.project_id;
     this.session_id = options.session_id;
-    this.document = options.document;
+    this.document = requireDshDocument(options.document);
+    this.projectedView = {
+      input_draft: this.document.input_draft,
+      timeline: [],
+    };
     this.model = options.model;
     this.eventSink = options.event_sink;
     this.checkpoint = options.checkpoint;
@@ -120,7 +117,9 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
         "Legacy AgentPlugin values must be adapted as DSH plugins before use.",
       );
     }
-    const persisted = readDshrboxPersistedSession(options.document);
+    const persistedRevision = await config.session_backend.readStoredRevision(
+      SessionId(options.session_id),
+    );
     let runtime: DshrboxSessionRuntime | null = null;
     const checkpointPolicy = createCheckpointPolicy({
       session_id: options.session_id,
@@ -140,7 +139,7 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
       model: options.model.id,
       provider: options.model.provider,
       session_id: options.session_id,
-      resume: persisted !== null,
+      resume: persistedRevision !== undefined,
       persona: options.system_prompt,
       ...(config.max_parallel_tool_calls === undefined
         ? {}
@@ -149,7 +148,7 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
         {
           plugin: DshrboxSessionPersistence,
           config: {
-            project_store: config.project_store,
+            backend: config.session_backend,
             ...(config.prepared_session_cache_size === undefined
               ? {}
               : {
@@ -174,9 +173,6 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
             project_id: options.project_id,
             session_id: options.session_id,
             ...(config.api === undefined ? {} : { api: config.api }),
-            ...(persisted === null
-              ? {}
-              : { seed_events: persisted.events }),
             event_sink: (event: CoreEvent) => {
               if (runtime === null) {
                 throw new Error("The DSH session runtime is not ready.");
@@ -189,8 +185,7 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
       ],
     });
     runtime = new DshrboxSessionRuntime(core, options);
-    runtime.catchUpProjection();
-    if (persisted !== null) runtime.reconcileProjection();
+    runtime.reconcileProjection();
     return runtime;
   }
 
@@ -202,8 +197,8 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
     return this.activeRun !== null || this.is_running;
   }
 
-  ownedDocument(): SessionDocument {
-    return this.document;
+  view(): SessionRuntimeView {
+    return this.projectedView;
   }
 
   usesModel(model: Model<string>): boolean {
@@ -214,26 +209,23 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
     if (this.is_busy) {
       throw new Error("Cannot replace a DSH document while a run is active.");
     }
-    this.document = document;
-    this.reconcileProjection();
+    this.document = requireDshDocument(document);
+    this.projectedView.input_draft = document.input_draft;
   }
 
   startPrompt(text: string, requestId: string): Promise<void> {
-    return this.startRun(text, requestId, null);
+    return this.startRun(text, requestId);
   }
 
   continueStagedPrompt(
     runId: string,
     requestId: string,
   ): Promise<void> {
-    const staged = this.document.timeline.findLast(
-      (entry): entry is Extract<TimelineEntry, { type: "user_message" }> =>
-        entry.type === "user_message" && entry.run_id === runId,
+    void runId;
+    void requestId;
+    return Promise.reject(
+      new Error("DSH sessions do not persist staged timeline prompts."),
     );
-    if (staged === undefined) {
-      return Promise.reject(new Error("The staged DSH prompt is unavailable."));
-    }
-    return this.startRun(staged.content, requestId, staged);
   }
 
   abort(): void {
@@ -282,19 +274,15 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
   private startRun(
     text: string,
     requestId: string,
-    staged: Extract<TimelineEntry, { type: "user_message" }> | null,
   ): Promise<void> {
     if (this.activeRun !== null) {
       return Promise.reject(new Error("The DSH session already has an active run."));
     }
     this.activeRequestId = requestId;
-    this.pendingStagedEntry = staged;
-    this.stagedAlias = null;
+    this.projectedView.input_draft = "";
     const run = this.executeRun(text).finally(() => {
       if (this.activeRun === run) this.activeRun = null;
       this.activeRequestId = null;
-      this.pendingStagedEntry = null;
-      this.stagedAlias = null;
     });
     this.activeRun = run;
     return run;
@@ -318,7 +306,7 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
         new Error(`DSH ${phase} checkpoint has no active request.`),
       );
     }
-    return this.checkpoint(phase, requestId, this.document);
+    return this.checkpoint(phase, requestId);
   }
 
   private acceptProjectedEvent(event: CoreEvent): void {
@@ -326,67 +314,9 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
     if (requestId === null) {
       throw new Error("A live DSH projection has no active viewer request.");
     }
-    if (event.type === "timeline_entry_appended") {
-      const entry = structuredClone(event.payload.entry);
-      if (entry.type === "user_message" && this.pendingStagedEntry !== null) {
-        this.aliasStagedUser(entry, this.pendingStagedEntry);
-        this.pendingStagedEntry = null;
-        return;
-      }
-    }
-    const projected = this.applyAliases(event, requestId);
-    applyCoreEvent(this.document, projected);
+    const projected = { ...event, request_id: requestId } as CoreEvent;
+    applyCoreEvent(this.projectedView, projected);
     this.eventSink(projected);
-  }
-
-  private aliasStagedUser(
-    projected: Extract<TimelineEntry, { type: "user_message" }>,
-    stored: Extract<TimelineEntry, { type: "user_message" }>,
-  ): void {
-    if (projected.content !== stored.content) {
-      throw new Error("The staged prompt does not match the DSH user message.");
-    }
-    this.stagedAlias = {
-      projected_entry_id: projected.entry_id,
-      projected_run_id: projected.run_id,
-      stored_created_at: stored.created_at,
-      stored_entry_id: stored.entry_id,
-      stored_run_id: stored.run_id,
-    };
-  }
-
-  private applyAliases(event: CoreEvent, requestId: string): CoreEvent {
-    const alias = this.stagedAlias;
-    const scope = { request_id: requestId };
-    switch (event.type) {
-      case "timeline_entry_appended":
-      case "timeline_entry_updated":
-        return {
-          ...event,
-          ...scope,
-          payload: {
-            ...event.payload,
-            entry: alias === null
-              ? structuredClone(event.payload.entry)
-              : aliasTimelineEntry(event.payload.entry, alias),
-          },
-        };
-      case "assistant_block_appended":
-      case "assistant_block_delta":
-      case "assistant_block_updated":
-        return {
-          ...event,
-          ...scope,
-          payload: {
-            ...event.payload,
-            entry_id: alias?.projected_entry_id === event.payload.entry_id
-              ? alias.stored_entry_id
-              : event.payload.entry_id,
-          },
-        } as CoreEvent;
-      default:
-        return { ...event, ...scope };
-    }
   }
 
   private catchUpProjection(): void {
@@ -400,14 +330,7 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
   private reconcileProjection(): void {
     this.catchUpProjection();
     const snapshot = this.core.context.dshrboxProjection.snapshot();
-    const alias = deriveStagedAlias(this.document.timeline, snapshot);
-    this.document.timeline = alias === null
-      ? structuredClone(snapshot.timeline)
-      : snapshot.timeline.map((entry) => aliasTimelineEntry(entry, alias));
-    this.document.history = synchronizeSessionHistory(
-      this.document.history,
-      this.document.timeline,
-    );
+    this.projectedView.timeline = structuredClone(snapshot.timeline);
   }
 }
 
@@ -494,11 +417,11 @@ function isOwnedExecution(
     String(execution.agent.id) === sessionId;
 }
 
-function applyCoreEvent(document: SessionDocument, event: CoreEvent): void {
+function applyCoreEvent(view: SessionRuntimeView, event: CoreEvent): void {
   switch (event.type) {
     case "timeline_entry_appended":
       if (
-        document.timeline.some(
+        view.timeline.some(
           (entry) => entry.entry_id === event.payload.entry.entry_id,
         )
       ) {
@@ -506,18 +429,18 @@ function applyCoreEvent(document: SessionDocument, event: CoreEvent): void {
           `Duplicate projected timeline entry: ${event.payload.entry.entry_id}.`,
         );
       }
-      document.timeline.push(structuredClone(event.payload.entry));
+      view.timeline.push(structuredClone(event.payload.entry));
       return;
     case "timeline_entry_updated": {
       const index = requireTimelineIndex(
-        document,
+        view,
         event.payload.entry.entry_id,
       );
-      document.timeline[index] = structuredClone(event.payload.entry);
+      view.timeline[index] = structuredClone(event.payload.entry);
       return;
     }
     case "assistant_block_appended": {
-      const assistant = requireAssistantEntry(document, event.payload.entry_id);
+      const assistant = requireAssistantEntry(view, event.payload.entry_id);
       if (
         assistant.blocks.some(
           (block) => block.block_id === event.payload.block.block_id,
@@ -531,7 +454,7 @@ function applyCoreEvent(document: SessionDocument, event: CoreEvent): void {
       return;
     }
     case "assistant_block_delta": {
-      const assistant = requireAssistantEntry(document, event.payload.entry_id);
+      const assistant = requireAssistantEntry(view, event.payload.entry_id);
       const block = assistant.blocks.find(
         (candidate) => candidate.block_id === event.payload.block_id,
       );
@@ -547,7 +470,7 @@ function applyCoreEvent(document: SessionDocument, event: CoreEvent): void {
       return;
     }
     case "assistant_block_updated": {
-      const assistant = requireAssistantEntry(document, event.payload.entry_id);
+      const assistant = requireAssistantEntry(view, event.payload.entry_id);
       const index = assistant.blocks.findIndex(
         (block) => block.block_id === event.payload.block.block_id,
       );
@@ -565,10 +488,10 @@ function applyCoreEvent(document: SessionDocument, event: CoreEvent): void {
 }
 
 function requireTimelineIndex(
-  document: SessionDocument,
+  view: SessionRuntimeView,
   entryId: string,
 ): number {
-  const index = document.timeline.findIndex(
+  const index = view.timeline.findIndex(
     (entry) => entry.entry_id === entryId,
   );
   if (index === -1) {
@@ -578,60 +501,14 @@ function requireTimelineIndex(
 }
 
 function requireAssistantEntry(
-  document: SessionDocument,
+  view: SessionRuntimeView,
   entryId: string,
-): Extract<TimelineEntry, { type: "assistant_message" }> {
-  const entry = document.timeline.find(
+): Extract<SessionRuntimeView["timeline"][number], { type: "assistant_message" }> {
+  const entry = view.timeline.find(
     (candidate) => candidate.entry_id === entryId,
   );
   if (entry?.type !== "assistant_message") {
     throw new Error(`Projected assistant entry is missing: ${entryId}.`);
-  }
-  return entry;
-}
-
-function deriveStagedAlias(
-  stored: readonly TimelineEntry[],
-  snapshot: DshrboxProjectionSnapshot,
-): StagedAlias | null {
-  const projectedUser = snapshot.timeline.find(
-    (entry): entry is Extract<TimelineEntry, { type: "user_message" }> =>
-      entry.type === "user_message",
-  );
-  const storedUser = stored.find(
-    (entry): entry is Extract<TimelineEntry, { type: "user_message" }> =>
-      entry.type === "user_message",
-  );
-  if (
-    projectedUser === undefined ||
-    storedUser === undefined ||
-    projectedUser.entry_id === storedUser.entry_id
-  ) {
-    return null;
-  }
-  if (projectedUser.content !== storedUser.content) {
-    throw new Error("Persisted DSH history does not match its rrbox timeline.");
-  }
-  return {
-    projected_entry_id: projectedUser.entry_id,
-    projected_run_id: projectedUser.run_id,
-    stored_created_at: storedUser.created_at,
-    stored_entry_id: storedUser.entry_id,
-    stored_run_id: storedUser.run_id,
-  };
-}
-
-function aliasTimelineEntry(
-  source: TimelineEntry,
-  alias: StagedAlias,
-): TimelineEntry {
-  const entry = structuredClone(source);
-  if (entry.run_id === alias.projected_run_id) {
-    entry.run_id = alias.stored_run_id;
-  }
-  if (entry.entry_id === alias.projected_entry_id) {
-    entry.entry_id = alias.stored_entry_id;
-    entry.created_at = alias.stored_created_at;
   }
   return entry;
 }
@@ -642,21 +519,34 @@ function assertProviderConfig(
   if (
     config === null ||
     typeof config !== "object" ||
-    config.project_store === null ||
-    typeof config.project_store !== "object"
+    config.session_backend === null ||
+    typeof config.session_backend !== "object"
   ) {
     throw new TypeError(
-      "dshrbox session runtime requires a project_store",
+      "dshrbox session runtime requires a session_backend",
     );
   }
 }
 
 function assertRuntimeOptions(options: SessionRuntimeOptions): void {
   if (
-    options.document.runtime_state?.runtime_id !== DSHRBOX_RUNTIME_ID ||
+    options.document.format_version !== RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION ||
+    options.document.runtime_id !== DSHRBOX_RUNTIME_ID ||
     options.document.session_id !== options.session_id ||
     options.document.project_id !== options.project_id
   ) {
     throw new Error("Invalid DSH session runtime document.");
   }
+}
+
+function requireDshDocument(
+  document: SessionDocument,
+): RuntimeSessionDocument {
+  if (
+    document.format_version !== RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION ||
+    document.runtime_id !== DSHRBOX_RUNTIME_ID
+  ) {
+    throw new Error("Invalid DSH session runtime document.");
+  }
+  return document;
 }

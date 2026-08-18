@@ -1,8 +1,11 @@
 # @dshrbox/session-persistence
 
-Persists canonical DSH session headers and events inside rrbox session
-documents. The existing project store remains the durability and concurrency
-owner; DSH's persistence coordinator remains the session-log protocol owner.
+DSH persistence plugin over a host-supplied `PersistenceBackend`.
 
-The state is stored in the document's opaque `runtime_state` field. Documents
-without a `dsh` runtime marker are never claimed or migrated by this plugin.
+The backend stores canonical `SessionHeader` and `SessionEvent` values directly.
+Project documents, rrbox timelines, and viewer projections never enter this
+storage boundary. DSH's persistence coordinator continues to own batching,
+revisions, resume preparation, and crash repair.
+
+`MemoryDshrboxSessionBackend` is provided for tests and explicitly ephemeral
+hosts. Browser and native durability adapters remain composition-root work.

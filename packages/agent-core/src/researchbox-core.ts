@@ -2,11 +2,15 @@ import type { Model } from "@earendil-works/pi-ai";
 import type { ModelTransport } from "@researchbox/model-transport";
 import {
   createSessionHistory,
+  isLegacySessionDocument,
+  isRuntimeSessionDocument,
   navigateSessionHistory,
   PROJECT_STORE_SCHEMA_VERSION,
   ProjectStoreConflictError,
   SESSION_DOCUMENT_FORMAT_VERSION,
+  sessionDocumentMessageCount,
   synchronizeSessionHistory,
+  type LegacySessionDocument,
   type ProjectRecord,
   type ProjectStoreChange,
   type ProjectStore,
@@ -53,6 +57,7 @@ import {
   type SessionRuntimeOptions,
   type SessionRuntimePort,
   type SessionRuntimeProvider,
+  type SessionRuntimeView,
 } from "./session-runtime.ts";
 import {
   snapshotAgentPlugins,
@@ -650,13 +655,17 @@ export class ResearchBoxCore {
           currentProject.new_chat_model,
           currentProject.new_chat_reasoning_effort,
         );
-        this.sessionRuntimeProvider?.initializeDocument(created.document);
-        const staged = stagePrompt(created.document, promptText);
+        const staged = this.sessionRuntimeProvider === undefined
+          ? stagePrompt(created.document, promptText)
+          : null;
+        const sessionDocument = this.sessionRuntimeProvider === undefined
+          ? created.document
+          : this.sessionRuntimeProvider.initializeDocument(created.document);
         try {
           await this.commitMutation(
             (draft) => {
               draft.sessions.push(created.session);
-              draft.documents.push(created.document);
+              draft.documents.push(sessionDocument);
               const project = findProject(
                 draft,
                 command.payload.project_id,
@@ -686,10 +695,12 @@ export class ResearchBoxCore {
         }
         await this.activateSelection();
         await this.emitStateSnapshot(command.request_id);
-        runPromise = this.requireRuntime().continueStagedPrompt(
-          staged.run_id,
-          command.request_id,
-        );
+        runPromise = staged === null
+          ? this.requireRuntime().startPrompt(promptText, command.request_id)
+          : this.requireRuntime().continueStagedPrompt(
+              staged.run_id,
+              command.request_id,
+            );
         return;
       }
 
@@ -1364,6 +1375,9 @@ export class ResearchBoxCore {
 
     try {
       const currentDocument = this.requireDocument(sessionId);
+      if (!isLegacySessionDocument(currentDocument)) {
+        throw new Error("DSH session history navigation is not supported yet.");
+      }
       const navigation = navigateSessionHistory(
         currentDocument.history,
         targetNodeId,
@@ -1371,6 +1385,9 @@ export class ResearchBoxCore {
       const now = new Date().toISOString();
       await this.commitMutation((draft) => {
         const document = findDocument(draft, sessionId);
+        if (!isLegacySessionDocument(document)) {
+          throw new Error("DSH session history navigation is not supported yet.");
+        }
         document.history = navigation.history;
         document.timeline = navigation.timeline;
         const session = findSession(draft, sessionId);
@@ -1502,9 +1519,9 @@ export class ResearchBoxCore {
     const document = sessionId === null
       ? null
       : this.requireDocument(sessionId);
-    const runtimeProvider = document?.runtime_state === undefined
-      ? undefined
-      : this.requireSessionRuntimeProvider(document.runtime_state.runtime_id);
+    const runtimeProvider = document !== null && isRuntimeSessionDocument(document)
+      ? this.requireSessionRuntimeProvider(document.runtime_id)
+      : undefined;
     const runtimeOptions: SessionRuntimeOptions | null =
       sessionId === null || document === null
       ? null
@@ -1523,13 +1540,12 @@ export class ResearchBoxCore {
           system_prompt: this.systemPrompt,
           plugins: this.plugins,
           event_sink: this.eventSink,
-          checkpoint: (phase, requestId, runtimeDocument) =>
+          checkpoint: (phase, requestId) =>
             this.enqueueMutation(async () => {
               await this.checkpointActiveSession(
                 projectId,
                 sessionId,
                 phase,
-                runtimeDocument,
               );
               if (phase === "finished") {
                 await this.emitStateSnapshot(requestId);
@@ -1573,7 +1589,6 @@ export class ResearchBoxCore {
     projectId: string,
     sessionId: string,
     phase: "staged" | "tool_started" | "tool_finished" | "finished",
-    sourceDocument?: SessionDocument,
   ): Promise<void> {
     const state = this.requireState();
     if (
@@ -1583,13 +1598,17 @@ export class ResearchBoxCore {
       throw new Error("The running session is no longer active.");
     }
 
-    const stateDocument = findDocument(state, sessionId);
-    const runtimeDocument = structuredClone(sourceDocument ?? stateDocument);
-    const synchronizedHistory = synchronizeSessionHistory(
-      runtimeDocument.history,
-      runtimeDocument.timeline,
-    );
-    stateDocument.history = structuredClone(synchronizedHistory);
+    const runtime = this.requireRuntime();
+    if (runtime.session_id !== sessionId || runtime.project_id !== projectId) {
+      throw new Error("The running session runtime no longer matches selection.");
+    }
+    const runtimeView = runtime.view();
+    const synchronizedHistory = runtimeView.history === undefined
+      ? undefined
+      : synchronizeSessionHistory(
+          runtimeView.history,
+          runtimeView.timeline,
+        );
     const requestedSelection = {
       project_id: state.active_project_id,
       session_id: state.active_session_id,
@@ -1599,23 +1618,32 @@ export class ResearchBoxCore {
     const commit = await this.projectStore.mutate((draft) => {
       const session = findSession(draft, sessionId);
       const document = findDocument(draft, sessionId);
-      document.timeline = structuredClone(runtimeDocument.timeline);
-      document.history = structuredClone(synchronizedHistory);
+      if (isLegacySessionDocument(document)) {
+        if (synchronizedHistory === undefined) {
+          throw new Error("The legacy session runtime has no history view.");
+        }
+        document.timeline = structuredClone(runtimeView.timeline);
+        document.history = structuredClone(synchronizedHistory);
+      } else {
+        document.message_count = runtimeView.timeline.filter(
+          (entry) => entry.type === "user_message",
+        ).length;
+      }
       if (
         phase === "staged" &&
         submittedDraft?.project_id === projectId &&
         submittedDraft.session_id === sessionId &&
         document.input_draft === submittedDraft.input_draft
       ) {
-        document.input_draft = runtimeDocument.input_draft;
+        document.input_draft = runtimeView.input_draft;
       }
       if (
         phase === "staged" &&
         !session.title_is_custom &&
-        document.timeline.filter((entry) => entry.type === "user_message")
+        runtimeView.timeline.filter((entry) => entry.type === "user_message")
           .length === 1
       ) {
-        const firstUserMessage = document.timeline.find(
+        const firstUserMessage = runtimeView.timeline.find(
           (entry) => entry.type === "user_message",
         );
         if (firstUserMessage) {
@@ -1662,37 +1690,6 @@ export class ResearchBoxCore {
     },
   ): void {
     const runtime = this.runtime;
-    const runningDocument =
-      runtime?.is_busy && this.state
-        ? runtime.ownedDocument()
-        : null;
-    if (
-      runtime &&
-      runningDocument &&
-      isOwnedSession(committed, runtime.project_id, runtime.session_id)
-    ) {
-      const committedDocument = findDocument(
-        committed,
-        runtime.session_id,
-      );
-      runningDocument.input_draft = committedDocument.input_draft;
-      if (committedDocument.runtime_state === undefined) {
-        delete runningDocument.runtime_state;
-      } else {
-        runningDocument.runtime_state = structuredClone(
-          committedDocument.runtime_state,
-        );
-      }
-      runningDocument.history = synchronizeSessionHistory(
-        runningDocument.history,
-        runningDocument.timeline,
-      );
-      const documentIndex = committed.documents.findIndex(
-        (document) => document.session_id === runtime.session_id,
-      );
-      committed.documents[documentIndex] = runningDocument;
-    }
-
     const projectIds = new Set(
       committed.projects.map((project) => project.project_id),
     );
@@ -1793,6 +1790,9 @@ export class ResearchBoxCore {
       state.active_session_id === null
         ? null
         : this.requireDocument(state.active_session_id);
+    const sessionView = document === null
+      ? null
+      : this.sessionView(document);
     const activeProject = this.requireProject(state.active_project_id);
     const activeModel = this.getActiveModelSelection();
     const catalog = this.providerCatalog.snapshot();
@@ -1825,9 +1825,9 @@ export class ResearchBoxCore {
           title,
           created_at,
           updated_at,
-          message_count: this.requireDocument(session_id).timeline.filter(
-            (entry) => entry.type === "user_message",
-          ).length,
+          message_count: sessionDocumentMessageCount(
+            this.requireDocument(session_id),
+          ),
         })),
       providers: catalog.providers,
       active_model: { ...activeModel },
@@ -1835,13 +1835,11 @@ export class ResearchBoxCore {
       active_project_id: state.active_project_id,
       active_session_id: state.active_session_id,
       input_draft:
-        document === null
-          ? activeProject.new_chat_draft
-          : document.input_draft,
-      timeline: structuredClone(document?.timeline ?? []),
-      ...(document === null
+        sessionView?.input_draft ?? activeProject.new_chat_draft,
+      timeline: structuredClone(sessionView?.timeline ?? []),
+      ...(document === null || !isLegacySessionDocument(document)
         ? {}
-        : { history: summarizeSessionHistory(document.history) }),
+        : { history: summarizeSessionHistory(sessionView!.history!) }),
       files,
       is_running: this.runtime?.is_running ?? false,
     };
@@ -2425,6 +2423,17 @@ export class ResearchBoxCore {
     return this.runtime;
   }
 
+  private sessionView(document: SessionDocument): SessionRuntimeView {
+    if (isLegacySessionDocument(document)) return document;
+    const runtime = this.runtime;
+    if (runtime?.session_id !== document.session_id) {
+      throw new Error(
+        `No active runtime projection is available for ${document.session_id}.`,
+      );
+    }
+    return runtime.view();
+  }
+
   private requireWorkspace(): WorkspaceController {
     if (!this.workspace) throw new Error("No active project workspace is available.");
     return this.workspace;
@@ -2547,7 +2556,7 @@ export class ResearchBoxCore {
 export { ResearchBoxCore as AgentCore };
 
 function summarizeSessionHistory(
-  history: SessionDocument["history"],
+  history: NonNullable<SessionRuntimeView["history"]>,
 ): SessionHistorySnapshot {
   return {
     active_leaf_id: history.active_leaf_id,
@@ -2632,7 +2641,7 @@ function createSessionRecord(
   titleIsCustom: boolean,
   modelSelection: ModelSelection,
   reasoningEffort: ReasoningEffort,
-): { session: SessionRecord; document: SessionDocument } {
+): { session: SessionRecord; document: LegacySessionDocument } {
   const sessionId = crypto.randomUUID();
   const now = new Date().toISOString();
   return {
@@ -2669,6 +2678,7 @@ async function reconcileWorkspaceChanges(
 
   let reconciled = false;
   for (const document of state.documents) {
+    if (!isLegacySessionDocument(document)) continue;
     const projectChanges = changesByProject.get(document.project_id) ?? [];
     if (projectChanges.length === 0) continue;
     const consumedChangeIds = new Set<string>();
@@ -3122,6 +3132,7 @@ function repairInterruptedSessions(state: ProjectStoreState): boolean {
     state.sessions.map((session) => [session.session_id, session]),
   );
   for (const document of state.documents) {
+    if (!isLegacySessionDocument(document)) continue;
     for (const entry of document.timeline) {
       if (
         entry.type !== "assistant_message" ||
@@ -3163,6 +3174,7 @@ function repairInterruptedSessions(state: ProjectStoreState): boolean {
 function repairInvalidTranscripts(state: ProjectStoreState): boolean {
   let repaired = false;
   for (const document of state.documents) {
+    if (!isLegacySessionDocument(document)) continue;
     repaired = repairInvalidTranscript(document) || repaired;
   }
   return repaired;
@@ -3173,6 +3185,7 @@ function synchronizePersistedSessionHistories(
 ): boolean {
   let synchronized = false;
   for (const document of state.documents) {
+    if (!isLegacySessionDocument(document)) continue;
     const nextHistory = synchronizeSessionHistory(
       document.history,
       document.timeline,
@@ -3186,7 +3199,7 @@ function synchronizePersistedSessionHistories(
   return synchronized;
 }
 
-function repairInvalidTranscript(document: SessionDocument): boolean {
+function repairInvalidTranscript(document: LegacySessionDocument): boolean {
   const pending = collectPendingToolCalls(document);
   if (pending.length === 0) return false;
 
@@ -3209,7 +3222,7 @@ function repairInvalidTranscript(document: SessionDocument): boolean {
   return true;
 }
 
-function collectPendingToolCalls(document: SessionDocument): Array<{
+function collectPendingToolCalls(document: LegacySessionDocument): Array<{
   run_id: string;
   assistant_entry_id: string;
   legacy_message_id: string;

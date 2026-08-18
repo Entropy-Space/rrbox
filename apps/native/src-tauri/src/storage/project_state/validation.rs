@@ -9,8 +9,8 @@ use super::super::StorageError;
 pub(super) const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const PROJECT_STORE_SCHEMA_VERSION: u64 = 4;
 const LINEAR_SESSION_DOCUMENT_FORMAT_VERSION: u64 = 4;
-const HISTORY_SESSION_DOCUMENT_FORMAT_VERSION: u64 = 5;
-const SESSION_DOCUMENT_FORMAT_VERSION: u64 = 6;
+const SESSION_DOCUMENT_FORMAT_VERSION: u64 = 5;
+const RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION: u64 = 6;
 const SESSION_HISTORY_FORMAT_VERSION: u64 = 1;
 
 #[derive(Debug)]
@@ -130,7 +130,7 @@ pub(super) fn validate_project_state(
       require_string(document, "session_id").map_err(StorageError::InvalidRequest)?;
     let project_id =
       require_string(document, "project_id").map_err(StorageError::InvalidRequest)?;
-    let timeline = validate_session_document(document)?;
+    let message_count = validate_session_document(document)?;
     if !document_ids.insert(session_id) {
       return Err(StorageError::InvalidRequest(format!(
         "Duplicate session document: {session_id}."
@@ -141,7 +141,7 @@ pub(super) fn validate_project_state(
         "Session document {session_id} does not match its session."
       )));
     }
-    if timeline.is_empty() && unsubmitted_session_candidates.contains(session_id) {
+    if message_count == 0 && unsubmitted_session_candidates.contains(session_id) {
       return Err(StorageError::InvalidRequest(
         "Unsubmitted new chats must not be persisted as sessions.".into(),
       ));
@@ -217,62 +217,46 @@ fn validate_reasoning_effort(value: Option<&Value>, field: &str) -> Result<(), S
   }
 }
 
-fn validate_session_document(document: &Value) -> Result<&Vec<Value>, StorageError> {
+fn validate_session_document(document: &Value) -> Result<usize, StorageError> {
   let format_version =
     deserialize_u64_from_json(document, "format_version").map_err(StorageError::InvalidRequest)?;
+  require_any_string(document, "input_draft")?;
+  if format_version == RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION {
+    require_string(document, "runtime_id").map_err(StorageError::InvalidRequest)?;
+    let message_count =
+      deserialize_u64_from_json(document, "message_count").map_err(StorageError::InvalidRequest)?;
+    if message_count > MAX_SAFE_INTEGER {
+      return Err(StorageError::InvalidRequest(
+        "message_count exceeds the safe integer range.".into(),
+      ));
+    }
+    for forbidden in ["timeline", "history", "runtime_state"] {
+      if document.get(forbidden).is_some() {
+        return Err(StorageError::InvalidRequest(format!(
+          "Runtime session documents cannot persist {forbidden}."
+        )));
+      }
+    }
+    return Ok(message_count as usize);
+  }
   if format_version != SESSION_DOCUMENT_FORMAT_VERSION
-    && format_version != HISTORY_SESSION_DOCUMENT_FORMAT_VERSION
     && format_version != LINEAR_SESSION_DOCUMENT_FORMAT_VERSION
   {
     return Err(StorageError::InvalidRequest(format!(
       "Unsupported session document format version: {format_version}."
     )));
   }
-  require_any_string(document, "input_draft")?;
   let timeline = require_array(document, "timeline").map_err(StorageError::InvalidRequest)?;
   validate_timeline(timeline)?;
-  if format_version == SESSION_DOCUMENT_FORMAT_VERSION
-    || format_version == HISTORY_SESSION_DOCUMENT_FORMAT_VERSION
-  {
+  if format_version == SESSION_DOCUMENT_FORMAT_VERSION {
     validate_session_history(document)?;
   }
-  if format_version == SESSION_DOCUMENT_FORMAT_VERSION {
-    validate_session_runtime_state(document)?;
-  }
-  Ok(timeline)
-}
-
-fn validate_session_runtime_state(document: &Value) -> Result<(), StorageError> {
-  let Some(runtime_state) = document.get("runtime_state") else {
-    return Ok(());
-  };
-  let runtime_state = runtime_state.as_object().ok_or_else(|| {
-    StorageError::InvalidRequest("Session runtime state must be an object.".into())
-  })?;
-  runtime_state
-    .get("runtime_id")
-    .and_then(Value::as_str)
-    .filter(|value| !value.is_empty())
-    .ok_or_else(|| {
-      StorageError::InvalidRequest(
-        "Session runtime state runtime_id must be a non-empty string.".into(),
-      )
-    })?;
-  runtime_state
-    .get("format_version")
-    .and_then(Value::as_u64)
-    .filter(|value| *value <= MAX_SAFE_INTEGER)
-    .ok_or_else(|| {
-      StorageError::InvalidRequest(
-        "Session runtime state format_version must be a non-negative safe integer.".into(),
-      )
-    })?;
-  if !runtime_state.contains_key("payload") {
-    return Err(StorageError::InvalidRequest(
-      "Session runtime state payload is required.".into(),
-    ));
-  }
-  Ok(())
+  Ok(
+    timeline
+      .iter()
+      .filter(|entry| entry.get("type").and_then(Value::as_str) == Some("user_message"))
+      .count(),
+  )
 }
 
 fn validate_session_history(document: &Value) -> Result<(), StorageError> {

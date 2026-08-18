@@ -11,8 +11,11 @@ import {
 } from "@earendil-works/pi-ai";
 import type { ModelTransport } from "@researchbox/model-transport";
 import {
+  isLegacySessionDocument,
   synchronizeSessionHistory,
+  type LegacySessionDocument,
   type SessionDocument,
+  type SessionHistory,
 } from "@researchbox/project-store";
 import {
   PROTOCOL_VERSION,
@@ -23,6 +26,7 @@ import {
   type ReasoningEffort,
   type SummaryReviewRequest,
   type SummaryReviewResolution,
+  type TimelineEntry,
   type ToolCallBlock,
   type UserMessageEntry,
   type WorkspaceChangeSummary,
@@ -64,8 +68,13 @@ export type SessionRuntimeOptions = {
   checkpoint: (
     phase: "staged" | "tool_started" | "tool_finished" | "finished",
     requestId: string,
-    document?: SessionDocument,
   ) => Promise<void>;
+};
+
+export type SessionRuntimeView = {
+  input_draft: string;
+  timeline: TimelineEntry[];
+  history?: SessionHistory;
 };
 
 /** Runtime boundary owned by ResearchBoxCore's project/session coordinator. */
@@ -75,8 +84,8 @@ export interface SessionRuntimePort {
   readonly is_running: boolean;
   /** Includes persistence and checkpoint finalization after model execution. */
   readonly is_busy: boolean;
-  /** Borrow the exact document currently mutated by this runtime. */
-  ownedDocument(): SessionDocument;
+  /** Current host-view projection; it is not necessarily persisted. */
+  view(): SessionRuntimeView;
   usesModel(model: Model<string>): boolean;
   bindDocument(document: SessionDocument): void;
   startPrompt(text: string, requestId: string): Promise<void>;
@@ -96,10 +105,10 @@ export interface SessionRuntimePort {
   ): boolean;
 }
 
-/** Optional copy-on-write runtime for newly-created marked documents. */
+/** Optional copy-on-write runtime for newly-created runtime references. */
 export interface SessionRuntimeProvider {
   readonly runtime_id: string;
-  initializeDocument(document: SessionDocument): void;
+  initializeDocument(document: LegacySessionDocument): SessionDocument;
   create(options: SessionRuntimeOptions):
     | SessionRuntimePort
     | Promise<SessionRuntimePort>;
@@ -173,7 +182,7 @@ function cloneSummaryReviewRequest(
 export class SessionRuntime implements SessionRuntimePort {
   readonly project_id: string;
   readonly session_id: string;
-  private document: SessionDocument;
+  private document: LegacySessionDocument;
   private readonly workspace: WorkspaceController;
   private readonly eventSink: CoreEventSink;
   private readonly checkpoint: SessionRuntimeOptions["checkpoint"];
@@ -185,6 +194,9 @@ export class SessionRuntime implements SessionRuntimePort {
   private pendingSummaryReview: PendingSummaryReview | null = null;
 
   constructor(options: SessionRuntimeOptions) {
+    if (!isLegacySessionDocument(options.document)) {
+      throw new Error("The legacy session runtime requires a timeline document.");
+    }
     this.project_id = options.project_id;
     this.session_id = options.session_id;
     this.document = options.document;
@@ -243,7 +255,7 @@ export class SessionRuntime implements SessionRuntimePort {
     return this.is_running;
   }
 
-  ownedDocument(): SessionDocument {
+  view(): SessionRuntimeView {
     return this.document;
   }
 
@@ -252,6 +264,9 @@ export class SessionRuntime implements SessionRuntimePort {
   }
 
   bindDocument(document: SessionDocument): void {
+    if (!isLegacySessionDocument(document)) {
+      throw new Error("The legacy session runtime requires a timeline document.");
+    }
     if (this.is_running) {
       throw new Error("Cannot replace a session document while a run is active.");
     }
@@ -1167,7 +1182,7 @@ export class SessionRuntime implements SessionRuntimePort {
   }
 
   private appendTimelineEntry(
-    entry: SessionDocument["timeline"][number],
+    entry: LegacySessionDocument["timeline"][number],
     requestId: string,
   ): void {
     this.document.timeline.push(entry);
@@ -1360,7 +1375,7 @@ export class SessionRuntime implements SessionRuntimePort {
   }
 
   private replaceTimelineEntry(
-    entry: SessionDocument["timeline"][number],
+    entry: LegacySessionDocument["timeline"][number],
   ): void {
     const index = this.document.timeline.findIndex(
       (candidate) => candidate.entry_id === entry.entry_id,
@@ -1759,7 +1774,7 @@ function createTerminalAgentMessage(
 }
 
 export function stagePrompt(
-  document: SessionDocument,
+  document: LegacySessionDocument,
   text: string,
 ): StagedPrompt {
   const runId = crypto.randomUUID();

@@ -1,6 +1,7 @@
-import type { SessionEvent } from "@deepseek-ai/dsh-session";
+import { SessionId, type SessionEvent } from "@deepseek-ai/dsh-session";
 import DshrboxEventProjection from "@dshrbox/event-projector";
 import { ModelTransportLlmAdapter } from "@dshrbox/model-adapter";
+import { MemoryDshrboxSessionBackend } from "@dshrbox/session-persistence";
 import { DshrboxSessionRuntimeProvider } from "@dshrbox/session-runtime";
 import DshrboxWorkspace from "@dshrbox/workspace";
 import { ResearchBoxCore } from "@researchbox/agent-core";
@@ -183,6 +184,7 @@ async function runWorkspaceProbe(): Promise<DshrboxWorkspaceProbe> {
 
 async function runSessionRuntimeProbe(): Promise<DshrboxSessionRuntimeProbe> {
   const projectStore = new MemoryProjectStore();
+  const sessionBackend = new MemoryDshrboxSessionBackend();
   const workspaceBackend = new MemoryWorkspaceBackend(
     () => new MemoryFileSystem({
       "/notes.txt": "Browser workspace content.",
@@ -210,7 +212,7 @@ async function runSessionRuntimeProbe(): Promise<DshrboxSessionRuntimeProbe> {
     systemPrompt: "Run the DSH browser session probe.",
     eventSink: (event) => events.push(event),
     sessionRuntimeProvider: new DshrboxSessionRuntimeProvider({
-      project_store: projectStore,
+      session_backend: sessionBackend,
       max_parallel_tool_calls: 1,
       write_batch_max_delay_ms: 1,
     }),
@@ -229,16 +231,19 @@ async function runSessionRuntimeProbe(): Promise<DshrboxSessionRuntimeProbe> {
     }));
     const stored = await projectStore.load();
     const document = stored?.documents[0];
-    if (document?.runtime_state === undefined) {
-      throw new Error("Missing persisted browser DSH runtime state.");
+    if (document?.format_version !== 6) {
+      throw new Error("Missing browser DSH runtime reference.");
     }
-    const payload = document.runtime_state.payload as {
-      events: unknown[];
-    };
+    const persisted = await sessionBackend.loadStored(
+      SessionId(document.session_id),
+    );
+    const snapshot = events.findLast((event) =>
+      event.type === "state_snapshot"
+    )?.payload.state as { timeline?: Array<{ type: string }> } | undefined;
     return {
-      persisted_event_count: payload.events.length,
-      runtime_id: document.runtime_state.runtime_id,
-      timeline_types: document.timeline.map((entry) => entry.type),
+      persisted_event_count: persisted?.events.length ?? 0,
+      runtime_id: document.runtime_id,
+      timeline_types: snapshot?.timeline?.map((entry) => entry.type) ?? [],
     };
   } finally {
     await core.dispose();

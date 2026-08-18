@@ -20,7 +20,8 @@ import {
 } from "./history.ts";
 
 export const PROJECT_STORE_SCHEMA_VERSION = 4 as const;
-export const SESSION_DOCUMENT_FORMAT_VERSION = 6 as const;
+export const SESSION_DOCUMENT_FORMAT_VERSION = 5 as const;
+export const RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION = 6 as const;
 
 export const DEFAULT_MODEL_SELECTION: ModelSelection = {
   provider_id: "researchbox",
@@ -36,22 +37,6 @@ const LEGACY_SESSION_DOCUMENT_FORMAT_VERSION = 1 as const;
 const TRANSCRIPT_SESSION_DOCUMENT_FORMAT_VERSION = 2 as const;
 const TIMELINE_SESSION_DOCUMENT_FORMAT_VERSION = 3 as const;
 const LINEAR_SESSION_DOCUMENT_FORMAT_VERSION = 4 as const;
-const HISTORY_SESSION_DOCUMENT_FORMAT_VERSION = 5 as const;
-
-export type JsonValue =
-  | null
-  | boolean
-  | number
-  | string
-  | JsonValue[]
-  | { [key: string]: JsonValue };
-
-/** Opaque, runtime-owned state persisted beside the viewer projection. */
-export type SessionRuntimeState = {
-  runtime_id: string;
-  format_version: number;
-  payload: JsonValue;
-};
 
 export type ProjectRecord = {
   project_id: string;
@@ -75,15 +60,29 @@ export type SessionRecord = {
   reasoning_effort: ReasoningEffort;
 };
 
-export type SessionDocument = {
+export type LegacySessionDocument = {
   format_version: typeof SESSION_DOCUMENT_FORMAT_VERSION;
   session_id: string;
   project_id: string;
   input_draft: string;
   timeline: TimelineEntry[];
   history: SessionHistory;
-  runtime_state?: SessionRuntimeState;
 };
+
+/** Host-owned client/index state for a canonical external runtime session. */
+export type RuntimeSessionDocument = {
+  format_version: typeof RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION;
+  session_id: string;
+  project_id: string;
+  input_draft: string;
+  runtime_id: string;
+  /** Cached read-model count; the runtime event log remains authoritative. */
+  message_count: number;
+};
+
+export type SessionDocument =
+  | LegacySessionDocument
+  | RuntimeSessionDocument;
 
 export type ProjectStoreState = {
   schema_version: typeof PROJECT_STORE_SCHEMA_VERSION;
@@ -99,6 +98,26 @@ export type ProjectStoreParseResult = {
   state: ProjectStoreState;
   was_migrated: boolean;
 };
+
+export function isLegacySessionDocument(
+  document: SessionDocument,
+): document is LegacySessionDocument {
+  return document.format_version === SESSION_DOCUMENT_FORMAT_VERSION;
+}
+
+export function isRuntimeSessionDocument(
+  document: SessionDocument,
+): document is RuntimeSessionDocument {
+  return document.format_version === RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION;
+}
+
+export function sessionDocumentMessageCount(
+  document: SessionDocument,
+): number {
+  return isLegacySessionDocument(document)
+    ? document.timeline.filter((entry) => entry.type === "user_message").length
+    : document.message_count;
+}
 
 export function cloneProjectStoreState(
   state: ProjectStoreState,
@@ -219,8 +238,16 @@ export function assertProjectStoreInvariants(state: ProjectStoreState): void {
     if (isUnsubmittedNewChat(session, document)) {
       throw new Error("Unsubmitted new chats must not be persisted as sessions.");
     }
-    assertTimelineInvariants(document.timeline);
-    assertSessionHistoryInvariants(document.history);
+    if (isLegacySessionDocument(document)) {
+      assertTimelineInvariants(document.timeline);
+      assertSessionHistoryInvariants(document.history);
+    } else if (
+      document.runtime_id.length === 0 ||
+      !Number.isSafeInteger(document.message_count) ||
+      document.message_count < 0
+    ) {
+      throw new Error("Runtime session document metadata is invalid.");
+    }
   }
 
   if (documents.size !== sessions.size) {
@@ -295,10 +322,10 @@ function parseSessionDocument(
     formatVersion === LEGACY_SESSION_DOCUMENT_FORMAT_VERSION ||
     formatVersion === TRANSCRIPT_SESSION_DOCUMENT_FORMAT_VERSION ||
     formatVersion === TIMELINE_SESSION_DOCUMENT_FORMAT_VERSION ||
-    formatVersion === LINEAR_SESSION_DOCUMENT_FORMAT_VERSION ||
-    formatVersion === HISTORY_SESSION_DOCUMENT_FORMAT_VERSION;
+    formatVersion === LINEAR_SESSION_DOCUMENT_FORMAT_VERSION;
   if (
     formatVersion !== SESSION_DOCUMENT_FORMAT_VERSION &&
+    formatVersion !== RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION &&
     (!isLegacyFormat ||
       (legacy && formatVersion !== LEGACY_SESSION_DOCUMENT_FORMAT_VERSION))
   ) {
@@ -310,6 +337,26 @@ function parseSessionDocument(
     formatVersion === LEGACY_SESSION_DOCUMENT_FORMAT_VERSION
       ? ""
       : requireString(value, "input_draft", true);
+  if (formatVersion === RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION) {
+    for (const forbidden of ["timeline", "history", "runtime_state"]) {
+      if (Object.prototype.hasOwnProperty.call(value, forbidden)) {
+        throw new Error(
+          `Runtime session documents cannot persist ${forbidden}.`,
+        );
+      }
+    }
+    return {
+      document: {
+        format_version: RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION,
+        session_id: sessionId,
+        project_id: projectId,
+        input_draft: inputDraft,
+        runtime_id: requireString(value, "runtime_id"),
+        message_count: requireNonNegativeInteger(value, "message_count"),
+      },
+      was_migrated: false,
+    };
+  }
   if (formatVersion === SESSION_DOCUMENT_FORMAT_VERSION) {
     const timeline = parseTimeline(value.timeline);
     const parsedHistory = parseSessionHistory(value.history, timeline);
@@ -321,25 +368,18 @@ function parseSessionDocument(
         input_draft: inputDraft,
         timeline,
         history: parsedHistory.history,
-        ...(value.runtime_state === undefined
-          ? {}
-          : { runtime_state: parseSessionRuntimeState(value.runtime_state) }),
       },
       was_migrated: parsedHistory.was_migrated,
     };
   }
   if (
     formatVersion === TIMELINE_SESSION_DOCUMENT_FORMAT_VERSION ||
-    formatVersion === LINEAR_SESSION_DOCUMENT_FORMAT_VERSION ||
-    formatVersion === HISTORY_SESSION_DOCUMENT_FORMAT_VERSION
+    formatVersion === LINEAR_SESSION_DOCUMENT_FORMAT_VERSION
   ) {
     const timeline =
       formatVersion === TIMELINE_SESSION_DOCUMENT_FORMAT_VERSION
         ? migrateNormalizedTimeline(value.timeline)
         : parseTimeline(value.timeline);
-    const history = formatVersion === HISTORY_SESSION_DOCUMENT_FORMAT_VERSION
-      ? parseSessionHistory(value.history, timeline).history
-      : createSessionHistory(timeline);
     return {
       document: {
         format_version: SESSION_DOCUMENT_FORMAT_VERSION,
@@ -347,7 +387,7 @@ function parseSessionDocument(
         project_id: projectId,
         input_draft: inputDraft,
         timeline,
-        history,
+        history: createSessionHistory(timeline),
       },
       was_migrated: true,
     };
@@ -374,49 +414,6 @@ function parseSessionDocument(
     },
     was_migrated: true,
   };
-}
-
-function parseSessionRuntimeState(value: unknown): SessionRuntimeState {
-  if (!isRecord(value)) {
-    throw new Error("Session runtime state must be an object.");
-  }
-  return {
-    runtime_id: requireString(value, "runtime_id"),
-    format_version: requireNonNegativeInteger(value, "format_version"),
-    payload: parseJsonValue(value.payload, "runtime state payload"),
-  };
-}
-
-function parseJsonValue(value: unknown, location: string): JsonValue {
-  if (
-    value === null ||
-    typeof value === "boolean" ||
-    typeof value === "string"
-  ) {
-    return value;
-  }
-  if (typeof value === "number") {
-    if (!Number.isFinite(value) || Object.is(value, -0)) {
-      throw new Error(`${location} contains an invalid number.`);
-    }
-    return value;
-  }
-  if (Array.isArray(value)) {
-    if (Object.keys(value).length !== value.length) {
-      throw new Error(`${location} contains a sparse array.`);
-    }
-    return value.map((entry, index) =>
-      parseJsonValue(entry, `${location}[${index}]`)
-    );
-  }
-  if (!isRecord(value)) {
-    throw new Error(`${location} must be losslessly JSON-serializable.`);
-  }
-  const result: { [key: string]: JsonValue } = {};
-  for (const [key, entry] of Object.entries(value)) {
-    result[key] = parseJsonValue(entry, `${location}.${key}`);
-  }
-  return result;
 }
 
 function migrateNormalizedTimeline(value: unknown): TimelineEntry[] {
@@ -502,7 +499,7 @@ function isUnsubmittedNewChat(
   return (
     session.title === "New chat" &&
     !session.title_is_custom &&
-    document.timeline.length === 0
+    sessionDocumentMessageCount(document) === 0
   );
 }
 

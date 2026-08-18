@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   MemoryProjectStore,
   ProjectStoreConflictError,
+  RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION,
   SESSION_DOCUMENT_FORMAT_VERSION,
   createSessionHistory,
   parseProjectStoreState,
@@ -31,58 +32,56 @@ test("memory project store clones tree-backed timelines and enforces revisions",
   await assert.rejects(store.save(createState(2), 1), ProjectStoreConflictError);
 });
 
-test("session runtime state round-trips as detached JSON data", () => {
+test("runtime session documents persist only host client and index state", () => {
   const state = createState(1);
-  state.documents[0].runtime_state = {
+  state.documents[0] = {
+    format_version: RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION,
+    session_id: "session-1",
+    project_id: "project-1",
+    input_draft: "draft",
     runtime_id: "dsh",
-    format_version: 1,
-    payload: {
-      revision: 2,
-      events: [{ type: "turn/end", data: { turn: 1 } }],
-    },
+    message_count: 2,
   };
   const parsed = parseProjectStoreState(state);
-  assert.deepEqual(parsed.documents[0].runtime_state, {
+  assert.deepEqual(parsed.documents[0], {
+    format_version: RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION,
+    session_id: "session-1",
+    project_id: "project-1",
+    input_draft: "draft",
     runtime_id: "dsh",
-    format_version: 1,
-    payload: {
-      revision: 2,
-      events: [{ type: "turn/end", data: { turn: 1 } }],
-    },
+    message_count: 2,
   });
-  state.documents[0].runtime_state.payload.events[0].data.turn = 2;
-  assert.equal(
-    parsed.documents[0].runtime_state.payload.events[0].data.turn,
-    1,
-  );
 });
 
-test("version 5 session documents migrate without inventing runtime state", () => {
+test("version 5 timeline documents remain canonical legacy sessions", () => {
   const state = createState(1);
   state.documents[0].format_version = 5;
   const result = parseProjectStoreStateWithMigration(state);
-  assert.equal(result.was_migrated, true);
+  assert.equal(result.was_migrated, false);
   assert.equal(
     result.state.documents[0].format_version,
     SESSION_DOCUMENT_FORMAT_VERSION,
   );
-  assert.equal(result.state.documents[0].runtime_state, undefined);
   assert.deepEqual(
     result.state.documents[0].history,
     state.documents[0].history,
   );
 });
 
-test("session runtime state rejects non-JSON payloads", () => {
+test("runtime session documents reject persisted viewer projections", () => {
   const state = createState(1);
-  state.documents[0].runtime_state = {
+  state.documents[0] = {
+    format_version: RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION,
+    session_id: "session-1",
+    project_id: "project-1",
+    input_draft: "",
     runtime_id: "dsh",
-    format_version: 1,
-    payload: { invalid: Number.NaN },
+    message_count: 1,
+    timeline: [],
   };
   assert.throws(
     () => parseProjectStoreState(state),
-    /runtime state payload.invalid contains an invalid number/u,
+    /cannot persist timeline/u,
   );
 });
 

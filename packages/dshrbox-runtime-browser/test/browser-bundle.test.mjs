@@ -12,4 +12,10 @@ test("executes the browser-worker bundle with DSH Node imports replaced", async 
   assert.equal(result.workspace.result_text, "Browser workspace content.");
   assert.equal(result.workspace.model_observed_result, true);
   assert.equal(result.workspace.turn_end_kind, "completed");
+  assert.deepEqual(result.workspace.projected_timeline_types, [
+    "user_message",
+    "assistant_message",
+    "tool_result",
+    "assistant_message",
+  ]);
 });

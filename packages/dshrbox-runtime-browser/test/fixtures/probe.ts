@@ -1,4 +1,5 @@
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
+import DshrboxEventProjection from "@dshrbox/event-projector";
 import { ModelTransportLlmAdapter } from "@dshrbox/model-adapter";
 import DshrboxWorkspace from "@dshrbox/workspace";
 import { MemoryWorkspace } from "@researchbox/vfs";
@@ -9,6 +10,7 @@ import {
 } from "./probe-adapter.ts";
 
 const DSH_VERSION = "0.1.0-rc.6";
+const PROBE_PROJECT_ID = "dshrbox-browser-probe-project";
 const PROBE_PROVIDER = "dshrbox-probe";
 const PROBE_MODEL = "fake-streaming-model";
 
@@ -29,6 +31,8 @@ export type DshrboxBrowserProbeResult = {
 export type DshrboxWorkspaceProbe = {
   event_types: string[];
   model_observed_result: boolean;
+  projected_event_types: string[];
+  projected_timeline_types: string[];
   result_text: string;
   tool_name: string;
   turn_end_kind: string;
@@ -104,10 +108,18 @@ async function runCancellationProbe(): Promise<DshrboxProbeTurn> {
 async function runWorkspaceProbe(): Promise<DshrboxWorkspaceProbe> {
   const transport = new WorkspaceProbeModelTransport();
   const adapter = new ModelTransportLlmAdapter(transport);
+  const projectedEvents: Array<{ type: string }> = [];
   const core = await createDshrboxBrowserCore({
     llm_adapter: adapter,
     model: PROBE_MODEL,
     plugins: [{
+      plugin: DshrboxEventProjection,
+      config: {
+        project_id: PROBE_PROJECT_ID,
+        session_id: "dshrbox-workspace-probe",
+        event_sink: (event: { type: string }) => projectedEvents.push(event),
+      },
+    }, {
       plugin: DshrboxWorkspace,
       config: {
         workspace: new MemoryWorkspace({
@@ -137,6 +149,9 @@ async function runWorkspaceProbe(): Promise<DshrboxWorkspaceProbe> {
     return {
       event_types: events.map((event) => event.type),
       model_observed_result: transport.didObserveResult,
+      projected_event_types: projectedEvents.map((event) => event.type),
+      projected_timeline_types: core.context.dshrboxProjection
+        .snapshot().timeline.map((entry) => entry.type),
       result_text: resultText,
       tool_name: toolCall?.type === "tool/call"
         ? toolCall.data.name

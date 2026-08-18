@@ -22,6 +22,17 @@ test("composes the constrained browser runtime over core", async () => {
   assert.equal(result.workspace.result_text, "Browser workspace content.");
   assert.equal(result.workspace.model_observed_result, true);
   assert.equal(result.workspace.turn_end_kind, "completed");
+  assert.deepEqual(result.workspace.projected_timeline_types, [
+    "user_message",
+    "assistant_message",
+    "tool_result",
+    "assistant_message",
+  ]);
+  assert.ok(
+    result.workspace.projected_event_types.includes(
+      "timeline_entry_appended",
+    ),
+  );
   assert.ok(result.workspace.event_types.includes("tool/call"));
   assert.ok(result.workspace.event_types.includes("tool/result"));
 });

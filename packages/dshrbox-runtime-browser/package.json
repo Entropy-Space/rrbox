@@ -14,6 +14,7 @@
     "@dshrbox/core": "workspace:*"
   },
   "devDependencies": {
+    "@dshrbox/event-projector": "workspace:*",
     "@dshrbox/model-adapter": "workspace:*",
     "@dshrbox/workspace": "workspace:*",
     "@deepseek-ai/dsh-llm": "0.1.0-rc.6",

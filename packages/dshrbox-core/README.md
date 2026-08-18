@@ -5,8 +5,9 @@ published DSH session, LLM, system-prompt, tool, agent, and agent-loop services,
 then mounts `DshrboxRuntime` as a regular Cordis/DSH plugin.
 
 This package currently owns one live agent. `DshrboxRuntime.subscribe()` emits
-the original DSH `SessionEvent` values; there is no dshrbox event projection in
-this slice.
+the original DSH `SessionEvent` values. Hosts that need the existing rrbox
+timeline and viewer event vocabulary can install `@dshrbox/event-projector` as
+an optional plugin; core itself keeps the canonical DSH events unchanged.
 
 `createDshrboxCore()` is the platform-neutral composition helper. Hosts supply
 the LLM adapter, route, session identity, optional persona, and optional tool

@@ -1,0 +1,22 @@
+{
+  "name": "@dshrbox/event-projector",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-session": "0.1.0-rc.6",
+    "@researchbox/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@dshrbox/core": "workspace:*",
+    "@dshrbox/model-adapter": "workspace:*",
+    "@dshrbox/workspace": "workspace:*",
+    "@researchbox/model-transport": "workspace:*",
+    "@researchbox/vfs": "workspace:*"
+  }
+}

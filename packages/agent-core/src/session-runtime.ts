@@ -31,6 +31,7 @@ import type {
   WorkspaceChangeMetadata,
   WorkspaceChangeRecord,
 } from "@researchbox/vfs";
+import { searchWorkspaceText } from "@researchbox/workspace-search";
 import { createModelStreamFn } from "./pi-stream.ts";
 import {
   createAgentPluginTools,
@@ -43,7 +44,6 @@ import {
   finalizeAssistantEntry,
   timelineToAgentMessages,
 } from "./session-codec.ts";
-import { searchWorkspaceText } from "./workspace-search.ts";
 import { repairUnansweredToolCalls } from "./tool-transcript.ts";
 import { WorkspaceController } from "./workspace-controller.ts";
 

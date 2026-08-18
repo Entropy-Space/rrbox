@@ -10,7 +10,9 @@ this slice.
 
 `createDshrboxCore()` is the platform-neutral composition helper. Hosts supply
 the LLM adapter, route, session identity, optional persona, and optional tool
-parallelism. Platform constraints belong to the corresponding runtime package.
+parallelism. Hosts may also supply Cordis plugin registrations; the helper
+installs them after the official DSH services and before creating the dshrbox
+agent. Platform constraints belong to the corresponding runtime package.
 
 Browser compatibility and its executable probe live in
 `@dshrbox/runtime-browser`.

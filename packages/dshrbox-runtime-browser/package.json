@@ -14,8 +14,10 @@
     "@dshrbox/core": "workspace:*"
   },
   "devDependencies": {
+    "@dshrbox/workspace": "workspace:*",
     "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
     "@deepseek-ai/dsh-session": "0.1.0-rc.6",
+    "@researchbox/vfs": "workspace:*",
     "vite": "8.0.13"
   }
 }

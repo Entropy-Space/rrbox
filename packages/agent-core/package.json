@@ -13,6 +13,7 @@
     "@researchbox/project-store": "workspace:*",
     "@researchbox/protocol": "workspace:*",
     "@researchbox/vfs": "workspace:*",
-    "@researchbox/workspace-archive": "workspace:*"
+    "@researchbox/workspace-archive": "workspace:*",
+    "@researchbox/workspace-search": "workspace:*"
   }
 }

@@ -18,6 +18,12 @@ test("composes the constrained browser runtime over core", async () => {
   assert.ok(result.streaming.event_types.includes("assistant/message"));
   assert.equal(result.cancellation.text, "partial");
   assert.equal(result.cancellation.turn_end_kind, "aborted");
+  assert.equal(result.workspace.tool_name, "read_file");
+  assert.equal(result.workspace.result_text, "Browser workspace content.");
+  assert.equal(result.workspace.model_observed_result, true);
+  assert.equal(result.workspace.turn_end_kind, "completed");
+  assert.ok(result.workspace.event_types.includes("tool/call"));
+  assert.ok(result.workspace.event_types.includes("tool/result"));
 });
 
 test("declares the constrained browser async-context contract", () => {

@@ -1,0 +1,13 @@
+{
+  "name": "@dshrbox/model-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
+    "@researchbox/model-transport": "workspace:*"
+  }
+}

@@ -1,10 +1,14 @@
 import {
-  CallId,
   LlmAdapter,
   type GenerateOptions,
   type LlmResolvedModelInfo,
   type StreamChunk,
 } from "@deepseek-ai/dsh-llm";
+import type {
+  ModelRequest,
+  ModelStreamEvent,
+  ModelTransport,
+} from "@researchbox/model-transport";
 
 export type ProbeAdapterScript =
   | { kind: "text"; text: string }
@@ -79,110 +83,78 @@ export class ProbeLlmAdapter extends LlmAdapter {
   }
 }
 
-const WORKSPACE_CALL_ID = CallId("dshrbox-workspace-probe-call");
+const WORKSPACE_CALL_ID = "dshrbox-workspace-probe-call";
 const WORKSPACE_RESULT_TEXT = "Browser workspace content.";
 
-export class WorkspaceProbeLlmAdapter extends LlmAdapter {
+export class WorkspaceProbeModelTransport implements ModelTransport {
   private requestCount = 0;
   private observedResult = false;
-
-  override resolveModel(
-    provider: string,
-    model: string,
-  ): Promise<LlmResolvedModelInfo> {
-    return Promise.resolve({ provider, id: model, name: model });
-  }
 
   get didObserveResult(): boolean {
     return this.observedResult;
   }
 
-  async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+  async *stream(
+    request: ModelRequest,
+    signal: AbortSignal,
+  ): AsyncIterable<ModelStreamEvent> {
+    if (signal.aborted) throw new Error("workspace probe stream aborted");
     const requestIndex = this.requestCount;
     this.requestCount += 1;
     if (requestIndex === 0) {
-      if (!options.tools?.some((tool) => tool.name === "read_file")) {
+      if (!request.tools.some((tool) => tool.name === "read_file")) {
         throw new Error("workspace probe did not receive the read_file schema");
       }
-      const argumentsValue = JSON.stringify({ path: "/notes.txt" });
       yield {
-        type: "block-start",
-        index: 0,
-        blockType: "tool-call",
+        type: "tool_call_start",
+        content_index: 0,
       };
       yield {
-        type: "tool-call-delta",
-        index: 0,
-        id: WORKSPACE_CALL_ID,
-        name: "read_file",
-        argumentsDelta: argumentsValue,
+        type: "tool_call_delta",
+        content_index: 0,
+        tool_call_id_delta: WORKSPACE_CALL_ID,
+        tool_name_delta: "read_file",
+        arguments_delta: JSON.stringify({ path: "/notes.txt" }),
       };
       yield {
-        type: "block-end",
-        index: 0,
-        block: {
-          type: "tool-call",
-          id: WORKSPACE_CALL_ID,
-          name: "read_file",
-          arguments: argumentsValue,
+        type: "tool_call_end",
+        content_index: 0,
+        tool_call: {
+          tool_call_id: WORKSPACE_CALL_ID,
+          tool_name: "read_file",
+          arguments: { path: "/notes.txt" },
         },
       };
-      yield {
-        type: "usage",
-        usage: { inputTokens: 1, outputTokens: 1 },
-      };
-      yield { type: "finish", reason: { kind: "tool-calls" } };
+      yield { type: "done", stop_reason: "tool_use" };
       return;
     }
     if (requestIndex !== 1) {
       throw new Error("workspace probe received an unexpected model request");
     }
 
-    const resultText = findToolResultText(options);
+    const resultText = findToolResultText(request);
     if (resultText !== WORKSPACE_RESULT_TEXT) {
       throw new Error(
         `workspace probe received unexpected tool content: ${resultText}`,
       );
     }
     this.observedResult = true;
-    yield* streamText("Workspace tool result observed.", options.signal);
+    const text = "Workspace tool result observed.";
+    yield { type: "text_start", content_index: 0 };
+    yield { type: "text_delta", content_index: 0, text_delta: text };
+    yield { type: "text_end", content_index: 0 };
+    yield { type: "done", stop_reason: "stop" };
   }
 }
 
-function findToolResultText(options: GenerateOptions): string | undefined {
-  for (const message of options.messages) {
-    for (const block of message.content) {
-      if (
-        block.type !== "tool-result" ||
-        block.toolCallId !== WORKSPACE_CALL_ID
-      ) {
-        continue;
-      }
-      return block.content
-        .flatMap((content) => content.type === "text" ? [content.text] : [])
-        .join("");
+function findToolResultText(request: ModelRequest): string | undefined {
+  for (const message of request.messages) {
+    if (
+      message.role === "tool" &&
+      message.tool_call_id === WORKSPACE_CALL_ID
+    ) {
+      return message.content;
     }
   }
   return undefined;
-}
-
-async function* streamText(
-  text: string,
-  signal: AbortSignal | undefined,
-): AsyncIterable<StreamChunk> {
-  yield { type: "block-start", index: 0, blockType: "text" };
-  for (const character of text) {
-    if (signal?.aborted) throw new Error("probe stream aborted");
-    yield { type: "text-delta", index: 0, text: character };
-  }
-  yield {
-    type: "block-end",
-    index: 0,
-    block: { type: "text", text },
-  };
-  yield {
-    type: "usage",
-    usage: { inputTokens: 1, outputTokens: text.length },
-  };
-  yield { type: "finish", reason: { kind: "stop" } };
 }

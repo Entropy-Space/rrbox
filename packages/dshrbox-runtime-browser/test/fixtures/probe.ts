@@ -1,10 +1,11 @@
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
+import { ModelTransportLlmAdapter } from "@dshrbox/model-adapter";
 import DshrboxWorkspace from "@dshrbox/workspace";
 import { MemoryWorkspace } from "@researchbox/vfs";
 import { createDshrboxBrowserCore } from "../../src/index.ts";
 import {
   ProbeLlmAdapter,
-  WorkspaceProbeLlmAdapter,
+  WorkspaceProbeModelTransport,
 } from "./probe-adapter.ts";
 
 const DSH_VERSION = "0.1.0-rc.6";
@@ -101,7 +102,8 @@ async function runCancellationProbe(): Promise<DshrboxProbeTurn> {
 }
 
 async function runWorkspaceProbe(): Promise<DshrboxWorkspaceProbe> {
-  const adapter = new WorkspaceProbeLlmAdapter();
+  const transport = new WorkspaceProbeModelTransport();
+  const adapter = new ModelTransportLlmAdapter(transport);
   const core = await createDshrboxBrowserCore({
     llm_adapter: adapter,
     model: PROBE_MODEL,
@@ -134,7 +136,7 @@ async function runWorkspaceProbe(): Promise<DshrboxWorkspaceProbe> {
     const turnEnd = events.findLast((event) => event.type === "turn/end");
     return {
       event_types: events.map((event) => event.type),
-      model_observed_result: adapter.didObserveResult,
+      model_observed_result: transport.didObserveResult,
       result_text: resultText,
       tool_name: toolCall?.type === "tool/call"
         ? toolCall.data.name

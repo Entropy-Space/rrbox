@@ -1,6 +1,11 @@
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
+import DshrboxWorkspace from "@dshrbox/workspace";
+import { MemoryWorkspace } from "@researchbox/vfs";
 import { createDshrboxBrowserCore } from "../../src/index.ts";
-import { ProbeLlmAdapter } from "./probe-adapter.ts";
+import {
+  ProbeLlmAdapter,
+  WorkspaceProbeLlmAdapter,
+} from "./probe-adapter.ts";
 
 const DSH_VERSION = "0.1.0-rc.6";
 const PROBE_PROVIDER = "dshrbox-probe";
@@ -17,6 +22,15 @@ export type DshrboxBrowserProbeResult = {
   dsh_version: string;
   ok: boolean;
   streaming: DshrboxProbeTurn;
+  workspace: DshrboxWorkspaceProbe;
+};
+
+export type DshrboxWorkspaceProbe = {
+  event_types: string[];
+  model_observed_result: boolean;
+  result_text: string;
+  tool_name: string;
+  turn_end_kind: string;
 };
 
 function projectProbeTurn(events: SessionEvent[]): DshrboxProbeTurn {
@@ -86,14 +100,67 @@ async function runCancellationProbe(): Promise<DshrboxProbeTurn> {
   }
 }
 
+async function runWorkspaceProbe(): Promise<DshrboxWorkspaceProbe> {
+  const adapter = new WorkspaceProbeLlmAdapter();
+  const core = await createDshrboxBrowserCore({
+    llm_adapter: adapter,
+    model: PROBE_MODEL,
+    plugins: [{
+      plugin: DshrboxWorkspace,
+      config: {
+        workspace: new MemoryWorkspace({
+          "/notes.txt": "Browser workspace content.",
+        }),
+      },
+    }],
+    provider: PROBE_PROVIDER,
+    session_id: "dshrbox-workspace-probe",
+  });
+  const events: SessionEvent[] = [];
+  const unsubscribe = core.runtime.subscribe((event) => events.push(event));
+  try {
+    await core.runtime.run("Read the workspace note.");
+    const toolCall = events.find((event) => event.type === "tool/call");
+    const toolResult = events.find((event) => event.type === "tool/result");
+    const resultText = toolResult?.type === "tool/result"
+      ? toolResult.data.message.content
+        .flatMap((block) => block.type === "tool-result"
+          ? block.content.flatMap((content) =>
+            content.type === "text" ? [content.text] : []
+          )
+          : [])
+        .join("")
+      : "";
+    const turnEnd = events.findLast((event) => event.type === "turn/end");
+    return {
+      event_types: events.map((event) => event.type),
+      model_observed_result: adapter.didObserveResult,
+      result_text: resultText,
+      tool_name: toolCall?.type === "tool/call"
+        ? toolCall.data.name
+        : "missing",
+      turn_end_kind: turnEnd?.type === "turn/end"
+        ? turnEnd.data.reason.kind
+        : "missing",
+    };
+  } finally {
+    unsubscribe();
+    await core.dispose();
+  }
+}
+
 export async function runDshrboxBrowserProbe(): Promise<DshrboxBrowserProbeResult> {
   const streaming = await runStreamingProbe();
   const cancellation = await runCancellationProbe();
+  const workspace = await runWorkspaceProbe();
   return {
     cancellation,
     dsh_version: DSH_VERSION,
     ok: streaming.turn_end_kind === "completed" &&
-      cancellation.turn_end_kind === "aborted",
+      cancellation.turn_end_kind === "aborted" &&
+      workspace.turn_end_kind === "completed" &&
+      workspace.model_observed_result,
     streaming,
+    workspace,
   };
 }

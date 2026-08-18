@@ -1,0 +1,13 @@
+{
+  "name": "@researchbox/workspace-search",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@researchbox/vfs": "workspace:*",
+    "@researchbox/workspace-archive": "workspace:*"
+  }
+}

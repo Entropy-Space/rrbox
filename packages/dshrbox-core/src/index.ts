@@ -1,6 +1,10 @@
 import AgentRegistry, { type Agent } from "@deepseek-ai/dsh-agent";
 import AgentLoop from "@deepseek-ai/dsh-agent-loop";
-import { Context, Service } from "@deepseek-ai/cordis";
+import {
+  Context,
+  Service,
+  type Plugin,
+} from "@deepseek-ai/cordis";
 import LlmRuntime, {
   type LlmAdapter,
   createUserMessage,
@@ -106,7 +110,13 @@ export default DshrboxRuntime;
 export type CreateDshrboxCoreOptions = DshrboxRuntimeConfig & {
   max_parallel_tool_calls?: number;
   persona?: string;
+  plugins?: readonly DshrboxPluginRegistration[];
 };
+
+export type DshrboxPluginRegistration = Readonly<{
+  plugin: Plugin;
+  config?: unknown;
+}>;
 
 export type DshrboxCore = {
   context: Context;
@@ -119,7 +129,12 @@ export async function createDshrboxCore(
   options: CreateDshrboxCoreOptions,
 ): Promise<DshrboxCore> {
   const context = new Context();
-  const { max_parallel_tool_calls, persona, ...runtimeOptions } = options;
+  const {
+    max_parallel_tool_calls,
+    persona,
+    plugins = [],
+    ...runtimeOptions
+  } = options;
   try {
     await context.plugin(LlmRuntime);
     await context.plugin(SessionStore);
@@ -136,6 +151,9 @@ export async function createDshrboxCore(
         ? {}
         : { maxParallelToolCalls: max_parallel_tool_calls }),
     });
+    for (const registration of plugins) {
+      await context.plugin(registration.plugin, registration.config);
+    }
     await context.plugin(DshrboxRuntime, runtimeOptions);
     await context.dshrbox.ready();
     return {

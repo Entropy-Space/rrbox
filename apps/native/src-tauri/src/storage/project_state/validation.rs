@@ -9,7 +9,8 @@ use super::super::StorageError;
 pub(super) const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const PROJECT_STORE_SCHEMA_VERSION: u64 = 4;
 const LINEAR_SESSION_DOCUMENT_FORMAT_VERSION: u64 = 4;
-const SESSION_DOCUMENT_FORMAT_VERSION: u64 = 5;
+const HISTORY_SESSION_DOCUMENT_FORMAT_VERSION: u64 = 5;
+const SESSION_DOCUMENT_FORMAT_VERSION: u64 = 6;
 const SESSION_HISTORY_FORMAT_VERSION: u64 = 1;
 
 #[derive(Debug)]
@@ -220,6 +221,7 @@ fn validate_session_document(document: &Value) -> Result<&Vec<Value>, StorageErr
   let format_version =
     deserialize_u64_from_json(document, "format_version").map_err(StorageError::InvalidRequest)?;
   if format_version != SESSION_DOCUMENT_FORMAT_VERSION
+    && format_version != HISTORY_SESSION_DOCUMENT_FORMAT_VERSION
     && format_version != LINEAR_SESSION_DOCUMENT_FORMAT_VERSION
   {
     return Err(StorageError::InvalidRequest(format!(
@@ -229,10 +231,48 @@ fn validate_session_document(document: &Value) -> Result<&Vec<Value>, StorageErr
   require_any_string(document, "input_draft")?;
   let timeline = require_array(document, "timeline").map_err(StorageError::InvalidRequest)?;
   validate_timeline(timeline)?;
-  if format_version == SESSION_DOCUMENT_FORMAT_VERSION {
+  if format_version == SESSION_DOCUMENT_FORMAT_VERSION
+    || format_version == HISTORY_SESSION_DOCUMENT_FORMAT_VERSION
+  {
     validate_session_history(document)?;
   }
+  if format_version == SESSION_DOCUMENT_FORMAT_VERSION {
+    validate_session_runtime_state(document)?;
+  }
   Ok(timeline)
+}
+
+fn validate_session_runtime_state(document: &Value) -> Result<(), StorageError> {
+  let Some(runtime_state) = document.get("runtime_state") else {
+    return Ok(());
+  };
+  let runtime_state = runtime_state.as_object().ok_or_else(|| {
+    StorageError::InvalidRequest("Session runtime state must be an object.".into())
+  })?;
+  runtime_state
+    .get("runtime_id")
+    .and_then(Value::as_str)
+    .filter(|value| !value.is_empty())
+    .ok_or_else(|| {
+      StorageError::InvalidRequest(
+        "Session runtime state runtime_id must be a non-empty string.".into(),
+      )
+    })?;
+  runtime_state
+    .get("format_version")
+    .and_then(Value::as_u64)
+    .filter(|value| *value <= MAX_SAFE_INTEGER)
+    .ok_or_else(|| {
+      StorageError::InvalidRequest(
+        "Session runtime state format_version must be a non-negative safe integer.".into(),
+      )
+    })?;
+  if !runtime_state.contains_key("payload") {
+    return Err(StorageError::InvalidRequest(
+      "Session runtime state payload is required.".into(),
+    ));
+  }
+  Ok(())
 }
 
 fn validate_session_history(document: &Value) -> Result<(), StorageError> {

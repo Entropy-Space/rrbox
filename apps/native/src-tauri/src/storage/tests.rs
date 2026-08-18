@@ -73,7 +73,7 @@ fn history_document(session_id: &str, project_id: &str) -> Value {
     "content": "hello",
   });
   json!({
-    "format_version": 5,
+    "format_version": 6,
     "session_id": session_id,
     "project_id": project_id,
     "input_draft": "",
@@ -86,6 +86,14 @@ fn history_document(session_id: &str, project_id: &str) -> Value {
         "parent_node_id": null,
         "entry": entry,
       }],
+    },
+    "runtime_state": {
+      "runtime_id": "dsh",
+      "format_version": 1,
+      "payload": {
+        "events": [],
+        "revision": 1,
+      },
     },
   })
 }

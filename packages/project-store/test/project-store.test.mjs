@@ -31,6 +31,61 @@ test("memory project store clones tree-backed timelines and enforces revisions",
   await assert.rejects(store.save(createState(2), 1), ProjectStoreConflictError);
 });
 
+test("session runtime state round-trips as detached JSON data", () => {
+  const state = createState(1);
+  state.documents[0].runtime_state = {
+    runtime_id: "dsh",
+    format_version: 1,
+    payload: {
+      revision: 2,
+      events: [{ type: "turn/end", data: { turn: 1 } }],
+    },
+  };
+  const parsed = parseProjectStoreState(state);
+  assert.deepEqual(parsed.documents[0].runtime_state, {
+    runtime_id: "dsh",
+    format_version: 1,
+    payload: {
+      revision: 2,
+      events: [{ type: "turn/end", data: { turn: 1 } }],
+    },
+  });
+  state.documents[0].runtime_state.payload.events[0].data.turn = 2;
+  assert.equal(
+    parsed.documents[0].runtime_state.payload.events[0].data.turn,
+    1,
+  );
+});
+
+test("version 5 session documents migrate without inventing runtime state", () => {
+  const state = createState(1);
+  state.documents[0].format_version = 5;
+  const result = parseProjectStoreStateWithMigration(state);
+  assert.equal(result.was_migrated, true);
+  assert.equal(
+    result.state.documents[0].format_version,
+    SESSION_DOCUMENT_FORMAT_VERSION,
+  );
+  assert.equal(result.state.documents[0].runtime_state, undefined);
+  assert.deepEqual(
+    result.state.documents[0].history,
+    state.documents[0].history,
+  );
+});
+
+test("session runtime state rejects non-JSON payloads", () => {
+  const state = createState(1);
+  state.documents[0].runtime_state = {
+    runtime_id: "dsh",
+    format_version: 1,
+    payload: { invalid: Number.NaN },
+  };
+  assert.throws(
+    () => parseProjectStoreState(state),
+    /runtime state payload.invalid contains an invalid number/u,
+  );
+});
+
 test("memory project mutations rebase canonical state and own revisions", async () => {
   const store = new MemoryProjectStore(createState(1));
 

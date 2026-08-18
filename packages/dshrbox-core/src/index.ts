@@ -23,6 +23,7 @@ export type DshrboxRuntimeConfig = {
   model: string;
   provider: string;
   session_id: string;
+  resume?: boolean;
 };
 
 export type DshrboxSessionEventListener = (event: SessionEvent) => void;
@@ -48,13 +49,20 @@ export class DshrboxRuntime extends Service {
   constructor(ctx: Context, config: DshrboxRuntimeConfig) {
     super(ctx, "dshrbox");
     ctx.llm.registerAdapter([config.provider], config.llm_adapter);
-    this.agentPromise = ctx.agents.create({
-      sessionId: SessionId(config.session_id),
-      agentOptions: {
-        model: config.model,
-        provider: config.provider,
-      },
-    }).then((handle) => {
+    const agentOptions = {
+      model: config.model,
+      provider: config.provider,
+    };
+    const handlePromise = config.resume === true
+      ? ctx.agents.resume({
+          resumeSessionId: SessionId(config.session_id),
+          agentOptions,
+        })
+      : ctx.agents.create({
+          sessionId: SessionId(config.session_id),
+          agentOptions,
+        });
+    this.agentPromise = handlePromise.then((handle) => {
       this.liveAgent = handle.agent;
       return handle.agent;
     });

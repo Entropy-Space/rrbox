@@ -35,6 +35,14 @@ test("composes the constrained browser runtime over core", async () => {
   );
   assert.ok(result.workspace.event_types.includes("tool/call"));
   assert.ok(result.workspace.event_types.includes("tool/result"));
+  assert.equal(result.session_runtime.runtime_id, "dsh");
+  assert.ok(result.session_runtime.persisted_event_count > 0);
+  assert.deepEqual(result.session_runtime.timeline_types, [
+    "user_message",
+    "assistant_message",
+    "tool_result",
+    "assistant_message",
+  ]);
 });
 
 test("declares the constrained browser async-context contract", () => {

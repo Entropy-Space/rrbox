@@ -64,8 +64,46 @@ export type SessionRuntimeOptions = {
   checkpoint: (
     phase: "staged" | "tool_started" | "tool_finished" | "finished",
     requestId: string,
+    document?: SessionDocument,
   ) => Promise<void>;
 };
+
+/** Runtime boundary owned by ResearchBoxCore's project/session coordinator. */
+export interface SessionRuntimePort {
+  readonly project_id: string;
+  readonly session_id: string;
+  readonly is_running: boolean;
+  /** Includes persistence and checkpoint finalization after model execution. */
+  readonly is_busy: boolean;
+  /** Borrow the exact document currently mutated by this runtime. */
+  ownedDocument(): SessionDocument;
+  usesModel(model: Model<string>): boolean;
+  bindDocument(document: SessionDocument): void;
+  startPrompt(text: string, requestId: string): Promise<void>;
+  continueStagedPrompt(runId: string, requestId: string): Promise<void>;
+  abort(): void;
+  stopAndWait(): Promise<void>;
+  waitForIdle(): Promise<void>;
+  dispose(): void | Promise<void>;
+  resolveSummaryReview(
+    interactionId: string,
+    resolution: SummaryReviewResolution,
+  ): void;
+  touchSummaryReview(interactionId: string): boolean;
+  setSummaryReviewVisibility(
+    interactionId: string,
+    isVisible: boolean,
+  ): boolean;
+}
+
+/** Optional copy-on-write runtime for newly-created marked documents. */
+export interface SessionRuntimeProvider {
+  readonly runtime_id: string;
+  initializeDocument(document: SessionDocument): void;
+  create(options: SessionRuntimeOptions):
+    | SessionRuntimePort
+    | Promise<SessionRuntimePort>;
+}
 
 type WorkspaceToolDetails = {
   summary: string;
@@ -132,7 +170,7 @@ function cloneSummaryReviewRequest(
   };
 }
 
-export class SessionRuntime {
+export class SessionRuntime implements SessionRuntimePort {
   readonly project_id: string;
   readonly session_id: string;
   private document: SessionDocument;
@@ -199,6 +237,14 @@ export class SessionRuntime {
 
   get is_running(): boolean {
     return this.activeRun !== null || this.agent.state.isStreaming;
+  }
+
+  get is_busy(): boolean {
+    return this.is_running;
+  }
+
+  ownedDocument(): SessionDocument {
+    return this.document;
   }
 
   usesModel(model: Model<string>): boolean {

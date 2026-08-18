@@ -1,0 +1,27 @@
+{
+  "name": "@dshrbox/session-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-agent": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.6",
+    "@earendil-works/pi-ai": "0.79.0",
+    "@dshrbox/core": "workspace:*",
+    "@dshrbox/event-projector": "workspace:*",
+    "@dshrbox/model-adapter": "workspace:*",
+    "@dshrbox/session-persistence": "workspace:*",
+    "@dshrbox/workspace": "workspace:*",
+    "@researchbox/agent-core": "workspace:*",
+    "@researchbox/project-store": "workspace:*",
+    "@researchbox/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@researchbox/vfs": "workspace:*"
+  }
+}

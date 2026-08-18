@@ -50,6 +50,9 @@ import {
   SessionRuntime,
   stagePrompt,
   type CoreEventSink,
+  type SessionRuntimeOptions,
+  type SessionRuntimePort,
+  type SessionRuntimeProvider,
 } from "./session-runtime.ts";
 import {
   snapshotAgentPlugins,
@@ -86,6 +89,7 @@ export type ResearchBoxCoreOptions = {
   plugins?: readonly AgentPlugin[];
   eventSink: CoreEventSink;
   workspaceTransferOptions?: WorkspaceArchiveOptions;
+  sessionRuntimeProvider?: SessionRuntimeProvider;
 } & WorkspaceBackendOption;
 
 export type AgentCoreOptions = ResearchBoxCoreOptions;
@@ -112,6 +116,7 @@ export class ResearchBoxCore {
   private readonly plugins: readonly AgentPlugin[];
   private readonly eventSink: CoreEventSink;
   private readonly workspaceTransferOptions: WorkspaceArchiveOptions | undefined;
+  private readonly sessionRuntimeProvider: SessionRuntimeProvider | undefined;
   private readonly workspaces = new Map<string, WorkspaceController>();
   private readonly selectedSessionByProject = new Map<
     string,
@@ -119,7 +124,7 @@ export class ResearchBoxCore {
   >();
   private state: ProjectStoreState | null = null;
   private workspace: WorkspaceController | null = null;
-  private runtime: SessionRuntime | null = null;
+  private runtime: SessionRuntimePort | null = null;
   private initialization: Promise<void> | null = null;
   private mutationTail: Promise<void> = Promise.resolve();
   private readonly workspaceExportControllers = new Map<
@@ -169,6 +174,7 @@ export class ResearchBoxCore {
     this.workspaceTransferOptions = snapshotWorkspaceTransferOptions(
       options.workspaceTransferOptions,
     );
+    this.sessionRuntimeProvider = options.sessionRuntimeProvider;
     this.unsubscribeProjectStore = this.projectStore.subscribe((change) =>
       this.handleProjectStoreChange(change),
     );
@@ -388,8 +394,8 @@ export class ResearchBoxCore {
       ) {
         continue;
       }
-      if (runtime && !runtime.is_running) {
-        runtime.dispose();
+      if (runtime && !runtime.is_busy) {
+        await runtime.dispose();
         if (this.runtime === runtime) this.runtime = null;
       }
       return;
@@ -421,7 +427,7 @@ export class ResearchBoxCore {
       nextModel.model_id !== previousModel.model_id ||
       this.getActiveReasoningEffort() !== previousReasoningEffort;
     if (activationRequired) {
-      if (this.runtime?.is_running) {
+      if (this.runtime?.is_busy) {
         this.selectionActivationPending = true;
       } else {
         await this.activateSelection();
@@ -432,7 +438,7 @@ export class ResearchBoxCore {
   }
 
   private async finishPendingSelectionActivation(): Promise<void> {
-    if (!this.selectionActivationPending || this.runtime?.is_running) return;
+    if (!this.selectionActivationPending || this.runtime?.is_busy) return;
     await this.activateSelection();
     this.selectionActivationPending = false;
     if (this.hasBootstrapped) await this.emitStateSnapshot();
@@ -606,7 +612,7 @@ export class ResearchBoxCore {
         return;
       }
 
-      if (this.runtime?.is_running) {
+      if (this.runtime?.is_busy) {
         this.emitError(
           "run_in_progress",
           "Wait for the current response to finish.",
@@ -644,6 +650,7 @@ export class ResearchBoxCore {
           currentProject.new_chat_model,
           currentProject.new_chat_reasoning_effort,
         );
+        this.sessionRuntimeProvider?.initializeDocument(created.document);
         const staged = stagePrompt(created.document, promptText);
         try {
           await this.commitMutation(
@@ -1492,39 +1499,62 @@ export class ResearchBoxCore {
     const projectId = state.active_project_id;
     const workspace = await this.getWorkspaceController(projectId);
     const sessionId = state.active_session_id;
-    const nextRuntime =
-      sessionId === null
-        ? null
-        : new SessionRuntime({
-            project_id: projectId,
-            session_id: sessionId,
-            document: this.requireDocument(sessionId),
-            workspace,
-            model_transport: this.modelTransport,
-            model: this.requireActiveModel(),
-            reasoning_effort: this.getActiveReasoningEffort(),
-            resolve_model: (selection) =>
-              this.providerCatalog.isModelReady(selection)
-                ? this.providerCatalog.getModel(selection)
-                : undefined,
-            system_prompt: this.systemPrompt,
-            plugins: this.plugins,
-            event_sink: this.eventSink,
-            checkpoint: (phase, requestId) =>
-              this.enqueueMutation(async () => {
-                await this.checkpointActiveSession(
-                  projectId,
-                  sessionId,
-                  phase,
-                );
-                if (phase === "finished") {
-                  await this.emitStateSnapshot(requestId);
-                }
-              }),
-          });
-    this.runtime?.dispose();
+    const document = sessionId === null
+      ? null
+      : this.requireDocument(sessionId);
+    const runtimeProvider = document?.runtime_state === undefined
+      ? undefined
+      : this.requireSessionRuntimeProvider(document.runtime_state.runtime_id);
+    const runtimeOptions: SessionRuntimeOptions | null =
+      sessionId === null || document === null
+      ? null
+      : {
+          project_id: projectId,
+          session_id: sessionId,
+          document,
+          workspace,
+          model_transport: this.modelTransport,
+          model: this.requireActiveModel(),
+          reasoning_effort: this.getActiveReasoningEffort(),
+          resolve_model: (selection) =>
+            this.providerCatalog.isModelReady(selection)
+              ? this.providerCatalog.getModel(selection)
+              : undefined,
+          system_prompt: this.systemPrompt,
+          plugins: this.plugins,
+          event_sink: this.eventSink,
+          checkpoint: (phase, requestId, runtimeDocument) =>
+            this.enqueueMutation(async () => {
+              await this.checkpointActiveSession(
+                projectId,
+                sessionId,
+                phase,
+                runtimeDocument,
+              );
+              if (phase === "finished") {
+                await this.emitStateSnapshot(requestId);
+              }
+            }),
+        };
+    const nextRuntime = runtimeOptions === null
+      ? null
+      : await (runtimeProvider?.create(runtimeOptions) ??
+        new SessionRuntime(runtimeOptions));
+    await this.runtime?.dispose();
     this.workspace = workspace;
     this.runtime = nextRuntime;
+  }
+
+  private requireSessionRuntimeProvider(
+    runtimeId: string,
+  ): SessionRuntimeProvider {
+    const provider = this.sessionRuntimeProvider;
+    if (!provider || provider.runtime_id !== runtimeId) {
+      throw new Error(
+        `Session runtime is unavailable for persisted runtime_id: ${runtimeId}.`,
+      );
+    }
+    return provider;
   }
 
   private async getWorkspaceController(
@@ -1543,6 +1573,7 @@ export class ResearchBoxCore {
     projectId: string,
     sessionId: string,
     phase: "staged" | "tool_started" | "tool_finished" | "finished",
+    sourceDocument?: SessionDocument,
   ): Promise<void> {
     const state = this.requireState();
     if (
@@ -1553,7 +1584,7 @@ export class ResearchBoxCore {
     }
 
     const stateDocument = findDocument(state, sessionId);
-    const runtimeDocument = structuredClone(stateDocument);
+    const runtimeDocument = structuredClone(sourceDocument ?? stateDocument);
     const synchronizedHistory = synchronizeSessionHistory(
       runtimeDocument.history,
       runtimeDocument.timeline,
@@ -1632,8 +1663,8 @@ export class ResearchBoxCore {
   ): void {
     const runtime = this.runtime;
     const runningDocument =
-      runtime?.is_running && this.state
-        ? findDocument(this.state, runtime.session_id)
+      runtime?.is_busy && this.state
+        ? runtime.ownedDocument()
         : null;
     if (
       runtime &&
@@ -1645,6 +1676,17 @@ export class ResearchBoxCore {
         runtime.session_id,
       );
       runningDocument.input_draft = committedDocument.input_draft;
+      if (committedDocument.runtime_state === undefined) {
+        delete runningDocument.runtime_state;
+      } else {
+        runningDocument.runtime_state = structuredClone(
+          committedDocument.runtime_state,
+        );
+      }
+      runningDocument.history = synchronizeSessionHistory(
+        runningDocument.history,
+        runningDocument.timeline,
+      );
       const documentIndex = committed.documents.findIndex(
         (document) => document.session_id === runtime.session_id,
       );
@@ -1700,7 +1742,7 @@ export class ResearchBoxCore {
 
     if (
       runtime &&
-      !runtime.is_running &&
+      !runtime.is_busy &&
       isOwnedSession(committed, runtime.project_id, runtime.session_id)
     ) {
       runtime.bindDocument(this.requireDocument(runtime.session_id));
@@ -2247,7 +2289,7 @@ export class ResearchBoxCore {
   }
 
   private ensureManagementIdle(requestId: string): boolean {
-    if (!this.runtime?.is_running) return true;
+    if (!this.runtime?.is_busy) return true;
     const state = this.requireState();
     this.emitError(
       "run_in_progress",
@@ -2260,7 +2302,7 @@ export class ResearchBoxCore {
   }
 
   private ensureWorkspaceTransferIdle(requestId: string): boolean {
-    if (!this.runtime?.is_running) return true;
+    if (!this.runtime?.is_busy) return true;
     const state = this.requireState();
     this.emitError(
       "run_in_progress",
@@ -2277,7 +2319,7 @@ export class ResearchBoxCore {
     projectId: string,
   ): boolean {
     if (
-      !this.runtime?.is_running ||
+      !this.runtime?.is_busy ||
       this.requireState().active_project_id !== projectId
     ) {
       return true;
@@ -2378,7 +2420,7 @@ export class ResearchBoxCore {
     return this.state;
   }
 
-  private requireRuntime(): SessionRuntime {
+  private requireRuntime(): SessionRuntimePort {
     if (!this.runtime) throw new Error("No active session runtime is available.");
     return this.runtime;
   }

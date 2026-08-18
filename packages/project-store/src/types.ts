@@ -20,7 +20,7 @@ import {
 } from "./history.ts";
 
 export const PROJECT_STORE_SCHEMA_VERSION = 4 as const;
-export const SESSION_DOCUMENT_FORMAT_VERSION = 5 as const;
+export const SESSION_DOCUMENT_FORMAT_VERSION = 6 as const;
 
 export const DEFAULT_MODEL_SELECTION: ModelSelection = {
   provider_id: "researchbox",
@@ -36,6 +36,22 @@ const LEGACY_SESSION_DOCUMENT_FORMAT_VERSION = 1 as const;
 const TRANSCRIPT_SESSION_DOCUMENT_FORMAT_VERSION = 2 as const;
 const TIMELINE_SESSION_DOCUMENT_FORMAT_VERSION = 3 as const;
 const LINEAR_SESSION_DOCUMENT_FORMAT_VERSION = 4 as const;
+const HISTORY_SESSION_DOCUMENT_FORMAT_VERSION = 5 as const;
+
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+/** Opaque, runtime-owned state persisted beside the viewer projection. */
+export type SessionRuntimeState = {
+  runtime_id: string;
+  format_version: number;
+  payload: JsonValue;
+};
 
 export type ProjectRecord = {
   project_id: string;
@@ -66,6 +82,7 @@ export type SessionDocument = {
   input_draft: string;
   timeline: TimelineEntry[];
   history: SessionHistory;
+  runtime_state?: SessionRuntimeState;
 };
 
 export type ProjectStoreState = {
@@ -278,7 +295,8 @@ function parseSessionDocument(
     formatVersion === LEGACY_SESSION_DOCUMENT_FORMAT_VERSION ||
     formatVersion === TRANSCRIPT_SESSION_DOCUMENT_FORMAT_VERSION ||
     formatVersion === TIMELINE_SESSION_DOCUMENT_FORMAT_VERSION ||
-    formatVersion === LINEAR_SESSION_DOCUMENT_FORMAT_VERSION;
+    formatVersion === LINEAR_SESSION_DOCUMENT_FORMAT_VERSION ||
+    formatVersion === HISTORY_SESSION_DOCUMENT_FORMAT_VERSION;
   if (
     formatVersion !== SESSION_DOCUMENT_FORMAT_VERSION &&
     (!isLegacyFormat ||
@@ -303,18 +321,25 @@ function parseSessionDocument(
         input_draft: inputDraft,
         timeline,
         history: parsedHistory.history,
+        ...(value.runtime_state === undefined
+          ? {}
+          : { runtime_state: parseSessionRuntimeState(value.runtime_state) }),
       },
       was_migrated: parsedHistory.was_migrated,
     };
   }
   if (
     formatVersion === TIMELINE_SESSION_DOCUMENT_FORMAT_VERSION ||
-    formatVersion === LINEAR_SESSION_DOCUMENT_FORMAT_VERSION
+    formatVersion === LINEAR_SESSION_DOCUMENT_FORMAT_VERSION ||
+    formatVersion === HISTORY_SESSION_DOCUMENT_FORMAT_VERSION
   ) {
     const timeline =
       formatVersion === TIMELINE_SESSION_DOCUMENT_FORMAT_VERSION
         ? migrateNormalizedTimeline(value.timeline)
         : parseTimeline(value.timeline);
+    const history = formatVersion === HISTORY_SESSION_DOCUMENT_FORMAT_VERSION
+      ? parseSessionHistory(value.history, timeline).history
+      : createSessionHistory(timeline);
     return {
       document: {
         format_version: SESSION_DOCUMENT_FORMAT_VERSION,
@@ -322,7 +347,7 @@ function parseSessionDocument(
         project_id: projectId,
         input_draft: inputDraft,
         timeline,
-        history: createSessionHistory(timeline),
+        history,
       },
       was_migrated: true,
     };
@@ -349,6 +374,49 @@ function parseSessionDocument(
     },
     was_migrated: true,
   };
+}
+
+function parseSessionRuntimeState(value: unknown): SessionRuntimeState {
+  if (!isRecord(value)) {
+    throw new Error("Session runtime state must be an object.");
+  }
+  return {
+    runtime_id: requireString(value, "runtime_id"),
+    format_version: requireNonNegativeInteger(value, "format_version"),
+    payload: parseJsonValue(value.payload, "runtime state payload"),
+  };
+}
+
+function parseJsonValue(value: unknown, location: string): JsonValue {
+  if (
+    value === null ||
+    typeof value === "boolean" ||
+    typeof value === "string"
+  ) {
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || Object.is(value, -0)) {
+      throw new Error(`${location} contains an invalid number.`);
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    if (Object.keys(value).length !== value.length) {
+      throw new Error(`${location} contains a sparse array.`);
+    }
+    return value.map((entry, index) =>
+      parseJsonValue(entry, `${location}[${index}]`)
+    );
+  }
+  if (!isRecord(value)) {
+    throw new Error(`${location} must be losslessly JSON-serializable.`);
+  }
+  const result: { [key: string]: JsonValue } = {};
+  for (const [key, entry] of Object.entries(value)) {
+    result[key] = parseJsonValue(entry, `${location}.${key}`);
+  }
+  return result;
 }
 
 function migrateNormalizedTimeline(value: unknown): TimelineEntry[] {

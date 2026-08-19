@@ -2,14 +2,15 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import type { AgentPlugin } from "@researchbox/agent-core";
 import {
+  formatPythonExecution,
+  type PythonExecutor,
+} from "./python-executor.ts";
+import {
   MAX_PYTHON_CODE_BYTES,
-  type PythonExecutionResult,
 } from "./protocol.ts";
 
-export type PythonExecutor = {
-  execute(code: string, signal?: AbortSignal): Promise<PythonExecutionResult>;
-  close(): void | Promise<void>;
-};
+export { formatPythonExecution } from "./python-executor.ts";
+export type { PythonExecutor } from "./python-executor.ts";
 
 type PythonToolDetails = {
   summary: string;
@@ -56,25 +57,4 @@ export function createPythonAgentPlugin(
       return [runPython];
     },
   };
-}
-
-export function formatPythonExecution(
-  result: PythonExecutionResult,
-): string {
-  const sections: string[] = [];
-  if (result.stdout.length > 0) {
-    sections.push(`stdout:\n${result.stdout}`);
-  }
-  if (result.stderr.length > 0) {
-    sections.push(`stderr:\n${result.stderr}`);
-  }
-  if (result.error !== null) {
-    sections.push(`error:\n${result.error}`);
-  }
-  if (result.output_truncated) {
-    sections.push("[output truncated]");
-  }
-  return sections.length > 0
-    ? sections.join("\n")
-    : "Python completed without output.";
 }

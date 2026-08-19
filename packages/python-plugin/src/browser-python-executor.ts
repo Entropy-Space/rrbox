@@ -1,4 +1,4 @@
-import type { PythonExecutor } from "./python-plugin.ts";
+import type { PythonExecutor } from "./python-executor.ts";
 import {
   createPythonExecuteRequest,
   createPythonErrorResponse,

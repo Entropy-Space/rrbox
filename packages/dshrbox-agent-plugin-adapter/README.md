@@ -1,6 +1,6 @@
 # `@dshrbox/agent-plugin-adapter`
 
-Copy-on-write compatibility for registering existing ResearchBox
+Copy-on-write compatibility for registering existing rrbox
 `AgentPlugin` tools in a DeepSeek Harness runtime.
 
 The adapter keeps the legacy TypeBox schema as the execution-time authority and

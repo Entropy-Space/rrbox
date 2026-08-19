@@ -23,8 +23,10 @@ plugins: [{
 ```
 
 This slice projects user, assistant, reasoning, tool, terminal, and run-state
-events. Filesystem ownership, durable checkpoint writes, history navigation,
-and application command handling remain outside the projector. DSH surface
+events. Tool presentation metadata contributes the existing timeline summary
+and validated workspace-change fields without becoming a second result store.
+Filesystem ownership, durable checkpoint writes, history navigation, and
+application command handling remain outside the projector. DSH surface
 replacement events do not rewrite the human-visible timeline: the original
 append-only events remain visible while DSH owns its compacted model surface.
 Image blocks fail closed until the existing viewer protocol has an image block.

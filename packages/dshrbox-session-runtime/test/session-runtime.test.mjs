@@ -3,6 +3,7 @@ import test from "node:test";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import { MemoryDshrboxSessionBackend } from "@dshrbox/session-persistence";
 import { DshrboxSessionRuntimeProvider } from "@dshrbox/session-runtime";
+import { Type } from "@earendil-works/pi-ai";
 import { ResearchBoxCore } from "@researchbox/agent-core";
 import { MemoryProjectStore } from "@researchbox/project-store";
 import {
@@ -143,6 +144,81 @@ class LegacyFallbackTransport {
   }
 }
 
+class AdaptedPluginTransport {
+  requestCount = 0;
+
+  async *stream(request) {
+    if (
+      request.messages.some(
+        (message) =>
+          message.role === "user" &&
+          message.content === "Complete inside the plugin.",
+      )
+    ) {
+      yield* textEvents("Nested model completion");
+      yield { type: "done", stop_reason: "stop" };
+      return;
+    }
+
+    const requestIndex = this.requestCount;
+    this.requestCount += 1;
+    if (requestIndex === 0) {
+      assert.ok(
+        request.tools.some((tool) => tool.name === "adapted_plugin_tool"),
+      );
+      yield* toolCallEvents({
+        tool_call_id: "adapted-plugin-call",
+        tool_name: "adapted_plugin_tool",
+        arguments: { query: "dshrbox" },
+      });
+      yield { type: "done", stop_reason: "tool_use" };
+      return;
+    }
+    if (requestIndex === 1) {
+      const result = request.messages.find(
+        (message) =>
+          message.role === "tool" &&
+          message.tool_call_id === "adapted-plugin-call",
+      );
+      assert.equal(result?.content, "Nested model completion: dshrbox");
+      yield* textEvents("Used the adapted plugin.");
+      yield { type: "done", stop_reason: "stop" };
+      return;
+    }
+    throw new Error(`Unexpected adapted-plugin request ${requestIndex}.`);
+  }
+}
+
+class AdaptedReviewTransport {
+  requestCount = 0;
+
+  async *stream(request) {
+    const requestIndex = this.requestCount;
+    this.requestCount += 1;
+    if (requestIndex === 0) {
+      yield* toolCallEvents({
+        tool_call_id: "adapted-review-call",
+        tool_name: "adapted_review_tool",
+        arguments: {},
+      });
+      yield { type: "done", stop_reason: "tool_use" };
+      return;
+    }
+    if (requestIndex === 1) {
+      const result = request.messages.find(
+        (message) =>
+          message.role === "tool" &&
+          message.tool_call_id === "adapted-review-call",
+      );
+      assert.equal(result?.content, "Approved DSH summary");
+      yield* textEvents("Used the approved DSH summary.");
+      yield { type: "done", stop_reason: "stop" };
+      return;
+    }
+    throw new Error(`Unexpected adapted-review request ${requestIndex}.`);
+  }
+}
+
 class FailingDeleteSessionBackend extends MemoryDshrboxSessionBackend {
   async deleteStored() {
     throw new Error("Test DSH session deletion failed.");
@@ -248,6 +324,162 @@ test("runs and restores a DSH session behind the existing rrbox core", async () 
     "The restored DSH session continued.",
   );
   await second.dispose();
+});
+
+test("runs legacy plugins through DSH and projects their result metadata", async () => {
+  const events = [];
+  const transport = new AdaptedPluginTransport();
+  const plugin = {
+    id: "adapted-plugin",
+    createTools(context) {
+      const parameters = Type.Object({
+        query: Type.String({ minLength: 1 }),
+      });
+      return [{
+        name: "adapted_plugin_tool",
+        label: "Adapted plugin",
+        description: "Exercise the DSH legacy plugin bridge.",
+        parameters,
+        async execute(_toolCallId, args, signal) {
+          const completion = await context.complete_model(
+            "Complete inside the plugin.",
+            signal,
+          );
+          return {
+            content: [{
+              type: "text",
+              text: `${completion.text}: ${args.query}`,
+            }],
+            details: { summary: "Adapted plugin completed" },
+          };
+        },
+      }];
+    },
+  };
+  const core = createCore(
+    new MemoryProjectStore(),
+    createWorkspaceBackend(),
+    transport,
+    events,
+    true,
+    new MemoryDshrboxSessionBackend(),
+    [plugin],
+  );
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await core.handle(createCommand("prompt", {
+    project_id: initial.active_project_id,
+    session_id: null,
+    text: "Use the adapted plugin.",
+  }));
+
+  const result = latestState(events).timeline.find(
+    (entry) =>
+      entry.type === "tool_result" &&
+      entry.tool_name === "adapted_plugin_tool",
+  );
+  assert.equal(result?.content, "Nested model completion: dshrbox");
+  assert.equal(result?.summary, "Adapted plugin completed");
+  await core.dispose();
+});
+
+test("keeps summary-review interaction available to adapted DSH plugins", async () => {
+  const events = [];
+  const plugin = {
+    id: "adapted-review",
+    createTools(context) {
+      return [{
+        name: "adapted_review_tool",
+        label: "Adapted review",
+        description: "Exercise summary review through DSH.",
+        parameters: Type.Object({}),
+        async execute(_toolCallId, _args, signal) {
+          const resolution = await context.request_summary_review({
+            stage: "review-summary",
+            is_loading: false,
+            loading_phase: null,
+            auto_submit_at: null,
+            title: "Review DSH summary",
+            draft_text: "Draft DSH summary",
+            summary_model: null,
+            draft_metadata: null,
+            query_draft: "",
+            query_notice: null,
+            search_providers: [{
+              provider_id: "auto",
+              display_name: "Automatic",
+            }],
+            search_provider: "auto",
+            sections: [{
+              section_id: "0",
+              title: "Evidence",
+              body: "DSH evidence",
+              is_selectable: true,
+              sources: [],
+            }],
+            selected_section_ids: ["0"],
+          }, signal);
+          return {
+            content: [{ type: "text", text: resolution.approved_text }],
+            details: { summary: "DSH review completed" },
+          };
+        },
+      }];
+    },
+  };
+  const core = createCore(
+    new MemoryProjectStore(),
+    createWorkspaceBackend(),
+    new AdaptedReviewTransport(),
+    events,
+    true,
+    new MemoryDshrboxSessionBackend(),
+    [plugin],
+  );
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  const prompt = core.handle(createCommand("prompt", {
+    project_id: initial.active_project_id,
+    session_id: null,
+    text: "Review through DSH.",
+  }));
+  await waitForCondition(
+    () => events.some((event) => event.type === "summary_review_requested"),
+  );
+  const review = events.findLast(
+    (event) => event.type === "summary_review_requested",
+  );
+  await core.handle(createCommand("summary_review_resolve", {
+    project_id: review.payload.project_id,
+    session_id: review.payload.session_id,
+    interaction_id: review.payload.interaction_id,
+    resolution: {
+      decision: "approve",
+      approved_text: "Approved DSH summary",
+      selected_section_ids: ["0"],
+      feedback_text: "",
+      summary_model: null,
+      search_provider: "auto",
+      query_text: "",
+    },
+  }));
+  await prompt;
+
+  const result = latestState(events).timeline.find(
+    (entry) =>
+      entry.type === "tool_result" &&
+      entry.tool_name === "adapted_review_tool",
+  );
+  assert.equal(result?.content, "Approved DSH summary");
+  assert.equal(result?.summary, "DSH review completed");
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "summary_review_resolved" &&
+        event.payload.interaction_id === review.payload.interaction_id,
+    ),
+  );
+  await core.dispose();
 });
 
 test("routes the existing abort command into DSH and checkpoints partial output", async () => {
@@ -543,6 +775,7 @@ function createCore(
   events,
   useDsh = true,
   sessionBackend = new MemoryDshrboxSessionBackend(),
+  plugins = [],
 ) {
   return new ResearchBoxCore({
     projectStore: store,
@@ -550,6 +783,7 @@ function createCore(
     modelTransport: transport,
     model,
     systemPrompt: "You are a DSH session-runtime test agent.",
+    plugins,
     eventSink: (event) => events.push(event),
     ...(useDsh
       ? {
@@ -562,6 +796,16 @@ function createCore(
         }
       : {}),
   });
+}
+
+async function waitForCondition(predicate, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) {
+      throw new Error("Timed out waiting for test condition.");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
 }
 
 function createWorkspaceBackend() {

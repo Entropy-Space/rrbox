@@ -10,6 +10,7 @@ import type {
   TurnEndReason,
 } from "@deepseek-ai/dsh-session";
 import {
+  parseWorkspaceChangeSummary,
   PROTOCOL_VERSION,
   type AssistantBlock,
   type AssistantMessageEntry,
@@ -18,6 +19,7 @@ import {
   type TimelineEntry,
   type ToolCallBlock as TimelineToolCallBlock,
   type ToolResultEntry,
+  type WorkspaceChangeSummary,
 } from "@researchbox/protocol";
 
 export type DshrboxEventProjectorOptions = {
@@ -562,6 +564,11 @@ export class DshrboxEventProjector {
     if (!call) {
       throw new Error(`DSH tool result has no projected call: ${callId}.`);
     }
+    const metadata = projectToolResultMetadata(
+      event.data.meta,
+      callId,
+      call.name,
+    );
     const entry: ToolResultEntry = {
       type: "tool_result",
       entry_id: this.messageEntryId(String(event.data.message.id)),
@@ -572,6 +579,12 @@ export class DshrboxEventProjector {
       tool_name: call.name,
       content: textContent(resultBlock.content, "DSH tool result"),
       is_error: resultBlock.isError ?? event.data.error !== undefined,
+      ...(metadata.summary === undefined
+        ? {}
+        : { summary: metadata.summary }),
+      ...(metadata.file_change === undefined
+        ? {}
+        : { file_change: metadata.file_change }),
     };
     this.appendEntry(
       entry,
@@ -1008,6 +1021,45 @@ function textContent(blocks: readonly ContentBlock[], label: string): string {
   }).join("\n");
 }
 
+function projectToolResultMetadata(
+  value: unknown,
+  toolCallId: string,
+  toolName: string,
+): {
+  summary?: string;
+  file_change?: WorkspaceChangeSummary;
+} {
+  if (!isRecord(value)) return {};
+  const summary = typeof value.summary === "string"
+    ? value.summary
+    : undefined;
+  const fileChange = parseProjectedWorkspaceChange(
+    value.file_change,
+    toolCallId,
+    toolName,
+  );
+  return {
+    ...(summary === undefined ? {} : { summary }),
+    ...(fileChange === undefined ? {} : { file_change: fileChange }),
+  };
+}
+
+function parseProjectedWorkspaceChange(
+  value: unknown,
+  toolCallId: string,
+  toolName: string,
+): WorkspaceChangeSummary | undefined {
+  if (value === undefined) return undefined;
+  try {
+    const change = parseWorkspaceChangeSummary(value);
+    return change.tool_call_id === toolCallId && change.tool_name === toolName
+      ? change
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function parseArguments(
   value: string,
   toolName: string,
@@ -1032,6 +1084,10 @@ function parseArguments(
 
 function eventTimestamp(event: SessionEvent): string {
   return new Date(event.time).toISOString();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isReplacementSurfaceEvent(event: SessionEvent): boolean {

@@ -7,6 +7,7 @@ import {
 } from "@deepseek-ai/dsh-llm";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
+import { DshrboxAgentPluginAdapter } from "@dshrbox/agent-plugin-adapter";
 import {
   createDshrboxCore,
   type DshrboxCore,
@@ -21,11 +22,15 @@ import {
   type DshrboxSessionBackend,
 } from "@dshrbox/session-persistence";
 import { DshrboxWorkspace } from "@dshrbox/workspace";
-import type {
-  SessionRuntimeOptions,
-  SessionRuntimePort,
-  SessionRuntimeProvider,
-  SessionRuntimeView,
+import {
+  completeAgentPluginModel,
+  resolveAgentPluginModel,
+  SummaryReviewController,
+  type AgentPluginContext,
+  type SessionRuntimeOptions,
+  type SessionRuntimePort,
+  type SessionRuntimeProvider,
+  type SessionRuntimeView,
 } from "@researchbox/agent-core";
 import {
   RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION,
@@ -33,10 +38,11 @@ import {
   type RuntimeSessionDocument,
   type SessionDocument,
 } from "@researchbox/project-store";
-import type {
-  CoreEvent,
-  ReasoningEffort,
-  SummaryReviewResolution,
+import {
+  PROTOCOL_VERSION,
+  type CoreEvent,
+  type ReasoningEffort,
+  type SummaryReviewResolution,
 } from "@researchbox/protocol";
 
 export type DshrboxSessionRuntimeProviderConfig = {
@@ -91,6 +97,7 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
   private readonly model: Model<string>;
   private readonly eventSink: SessionRuntimeOptions["event_sink"];
   private readonly checkpoint: SessionRuntimeOptions["checkpoint"];
+  private readonly summaryReviews: SummaryReviewController;
   private document: RuntimeSessionDocument;
   private readonly projectedView: SessionRuntimeView;
   private activeRequestId: string | null = null;
@@ -109,6 +116,21 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
     this.model = options.model;
     this.eventSink = options.event_sink;
     this.checkpoint = options.checkpoint;
+    this.summaryReviews = new SummaryReviewController({
+      is_run_active: () => this.activeRequestId !== null,
+      on_requested: (request) => {
+        this.emitSummaryReviewEvent("summary_review_requested", request);
+      },
+      on_updated: (request) => {
+        this.emitSummaryReviewEvent("summary_review_updated", request);
+      },
+      on_cancelled: (interactionId) => {
+        this.emitSummaryReviewEvent("summary_review_resolved", {
+          interaction_id: interactionId,
+          decision: "dismiss",
+        });
+      },
+    });
   }
 
   static async create(
@@ -116,15 +138,36 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
     config: DshrboxSessionRuntimeProviderConfig,
   ): Promise<DshrboxSessionRuntime> {
     assertRuntimeOptions(options);
-    if ((options.plugins?.length ?? 0) > 0) {
-      throw new Error(
-        "Legacy AgentPlugin values must be adapted as DSH plugins before use.",
-      );
-    }
     const persistedRevision = await config.session_backend.readStoredRevision(
       SessionId(options.session_id),
     );
     let runtime: DshrboxSessionRuntime | null = null;
+    const pluginContext: AgentPluginContext = {
+      project_id: options.project_id,
+      session_id: options.session_id,
+      complete_model: (prompt, signal, selection) =>
+        completeAgentPluginModel(
+          options.model_transport,
+          resolveAgentPluginModel(options, selection),
+          options.session_id,
+          prompt,
+          signal,
+        ),
+      request_summary_review: (request, signal) => {
+        if (runtime === null) {
+          return Promise.reject(
+            new Error("The DSH session runtime is not ready."),
+          );
+        }
+        return runtime.summaryReviews.request(request, signal);
+      },
+      open_summary_review: (request, signal) => {
+        if (runtime === null) {
+          throw new Error("The DSH session runtime is not ready.");
+        }
+        return runtime.summaryReviews.open(request, signal);
+      },
+    };
     const checkpointPolicy = createCheckpointPolicy({
       session_id: options.session_id,
       reasoning_effort: options.reasoning_effort,
@@ -171,6 +214,15 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
           plugin: DshrboxWorkspace,
           config: { workspace: options.workspace },
         },
+        ...((options.plugins?.length ?? 0) === 0
+          ? []
+          : [{
+              plugin: DshrboxAgentPluginAdapter,
+              config: {
+                plugins: options.plugins ?? [],
+                context: pluginContext,
+              },
+            }]),
         {
           plugin: DshrboxEventProjection,
           config: {
@@ -233,6 +285,9 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
   }
 
   abort(): void {
+    this.summaryReviews.reject(
+      new DOMException("Summary review was cancelled.", "AbortError"),
+    );
     this.core.runtime.cancel();
   }
 
@@ -256,23 +311,18 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
     interactionId: string,
     resolution: SummaryReviewResolution,
   ): void {
-    void interactionId;
-    void resolution;
-    throw new Error("DSH summary-review plugins are not installed.");
+    this.summaryReviews.resolve(interactionId, resolution);
   }
 
   touchSummaryReview(interactionId: string): boolean {
-    void interactionId;
-    return false;
+    return this.summaryReviews.touch(interactionId);
   }
 
   setSummaryReviewVisibility(
     interactionId: string,
     isVisible: boolean,
   ): boolean {
-    void interactionId;
-    void isVisible;
-    return false;
+    return this.summaryReviews.setVisibility(interactionId, isVisible);
   }
 
   private startRun(
@@ -321,6 +371,35 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
     const projected = { ...event, request_id: requestId } as CoreEvent;
     applyCoreEvent(this.projectedView, projected);
     this.eventSink(projected);
+  }
+
+  private emitSummaryReviewEvent<
+    TType extends
+      | "summary_review_requested"
+      | "summary_review_updated"
+      | "summary_review_resolved",
+  >(
+    type: TType,
+    payload: Omit<
+      Extract<CoreEvent, { type: TType }>["payload"],
+      "project_id" | "session_id"
+    >,
+  ): void {
+    const requestId = this.activeRequestId;
+    if (requestId === null) {
+      throw new Error("A DSH summary review has no active viewer request.");
+    }
+    this.eventSink({
+      protocol_version: PROTOCOL_VERSION,
+      event_id: crypto.randomUUID(),
+      request_id: requestId,
+      type,
+      payload: {
+        project_id: this.project_id,
+        session_id: this.session_id,
+        ...payload,
+      },
+    } as Extract<CoreEvent, { type: TType }>);
   }
 
   private catchUpProjection(): void {

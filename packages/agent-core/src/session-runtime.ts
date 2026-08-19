@@ -24,7 +24,6 @@ import {
   type CoreEvent,
   type ModelSelection,
   type ReasoningEffort,
-  type SummaryReviewRequest,
   type SummaryReviewResolution,
   type TimelineEntry,
   type ToolCallBlock,
@@ -40,7 +39,6 @@ import { createModelStreamFn } from "./pi-stream.ts";
 import {
   createAgentPluginTools,
   type AgentPlugin,
-  type SummaryReviewInteraction,
 } from "./agent-plugin.ts";
 import {
   createStreamingAssistantEntry,
@@ -49,6 +47,7 @@ import {
   timelineToAgentMessages,
 } from "./session-codec.ts";
 import { repairUnansweredToolCalls } from "./tool-transcript.ts";
+import { SummaryReviewController } from "./summary-review-controller.ts";
 import { WorkspaceController } from "./workspace-controller.ts";
 
 export type CoreEventSink = (event: CoreEvent) => void;
@@ -138,48 +137,10 @@ type ActiveRun = {
   unresolved_tool_blocks: Map<string, string>;
 };
 
-type PendingSummaryReview = {
-  request: SummaryReviewRequest;
-  activity_listeners: Set<() => void>;
-  visibility_listeners: Set<(isVisible: boolean) => void>;
-  is_visible: boolean;
-  signal?: AbortSignal;
-  on_abort?: () => void;
-  resolve(resolution: SummaryReviewResolution): void;
-  reject(error: Error): void;
-};
-
 export type StagedPrompt = {
   user_entry: UserMessageEntry;
   run_id: string;
 };
-
-function cloneSummaryReviewRequest(
-  request: Omit<SummaryReviewRequest, "interaction_id">,
-  interactionId: string,
-): SummaryReviewRequest {
-  return {
-    interaction_id: interactionId,
-    stage: request.stage,
-    is_loading: request.is_loading,
-    loading_phase: request.loading_phase,
-    auto_submit_at: request.auto_submit_at,
-    title: request.title,
-    draft_text: request.draft_text,
-    summary_model: request.summary_model
-      ? { ...request.summary_model }
-      : null,
-    draft_metadata: request.draft_metadata
-      ? structuredClone(request.draft_metadata)
-      : null,
-    query_draft: request.query_draft,
-    query_notice: request.query_notice,
-    search_providers: structuredClone(request.search_providers),
-    search_provider: request.search_provider,
-    sections: structuredClone(request.sections),
-    selected_section_ids: [...request.selected_section_ids],
-  };
-}
 
 export class SessionRuntime implements SessionRuntimePort {
   readonly project_id: string;
@@ -191,9 +152,9 @@ export class SessionRuntime implements SessionRuntimePort {
   private readonly model: Model<string>;
   private readonly agent: Agent;
   private readonly unsubscribe: () => void;
+  private readonly summaryReviews: SummaryReviewController;
   private activeRun: ActiveRun | null = null;
   private runPromise: Promise<void> | null = null;
-  private pendingSummaryReview: PendingSummaryReview | null = null;
 
   constructor(options: SessionRuntimeOptions) {
     if (!isLegacySessionDocument(options.document)) {
@@ -206,6 +167,30 @@ export class SessionRuntime implements SessionRuntimePort {
     this.eventSink = options.event_sink;
     this.checkpoint = options.checkpoint;
     this.model = options.model;
+    this.summaryReviews = new SummaryReviewController({
+      is_run_active: () => this.activeRun !== null,
+      on_requested: (request) => {
+        this.emit(
+          "summary_review_requested",
+          request,
+          this.requireActiveRun().request_id,
+        );
+      },
+      on_updated: (request) => {
+        this.emit(
+          "summary_review_updated",
+          request,
+          this.requireActiveRun().request_id,
+        );
+      },
+      on_cancelled: (interactionId) => {
+        this.emit(
+          "summary_review_resolved",
+          { interaction_id: interactionId, decision: "dismiss" },
+          this.requireActiveRun().request_id,
+        );
+      },
+    });
     this.agent = new Agent({
       initialState: {
         systemPrompt: options.system_prompt,
@@ -221,17 +206,17 @@ export class SessionRuntime implements SessionRuntimePort {
             project_id: options.project_id,
             session_id: options.session_id,
             complete_model: (prompt, signal, selection) =>
-              completePluginModel(
+              completeAgentPluginModel(
                 options.model_transport,
-                resolvePluginModel(options, selection),
+                resolveAgentPluginModel(options, selection),
                 options.session_id,
                 prompt,
                 signal,
               ),
             request_summary_review: (request, signal) =>
-              this.requestSummaryReview(request, signal),
+              this.summaryReviews.request(request, signal),
             open_summary_review: (request, signal) =>
-              this.openSummaryReview(request, signal),
+              this.summaryReviews.open(request, signal),
           },
           this.createTools(),
         ),
@@ -306,7 +291,7 @@ export class SessionRuntime implements SessionRuntimePort {
 
   abort(): void {
     if (this.activeRun) this.activeRun.abort_requested = true;
-    this.rejectSummaryReview(
+    this.summaryReviews.reject(
       new DOMException("Summary review was cancelled.", "AbortError"),
     );
     this.agent.abort();
@@ -333,121 +318,18 @@ export class SessionRuntime implements SessionRuntimePort {
     interactionId: string,
     resolution: SummaryReviewResolution,
   ): void {
-    const pending = this.pendingSummaryReview;
-    if (!pending || pending.request.interaction_id !== interactionId) {
-      throw new Error("The summary review is no longer pending.");
-    }
-    const allowedWhileLoading = pending.request.loading_phase === "search"
-      ? (
-        resolution.decision === "change-provider" ||
-        resolution.decision === "dismiss"
-      )
-      : pending.request.loading_phase === "summary-grace" ||
-          pending.request.loading_phase === "summary"
-      ? (
-        resolution.decision === "change-provider" ||
-        resolution.decision === "add-search" ||
-        resolution.decision === "dismiss"
-      )
-      : false;
-    if (
-      pending.request.is_loading &&
-      resolution.decision !== "cancel" &&
-      !allowedWhileLoading
-    ) {
-      throw new Error(
-        "The summary review cannot be submitted while it is loading.",
-      );
-    }
-    const availableIds = new Set(
-      pending.request.sections.map((section) => section.section_id),
-    );
-    const selectableIds = new Set(
-      pending.request.sections
-        .filter((section) => section.is_selectable)
-        .map((section) => section.section_id),
-    );
-    const searchProviderIds = new Set(
-      pending.request.search_providers.map(
-        (provider) => provider.provider_id,
-      ),
-    );
-    if (
-      resolution.search_provider !== null &&
-      !searchProviderIds.has(resolution.search_provider)
-    ) {
-      throw new Error(
-        "The summary review selected an unavailable search provider.",
-      );
-    }
-    if (
-      resolution.decision === "change-provider" &&
-      resolution.search_provider === null
-    ) {
-      throw new Error(
-        "The summary review requires a search provider.",
-      );
-    }
-    if (
-      resolution.selected_section_ids.some(
-        (sectionId) =>
-          !availableIds.has(sectionId) ||
-          !selectableIds.has(sectionId),
-      )
-    ) {
-      throw new Error(
-        "The summary review selected an unavailable section.",
-      );
-    }
-    if (
-      pending.request.stage !== "select-evidence" &&
-      (
-        resolution.decision === "add-search" ||
-        resolution.decision === "rewrite-query" ||
-        resolution.decision === "change-provider"
-      )
-    ) {
-      throw new Error(
-        "Query curation is unavailable during summary review.",
-      );
-    }
-    this.clearPendingSummaryReview();
-    pending.resolve(structuredClone(resolution));
+    this.summaryReviews.resolve(interactionId, resolution);
   }
 
   touchSummaryReview(interactionId: string): boolean {
-    const pending = this.pendingSummaryReview;
-    if (!pending || pending.request.interaction_id !== interactionId) {
-      return false;
-    }
-    for (const listener of [...pending.activity_listeners]) {
-      try {
-        listener();
-      } catch {
-        // Plugin activity observers must not break core command handling.
-      }
-    }
-    return true;
+    return this.summaryReviews.touch(interactionId);
   }
 
   setSummaryReviewVisibility(
     interactionId: string,
     isVisible: boolean,
   ): boolean {
-    const pending = this.pendingSummaryReview;
-    if (!pending || pending.request.interaction_id !== interactionId) {
-      return false;
-    }
-    if (pending.is_visible === isVisible) return true;
-    pending.is_visible = isVisible;
-    for (const listener of [...pending.visibility_listeners]) {
-      try {
-        listener(isVisible);
-      } catch {
-        // Plugin visibility observers must not break core command handling.
-      }
-    }
-    return true;
+    return this.summaryReviews.setVisibility(interactionId, isVisible);
   }
 
   private async executePrompt(text: string, requestId: string): Promise<void> {
@@ -483,154 +365,6 @@ export class SessionRuntime implements SessionRuntimePort {
     );
     this.emit("run_state", { is_running: true }, requestId);
     await this.completePrompt(requestId);
-  }
-
-  private requestSummaryReview(
-    request: Omit<SummaryReviewRequest, "interaction_id">,
-    signal?: AbortSignal,
-  ): Promise<SummaryReviewResolution> {
-    try {
-      return this.openSummaryReview(request, signal).resolution;
-    } catch (error) {
-      return Promise.reject(error);
-    }
-  }
-
-  private openSummaryReview(
-    request: Omit<SummaryReviewRequest, "interaction_id">,
-    signal?: AbortSignal,
-  ): SummaryReviewInteraction {
-    if (this.pendingSummaryReview) {
-      throw new Error("Another summary review is already pending.");
-    }
-    if (!this.activeRun) {
-      throw new Error("Summary review requires an active agent run.");
-    }
-    if (signal?.aborted) {
-      throw new DOMException(
-        "Summary review was cancelled.",
-        "AbortError",
-      );
-    }
-    const interactionId = crypto.randomUUID();
-    const review = cloneSummaryReviewRequest(request, interactionId);
-    const resolution = new Promise<SummaryReviewResolution>(
-      (resolve, reject) => {
-        const pending: PendingSummaryReview = {
-          request: review,
-          activity_listeners: new Set(),
-          visibility_listeners: new Set(),
-          is_visible: true,
-          signal,
-          resolve,
-          reject,
-        };
-        if (signal) {
-          pending.on_abort = () => {
-            if (this.pendingSummaryReview !== pending) return;
-            this.clearPendingSummaryReview();
-            if (this.activeRun) {
-              this.emit(
-                "summary_review_resolved",
-                {
-                  interaction_id: review.interaction_id,
-                  decision: "dismiss",
-                },
-                this.activeRun.request_id,
-              );
-            }
-            reject(
-              new DOMException(
-                "Summary review was cancelled.",
-                "AbortError",
-              ),
-            );
-          };
-          signal.addEventListener("abort", pending.on_abort, {
-            once: true,
-          });
-        }
-        this.pendingSummaryReview = pending;
-      },
-    );
-    this.emit(
-      "summary_review_requested",
-      structuredClone(review),
-      this.activeRun.request_id,
-    );
-    return {
-      resolution,
-      is_visible: () => {
-        const pending = this.pendingSummaryReview;
-        return pending?.request.interaction_id === interactionId
-          ? pending.is_visible
-          : false;
-      },
-      subscribe_activity: (listener) => {
-        const pending = this.pendingSummaryReview;
-        if (
-          !pending ||
-          pending.request.interaction_id !== interactionId
-        ) {
-          return () => undefined;
-        }
-        pending.activity_listeners.add(listener);
-        return () => {
-          pending.activity_listeners.delete(listener);
-        };
-      },
-      subscribe_visibility: (listener) => {
-        const pending = this.pendingSummaryReview;
-        if (
-          !pending ||
-          pending.request.interaction_id !== interactionId
-        ) {
-          return () => undefined;
-        }
-        pending.visibility_listeners.add(listener);
-        return () => {
-          pending.visibility_listeners.delete(listener);
-        };
-      },
-      update: (updatedRequest) => {
-        const pending = this.pendingSummaryReview;
-        if (
-          !pending ||
-          pending.request.interaction_id !== interactionId ||
-          !this.activeRun
-        ) {
-          throw new Error("The summary review is no longer pending.");
-        }
-        const updatedReview = cloneSummaryReviewRequest(
-          updatedRequest,
-          interactionId,
-        );
-        pending.request = updatedReview;
-        this.emit(
-          "summary_review_updated",
-          structuredClone(updatedReview),
-          this.activeRun.request_id,
-        );
-      },
-    };
-  }
-
-  private rejectSummaryReview(error: Error): void {
-    const pending = this.pendingSummaryReview;
-    if (!pending) return;
-    this.clearPendingSummaryReview();
-    pending.reject(error);
-  }
-
-  private clearPendingSummaryReview(): void {
-    const pending = this.pendingSummaryReview;
-    if (!pending) return;
-    if (pending.signal && pending.on_abort) {
-      pending.signal.removeEventListener("abort", pending.on_abort);
-    }
-    pending.activity_listeners.clear();
-    pending.visibility_listeners.clear();
-    this.pendingSummaryReview = null;
   }
 
   private async completePrompt(requestId: string): Promise<void> {
@@ -1672,7 +1406,7 @@ export class SessionRuntime implements SessionRuntimePort {
   }
 }
 
-function resolvePluginModel(
+export function resolveAgentPluginModel(
   options: Pick<SessionRuntimeOptions, "model" | "resolve_model">,
   selection: ModelSelection | undefined,
 ): Model<string> {
@@ -1686,7 +1420,7 @@ function resolvePluginModel(
   return model;
 }
 
-async function completePluginModel(
+export async function completeAgentPluginModel(
   transport: ModelTransport,
   model: Model<string>,
   sessionId: string,

@@ -77,6 +77,30 @@ test("returns detached stored values", async () => {
   }
 });
 
+test("deletes stored sessions idempotently", async () => {
+  const backend = new MemoryDshrboxSessionBackend();
+  const context = await createContext(backend);
+  const id = SessionId(SESSION_ID);
+  try {
+    const session = context.sessions.create(id);
+    session.append("turn/start", { turn: 1 });
+    session.append("turn/end", {
+      turn: 1,
+      reason: { kind: "completed" },
+    });
+    await context.sessions.flush(session);
+    assert.notEqual(await backend.loadStored(id), undefined);
+
+    await backend.deleteStored(id);
+    await backend.deleteStored(id);
+    assert.equal(await backend.loadStored(id), undefined);
+    assert.equal(await backend.readStoredRevision(id), undefined);
+    assert.deepEqual(await backend.list(), []);
+  } finally {
+    await context.fiber.dispose();
+  }
+});
+
 async function createContext(backend) {
   const context = new Context();
   await context.plugin(SessionStore);

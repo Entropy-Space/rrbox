@@ -5,9 +5,9 @@ import type {
 } from "@deepseek-ai/dsh-session";
 import {
   SessionPersistenceRevision,
-  type PersistenceBackend,
   type StoredPrefix,
 } from "@deepseek-ai/dsh-session-persistence";
+import type { DshrboxSessionBackend } from "./backend.ts";
 
 type StoredSession = {
   header: SessionHeader;
@@ -16,7 +16,7 @@ type StoredSession = {
 };
 
 /** Canonical in-memory backend for tests and explicitly ephemeral hosts. */
-export class MemoryDshrboxSessionBackend implements PersistenceBackend {
+export class MemoryDshrboxSessionBackend implements DshrboxSessionBackend {
   readonly name = "dshrbox memory";
 
   private readonly sourceId = crypto.randomUUID();
@@ -91,11 +91,25 @@ export class MemoryDshrboxSessionBackend implements PersistenceBackend {
     );
   }
 
+  async deleteStored(
+    id: SessionId,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    throwIfAborted(signal);
+    this.sessions.delete(String(id));
+  }
+
   private revision(
     revision: number,
   ): ReturnType<typeof SessionPersistenceRevision> {
     return SessionPersistenceRevision(`${this.sourceId}:${revision}`);
   }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw signal.reason ??
+    new DOMException("The DSH session operation was aborted.", "AbortError");
 }
 
 function assertBatch(

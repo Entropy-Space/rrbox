@@ -18,7 +18,7 @@ import { ModelTransportLlmAdapter } from "@dshrbox/model-adapter";
 import {
   DSHRBOX_RUNTIME_ID,
   DshrboxSessionPersistence,
-  type PersistenceBackend,
+  type DshrboxSessionBackend,
 } from "@dshrbox/session-persistence";
 import { DshrboxWorkspace } from "@dshrbox/workspace";
 import type {
@@ -40,7 +40,7 @@ import type {
 } from "@researchbox/protocol";
 
 export type DshrboxSessionRuntimeProviderConfig = {
-  session_backend: PersistenceBackend;
+  session_backend: DshrboxSessionBackend;
   api?: string;
   max_parallel_tool_calls?: number;
   prepared_session_cache_size?: number;
@@ -76,6 +76,10 @@ export class DshrboxSessionRuntimeProvider implements SessionRuntimeProvider {
 
   create(options: SessionRuntimeOptions): Promise<SessionRuntimePort> {
     return DshrboxSessionRuntime.create(options, this.config);
+  }
+
+  deleteSession(sessionId: string): Promise<void> {
+    return this.config.session_backend.deleteStored(SessionId(sessionId));
   }
 }
 

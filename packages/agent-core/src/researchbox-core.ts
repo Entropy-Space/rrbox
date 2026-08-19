@@ -15,6 +15,7 @@ import {
   type ProjectStoreChange,
   type ProjectStore,
   type ProjectStoreState,
+  type RuntimeSessionDocument,
   type SessionDocument,
   type SessionRecord,
 } from "@researchbox/project-store";
@@ -974,6 +975,11 @@ export class ResearchBoxCore {
     await this.stopActiveRun();
     const activeChanged =
       this.requireState().active_project_id === projectId;
+    const runtimeDocuments = this.requireState().documents.filter(
+      (document): document is RuntimeSessionDocument =>
+        document.project_id === projectId &&
+        isRuntimeSessionDocument(document),
+    );
 
     let replacementProject: ProjectRecord | null = null;
     let replacementProjectId: string | null = null;
@@ -1030,6 +1036,7 @@ export class ResearchBoxCore {
     }
     if (activeChanged) await this.activateSelection();
     await this.emitStateSnapshot(requestId);
+    await this.cleanupRuntimeSessions(runtimeDocuments, requestId);
     try {
       await this.workspaceBackend.delete(projectId);
       this.workspaces.delete(projectId);
@@ -1316,6 +1323,7 @@ export class ResearchBoxCore {
     if (!this.ensureManagementIdle(requestId)) return;
     await this.stopActiveRun();
     const state = this.requireState();
+    const document = this.requireDocument(sessionId);
     const activeChanged = state.active_session_id === sessionId;
     const now = new Date().toISOString();
     await this.commitMutation((draft) => {
@@ -1339,6 +1347,9 @@ export class ResearchBoxCore {
     });
     if (activeChanged) await this.activateSelection();
     await this.emitStateSnapshot(requestId);
+    if (isRuntimeSessionDocument(document)) {
+      await this.cleanupRuntimeSessions([document], requestId);
+    }
   }
 
   private async selectSession(
@@ -1571,6 +1582,31 @@ export class ResearchBoxCore {
       );
     }
     return provider;
+  }
+
+  private async cleanupRuntimeSessions(
+    documents: readonly RuntimeSessionDocument[],
+    requestId: string,
+  ): Promise<void> {
+    const provider = this.sessionRuntimeProvider;
+    if (!provider?.deleteSession) return;
+    for (const document of documents) {
+      if (document.runtime_id !== provider.runtime_id) continue;
+      try {
+        await provider.deleteSession(document.session_id);
+      } catch (error) {
+        this.emitError(
+          "session_cleanup_failed",
+          toErrorMessage(
+            error,
+            "The deleted session runtime could not be cleaned up.",
+          ),
+          requestId,
+          document.project_id,
+          document.session_id,
+        );
+      }
+    }
   }
 
   private async getWorkspaceController(

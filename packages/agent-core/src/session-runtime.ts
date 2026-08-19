@@ -112,6 +112,8 @@ export interface SessionRuntimeProvider {
   create(options: SessionRuntimeOptions):
     | SessionRuntimePort
     | Promise<SessionRuntimePort>;
+  /** Idempotently removes runtime-owned persistence after host metadata commits. */
+  deleteSession?(sessionId: string): void | Promise<void>;
 }
 
 type WorkspaceToolDetails = {

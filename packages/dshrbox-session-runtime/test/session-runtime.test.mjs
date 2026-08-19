@@ -143,6 +143,12 @@ class LegacyFallbackTransport {
   }
 }
 
+class FailingDeleteSessionBackend extends MemoryDshrboxSessionBackend {
+  async deleteStored() {
+    throw new Error("Test DSH session deletion failed.");
+  }
+}
+
 test("runs and restores a DSH session behind the existing rrbox core", async () => {
   const store = new MemoryProjectStore();
   const workspace = createWorkspaceBackend();
@@ -362,6 +368,124 @@ test("durably checkpoints a failed DSH turn", async () => {
     persisted.events.at(-1).type,
     "turn/end",
   );
+  await core.dispose();
+});
+
+test("deletes DSH persistence after deleting its host session", async () => {
+  const store = new MemoryProjectStore();
+  const sessionBackend = new MemoryDshrboxSessionBackend();
+  const events = [];
+  const core = createCore(
+    store,
+    createWorkspaceBackend(),
+    new ReasoningEffortTransport(),
+    events,
+    true,
+    sessionBackend,
+  );
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await core.handle(createCommand("prompt", {
+    project_id: initial.active_project_id,
+    session_id: null,
+    text: "Create a session that will be deleted.",
+  }));
+  const created = latestState(events);
+  const deletedSessionId = created.active_session_id;
+  assert.notEqual(
+    await sessionBackend.loadStored(SessionId(deletedSessionId)),
+    undefined,
+  );
+
+  await core.handle(createCommand("session_delete", {
+    project_id: created.active_project_id,
+    session_id: deletedSessionId,
+  }));
+
+  const deleted = latestState(events);
+  assert.equal(deleted.sessions.length, 0);
+  assert.equal(deleted.active_session_id, null);
+  assert.equal(
+    await sessionBackend.loadStored(SessionId(deletedSessionId)),
+    undefined,
+  );
+  await core.dispose();
+});
+
+test("deletes every DSH session owned by a deleted project", async () => {
+  const store = new MemoryProjectStore();
+  const sessionBackend = new MemoryDshrboxSessionBackend();
+  const events = [];
+  const core = createCore(
+    store,
+    createWorkspaceBackend(),
+    new ReasoningEffortTransport(),
+    events,
+    true,
+    sessionBackend,
+  );
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await core.handle(createCommand("prompt", {
+    project_id: initial.active_project_id,
+    session_id: null,
+    text: "Create a session in a project that will be deleted.",
+  }));
+  const created = latestState(events);
+  const deletedProjectId = created.active_project_id;
+  const deletedSessionId = created.active_session_id;
+
+  await core.handle(createCommand("project_delete", {
+    project_id: deletedProjectId,
+  }));
+
+  const deleted = latestState(events);
+  assert.equal(
+    deleted.projects.some(
+      (project) => project.project_id === deletedProjectId,
+    ),
+    false,
+  );
+  assert.equal(
+    await sessionBackend.loadStored(SessionId(deletedSessionId)),
+    undefined,
+  );
+  await core.dispose();
+});
+
+test("keeps host deletion committed when DSH cleanup fails", async () => {
+  const store = new MemoryProjectStore();
+  const events = [];
+  const core = createCore(
+    store,
+    createWorkspaceBackend(),
+    new ReasoningEffortTransport(),
+    events,
+    true,
+    new FailingDeleteSessionBackend(),
+  );
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await core.handle(createCommand("prompt", {
+    project_id: initial.active_project_id,
+    session_id: null,
+    text: "Create a session whose cleanup will fail.",
+  }));
+  const created = latestState(events);
+
+  await core.handle(createCommand("session_delete", {
+    project_id: created.active_project_id,
+    session_id: created.active_session_id,
+  }));
+
+  assert.equal((await store.load()).sessions.length, 0);
+  const cleanupError = events.findLast(
+    (event) =>
+      event.type === "error" &&
+      event.payload.code === "session_cleanup_failed",
+  );
+  assert.equal(cleanupError.payload.session_id, created.active_session_id);
+  assert.match(cleanupError.payload.message, /session deletion failed/);
   await core.dispose();
 });
 

@@ -1,10 +1,12 @@
-export const RESEARCHBOX_DATABASE_VERSION = 9;
+export const RESEARCHBOX_DATABASE_VERSION = 10;
 
 export const databaseStores = {
   meta: "meta",
   projects: "projects",
   sessions: "sessions",
   session_documents: "session_documents",
+  dsh_session_headers: "dsh_session_headers",
+  dsh_session_events: "dsh_session_events",
   project_filesystems: "project_filesystems",
   files: "files",
   file_path_tombstones: "file_path_tombstones",
@@ -196,6 +198,17 @@ function createSchema(
     database.createObjectStore(databaseStores.session_documents, {
       keyPath: "session_id",
     });
+  }
+  if (!database.objectStoreNames.contains(databaseStores.dsh_session_headers)) {
+    database.createObjectStore(databaseStores.dsh_session_headers, {
+      keyPath: "session_id",
+    });
+  }
+  if (!database.objectStoreNames.contains(databaseStores.dsh_session_events)) {
+    database.createObjectStore(
+      databaseStores.dsh_session_events,
+      { keyPath: ["session_id", "seq"] },
+    );
   }
   if (!database.objectStoreNames.contains(databaseStores.project_filesystems)) {
     const workspaces = database.createObjectStore(

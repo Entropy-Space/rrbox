@@ -14,6 +14,7 @@ import { capturePortableWorkspace } from "@researchbox/workspace-archive/snapsho
 import {
   IndexedDbWorkspaceBackend,
   IndexedDbProjectStore,
+  RESEARCHBOX_DATABASE_VERSION,
   ResearchBoxDatabase,
 } from "../src/index.ts";
 
@@ -1610,7 +1611,7 @@ test("IndexedDB v4 workspace markers gain explicit content storage state", async
 
   const database = new ResearchBoxDatabase(factory, databaseName);
   const connection = await database.open();
-  assert.equal(connection.version, 9);
+  assert.equal(connection.version, RESEARCHBOX_DATABASE_VERSION);
   assert.equal(connection.objectStoreNames.contains("opfs_files"), true);
   assert.equal(
     connection.objectStoreNames.contains("file_change_quarantines"),
@@ -2061,7 +2062,7 @@ test("a blocked IndexedDB upgrade can be retried without leaking its late connec
 
   legacyDatabase.close();
   const connection = await database.open();
-  assert.equal(connection.version, 9);
+  assert.equal(connection.version, RESEARCHBOX_DATABASE_VERSION);
 
   database.close();
   await Promise.resolve();
@@ -2079,7 +2080,7 @@ test("IndexedDB v7 databases gain receipt quarantine and path tombstone storage"
 
   const database = new ResearchBoxDatabase(factory, databaseName);
   const connection = await database.open();
-  assert.equal(connection.version, 9);
+  assert.equal(connection.version, RESEARCHBOX_DATABASE_VERSION);
   assert.equal(
     connection.objectStoreNames.contains("file_change_quarantines"),
     true,

@@ -125,4 +125,5 @@ function assertConfig(config: DshrboxSessionPersistenceConfig): void {
 }
 
 export type { PersistenceBackend } from "@deepseek-ai/dsh-session-persistence";
+export type { DshrboxSessionBackend } from "./backend.ts";
 export { MemoryDshrboxSessionBackend } from "./memory.ts";

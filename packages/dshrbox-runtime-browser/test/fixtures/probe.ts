@@ -1,8 +1,17 @@
-import type { SessionEvent } from "@deepseek-ai/dsh-session";
+import { SessionId, type SessionEvent } from "@deepseek-ai/dsh-session";
 import DshrboxEventProjection from "@dshrbox/event-projector";
 import { ModelTransportLlmAdapter } from "@dshrbox/model-adapter";
+import { MemoryDshrboxSessionBackend } from "@dshrbox/session-persistence";
+import { DshrboxSessionRuntimeProvider } from "@dshrbox/session-runtime";
 import DshrboxWorkspace from "@dshrbox/workspace";
-import { MemoryWorkspace } from "@researchbox/vfs";
+import { ResearchBoxCore } from "@researchbox/agent-core";
+import { MemoryProjectStore } from "@researchbox/project-store";
+import { createCommand } from "@researchbox/protocol";
+import {
+  MemoryFileSystem,
+  MemoryWorkspace,
+  MemoryWorkspaceBackend,
+} from "@researchbox/vfs";
 import { createDshrboxBrowserCore } from "../../src/index.ts";
 import {
   ProbeLlmAdapter,
@@ -25,7 +34,14 @@ export type DshrboxBrowserProbeResult = {
   dsh_version: string;
   ok: boolean;
   streaming: DshrboxProbeTurn;
+  session_runtime: DshrboxSessionRuntimeProbe;
   workspace: DshrboxWorkspaceProbe;
+};
+
+export type DshrboxSessionRuntimeProbe = {
+  persisted_event_count: number;
+  runtime_id: string;
+  timeline_types: string[];
 };
 
 export type DshrboxWorkspaceProbe = {
@@ -166,17 +182,88 @@ async function runWorkspaceProbe(): Promise<DshrboxWorkspaceProbe> {
   }
 }
 
+async function runSessionRuntimeProbe(): Promise<DshrboxSessionRuntimeProbe> {
+  const projectStore = new MemoryProjectStore();
+  const sessionBackend = new MemoryDshrboxSessionBackend();
+  const workspaceBackend = new MemoryWorkspaceBackend(
+    () => new MemoryFileSystem({
+      "/notes.txt": "Browser workspace content.",
+    }),
+  );
+  const transport = new WorkspaceProbeModelTransport();
+  const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+  const model = {
+    id: PROBE_MODEL,
+    name: "DSH browser probe",
+    api: "openai-completions",
+    provider: PROBE_PROVIDER,
+    baseUrl: "",
+    reasoning: false,
+    input: ["text" as const],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 32_000,
+    maxTokens: 4_096,
+  };
+  const core = new ResearchBoxCore({
+    projectStore,
+    workspaceBackend,
+    modelTransport: transport,
+    model,
+    systemPrompt: "Run the DSH browser session probe.",
+    eventSink: (event) => events.push(event),
+    sessionRuntimeProvider: new DshrboxSessionRuntimeProvider({
+      session_backend: sessionBackend,
+      max_parallel_tool_calls: 1,
+      write_batch_max_delay_ms: 1,
+    }),
+  });
+  try {
+    await core.handle(createCommand("bootstrap", {}));
+    const ready = events.findLast((event) => event.type === "ready");
+    if (ready?.type !== "ready") throw new Error("Missing probe ready event.");
+    const state = ready.payload.state as {
+      active_project_id: string;
+    };
+    await core.handle(createCommand("prompt", {
+      project_id: state.active_project_id,
+      session_id: null,
+      text: "Read the browser workspace note.",
+    }));
+    const stored = await projectStore.load();
+    const document = stored?.documents[0];
+    if (document?.format_version !== 6) {
+      throw new Error("Missing browser DSH runtime reference.");
+    }
+    const persisted = await sessionBackend.loadStored(
+      SessionId(document.session_id),
+    );
+    const snapshot = events.findLast((event) =>
+      event.type === "state_snapshot"
+    )?.payload.state as { timeline?: Array<{ type: string }> } | undefined;
+    return {
+      persisted_event_count: persisted?.events.length ?? 0,
+      runtime_id: document.runtime_id,
+      timeline_types: snapshot?.timeline?.map((entry) => entry.type) ?? [],
+    };
+  } finally {
+    await core.dispose();
+  }
+}
+
 export async function runDshrboxBrowserProbe(): Promise<DshrboxBrowserProbeResult> {
   const streaming = await runStreamingProbe();
   const cancellation = await runCancellationProbe();
   const workspace = await runWorkspaceProbe();
+  const sessionRuntime = await runSessionRuntimeProbe();
   return {
     cancellation,
     dsh_version: DSH_VERSION,
     ok: streaming.turn_end_kind === "completed" &&
       cancellation.turn_end_kind === "aborted" &&
       workspace.turn_end_kind === "completed" &&
-      workspace.model_observed_result,
+      workspace.model_observed_result &&
+      sessionRuntime.runtime_id === "dsh",
+    session_runtime: sessionRuntime,
     streaming,
     workspace,
   };

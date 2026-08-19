@@ -90,6 +90,17 @@ fn history_document(session_id: &str, project_id: &str) -> Value {
   })
 }
 
+fn runtime_document(session_id: &str, project_id: &str) -> Value {
+  json!({
+    "format_version": 6,
+    "session_id": session_id,
+    "project_id": project_id,
+    "input_draft": "unfinished prompt",
+    "runtime_id": "dsh",
+    "message_count": 3,
+  })
+}
+
 fn state(
   revision: u64,
   active_project_id: &str,
@@ -224,6 +235,26 @@ fn project_state_accepts_tree_backed_session_history() {
   storage
     .save_project_state(&initial, None)
     .expect("tree-backed session history should validate");
+  assert_eq!(
+    storage.load_project_state().expect("load project state"),
+    Some(initial)
+  );
+}
+
+#[test]
+fn project_state_accepts_runtime_references_without_viewer_history() {
+  let (_directory, storage) = service();
+  let initial = state(
+    1,
+    "project-1",
+    vec![project("project-1", "Project", Some("session-1"))],
+    vec![session("session-1", "project-1")],
+    vec![runtime_document("session-1", "project-1")],
+  );
+
+  storage
+    .save_project_state(&initial, None)
+    .expect("runtime session reference should validate");
   assert_eq!(
     storage.load_project_state().expect("load project state"),
     Some(initial)

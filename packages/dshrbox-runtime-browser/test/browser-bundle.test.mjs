@@ -18,4 +18,12 @@ test("executes the browser-worker bundle with DSH Node imports replaced", async 
     "tool_result",
     "assistant_message",
   ]);
+  assert.equal(result.session_runtime.runtime_id, "dsh");
+  assert.ok(result.session_runtime.persisted_event_count > 0);
+  assert.deepEqual(result.session_runtime.timeline_types, [
+    "user_message",
+    "assistant_message",
+    "tool_result",
+    "assistant_message",
+  ]);
 });

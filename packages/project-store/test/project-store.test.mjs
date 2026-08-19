@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   MemoryProjectStore,
   ProjectStoreConflictError,
+  RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION,
   SESSION_DOCUMENT_FORMAT_VERSION,
   createSessionHistory,
   parseProjectStoreState,
@@ -29,6 +30,59 @@ test("memory project store clones tree-backed timelines and enforces revisions",
   second.projects[0].name = "Saved name";
   await store.save(second, 1);
   await assert.rejects(store.save(createState(2), 1), ProjectStoreConflictError);
+});
+
+test("runtime session documents persist only host client and index state", () => {
+  const state = createState(1);
+  state.documents[0] = {
+    format_version: RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION,
+    session_id: "session-1",
+    project_id: "project-1",
+    input_draft: "draft",
+    runtime_id: "dsh",
+    message_count: 2,
+  };
+  const parsed = parseProjectStoreState(state);
+  assert.deepEqual(parsed.documents[0], {
+    format_version: RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION,
+    session_id: "session-1",
+    project_id: "project-1",
+    input_draft: "draft",
+    runtime_id: "dsh",
+    message_count: 2,
+  });
+});
+
+test("version 5 timeline documents remain canonical legacy sessions", () => {
+  const state = createState(1);
+  state.documents[0].format_version = 5;
+  const result = parseProjectStoreStateWithMigration(state);
+  assert.equal(result.was_migrated, false);
+  assert.equal(
+    result.state.documents[0].format_version,
+    SESSION_DOCUMENT_FORMAT_VERSION,
+  );
+  assert.deepEqual(
+    result.state.documents[0].history,
+    state.documents[0].history,
+  );
+});
+
+test("runtime session documents reject persisted viewer projections", () => {
+  const state = createState(1);
+  state.documents[0] = {
+    format_version: RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION,
+    session_id: "session-1",
+    project_id: "project-1",
+    input_draft: "",
+    runtime_id: "dsh",
+    message_count: 1,
+    timeline: [],
+  };
+  assert.throws(
+    () => parseProjectStoreState(state),
+    /cannot persist timeline/u,
+  );
 });
 
 test("memory project mutations rebase canonical state and own revisions", async () => {

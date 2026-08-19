@@ -33,13 +33,19 @@ export class DshrboxEventProjection extends Service {
     }
     ctx.on("session/event", (session, event) => {
       if (String(session.id) !== config.session_id) return;
-      if (this.projector.last_event_seq === null && event.seq > 0) {
-        this.projector.replay(session.events.slice(0, event.seq));
+      const expectedSeq = (this.projector.last_event_seq ?? -1) + 1;
+      if (event.seq > expectedSeq) {
+        this.catchUp(session.events.slice(expectedSeq, event.seq));
       }
       for (const projected of this.projector.accept(event)) {
         config.event_sink(projected);
       }
     });
+  }
+
+  /** Fold unpublished constructor/resume events without re-emitting history. */
+  catchUp(events: readonly SessionEvent[]): void {
+    for (const event of events) this.projector.accept(event);
   }
 
   snapshot(): DshrboxProjectionSnapshot {

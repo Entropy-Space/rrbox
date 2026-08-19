@@ -21,6 +21,7 @@ import {
 
 export const PROJECT_STORE_SCHEMA_VERSION = 4 as const;
 export const SESSION_DOCUMENT_FORMAT_VERSION = 5 as const;
+export const RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION = 6 as const;
 
 export const DEFAULT_MODEL_SELECTION: ModelSelection = {
   provider_id: "researchbox",
@@ -59,7 +60,7 @@ export type SessionRecord = {
   reasoning_effort: ReasoningEffort;
 };
 
-export type SessionDocument = {
+export type LegacySessionDocument = {
   format_version: typeof SESSION_DOCUMENT_FORMAT_VERSION;
   session_id: string;
   project_id: string;
@@ -67,6 +68,21 @@ export type SessionDocument = {
   timeline: TimelineEntry[];
   history: SessionHistory;
 };
+
+/** Host-owned client/index state for a canonical external runtime session. */
+export type RuntimeSessionDocument = {
+  format_version: typeof RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION;
+  session_id: string;
+  project_id: string;
+  input_draft: string;
+  runtime_id: string;
+  /** Cached read-model count; the runtime event log remains authoritative. */
+  message_count: number;
+};
+
+export type SessionDocument =
+  | LegacySessionDocument
+  | RuntimeSessionDocument;
 
 export type ProjectStoreState = {
   schema_version: typeof PROJECT_STORE_SCHEMA_VERSION;
@@ -82,6 +98,26 @@ export type ProjectStoreParseResult = {
   state: ProjectStoreState;
   was_migrated: boolean;
 };
+
+export function isLegacySessionDocument(
+  document: SessionDocument,
+): document is LegacySessionDocument {
+  return document.format_version === SESSION_DOCUMENT_FORMAT_VERSION;
+}
+
+export function isRuntimeSessionDocument(
+  document: SessionDocument,
+): document is RuntimeSessionDocument {
+  return document.format_version === RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION;
+}
+
+export function sessionDocumentMessageCount(
+  document: SessionDocument,
+): number {
+  return isLegacySessionDocument(document)
+    ? document.timeline.filter((entry) => entry.type === "user_message").length
+    : document.message_count;
+}
 
 export function cloneProjectStoreState(
   state: ProjectStoreState,
@@ -202,8 +238,16 @@ export function assertProjectStoreInvariants(state: ProjectStoreState): void {
     if (isUnsubmittedNewChat(session, document)) {
       throw new Error("Unsubmitted new chats must not be persisted as sessions.");
     }
-    assertTimelineInvariants(document.timeline);
-    assertSessionHistoryInvariants(document.history);
+    if (isLegacySessionDocument(document)) {
+      assertTimelineInvariants(document.timeline);
+      assertSessionHistoryInvariants(document.history);
+    } else if (
+      document.runtime_id.length === 0 ||
+      !Number.isSafeInteger(document.message_count) ||
+      document.message_count < 0
+    ) {
+      throw new Error("Runtime session document metadata is invalid.");
+    }
   }
 
   if (documents.size !== sessions.size) {
@@ -281,6 +325,7 @@ function parseSessionDocument(
     formatVersion === LINEAR_SESSION_DOCUMENT_FORMAT_VERSION;
   if (
     formatVersion !== SESSION_DOCUMENT_FORMAT_VERSION &&
+    formatVersion !== RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION &&
     (!isLegacyFormat ||
       (legacy && formatVersion !== LEGACY_SESSION_DOCUMENT_FORMAT_VERSION))
   ) {
@@ -292,6 +337,26 @@ function parseSessionDocument(
     formatVersion === LEGACY_SESSION_DOCUMENT_FORMAT_VERSION
       ? ""
       : requireString(value, "input_draft", true);
+  if (formatVersion === RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION) {
+    for (const forbidden of ["timeline", "history", "runtime_state"]) {
+      if (Object.prototype.hasOwnProperty.call(value, forbidden)) {
+        throw new Error(
+          `Runtime session documents cannot persist ${forbidden}.`,
+        );
+      }
+    }
+    return {
+      document: {
+        format_version: RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION,
+        session_id: sessionId,
+        project_id: projectId,
+        input_draft: inputDraft,
+        runtime_id: requireString(value, "runtime_id"),
+        message_count: requireNonNegativeInteger(value, "message_count"),
+      },
+      was_migrated: false,
+    };
+  }
   if (formatVersion === SESSION_DOCUMENT_FORMAT_VERSION) {
     const timeline = parseTimeline(value.timeline);
     const parsedHistory = parseSessionHistory(value.history, timeline);
@@ -434,7 +499,7 @@ function isUnsubmittedNewChat(
   return (
     session.title === "New chat" &&
     !session.title_is_custom &&
-    document.timeline.length === 0
+    sessionDocumentMessageCount(document) === 0
   );
 }
 

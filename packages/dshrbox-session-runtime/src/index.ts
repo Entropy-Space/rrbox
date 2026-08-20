@@ -10,6 +10,7 @@ import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import {
   createDshrboxCore,
   type DshrboxCore,
+  type DshrboxPluginRegistration,
 } from "@dshrbox/core";
 import {
   DshrboxEventProjection,
@@ -44,6 +45,7 @@ export type DshrboxSessionRuntimeProviderConfig = {
   api?: string;
   max_parallel_tool_calls?: number;
   prepared_session_cache_size?: number;
+  plugins?: readonly DshrboxPluginRegistration[];
   write_batch_max_delay_ms?: number;
 };
 
@@ -55,7 +57,7 @@ export class DshrboxSessionRuntimeProvider implements SessionRuntimeProvider {
 
   constructor(config: DshrboxSessionRuntimeProviderConfig) {
     assertProviderConfig(config);
-    this.config = config;
+    this.config = snapshotProviderConfig(config);
   }
 
   initializeDocument(
@@ -118,7 +120,7 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
     assertRuntimeOptions(options);
     if ((options.plugins?.length ?? 0) > 0) {
       throw new Error(
-        "Legacy AgentPlugin values must be adapted as DSH plugins before use.",
+        "Legacy AgentPlugin values cannot be installed in DSH; configure native DSH plugins on DshrboxSessionRuntimeProvider.",
       );
     }
     const persistedRevision = await config.session_backend.readStoredRevision(
@@ -171,6 +173,7 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
           plugin: DshrboxWorkspace,
           config: { workspace: options.workspace },
         },
+        ...(config.plugins ?? []),
         {
           plugin: DshrboxEventProjection,
           config: {
@@ -530,6 +533,21 @@ function assertProviderConfig(
       "dshrbox session runtime requires a session_backend",
     );
   }
+}
+
+function snapshotProviderConfig(
+  config: DshrboxSessionRuntimeProviderConfig,
+): DshrboxSessionRuntimeProviderConfig {
+  return {
+    ...config,
+    ...(config.plugins === undefined
+      ? {}
+      : {
+          plugins: config.plugins.map((registration) => ({
+            ...registration,
+          })),
+        }),
+  };
 }
 
 function assertRuntimeOptions(options: SessionRuntimeOptions): void {

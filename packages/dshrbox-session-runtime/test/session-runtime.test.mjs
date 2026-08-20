@@ -3,6 +3,7 @@ import test from "node:test";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import { MemoryDshrboxSessionBackend } from "@dshrbox/session-persistence";
 import { DshrboxSessionRuntimeProvider } from "@dshrbox/session-runtime";
+import { DshrboxPython } from "@researchbox/python-plugin/dsh";
 import { ResearchBoxCore } from "@researchbox/agent-core";
 import { MemoryProjectStore } from "@researchbox/project-store";
 import {
@@ -143,6 +144,37 @@ class LegacyFallbackTransport {
   }
 }
 
+class NativePythonTransport {
+  requestCount = 0;
+
+  async *stream(request) {
+    const requestIndex = this.requestCount;
+    this.requestCount += 1;
+    if (requestIndex === 0) {
+      assert.ok(request.tools.some((tool) => tool.name === "run_python"));
+      yield* toolCallEvents({
+        tool_call_id: "python-call",
+        tool_name: "run_python",
+        arguments: { code: "print(6 * 7)" },
+      });
+      yield { type: "done", stop_reason: "tool_use" };
+      return;
+    }
+    if (requestIndex === 1) {
+      const result = request.messages.find(
+        (message) =>
+          message.role === "tool" &&
+          message.tool_call_id === "python-call",
+      );
+      assert.equal(result?.content, "stdout:\n42\n");
+      yield* textEvents("Python returned 42.");
+      yield { type: "done", stop_reason: "stop" };
+      return;
+    }
+    throw new Error(`Unexpected native-Python request ${requestIndex}.`);
+  }
+}
+
 class FailingDeleteSessionBackend extends MemoryDshrboxSessionBackend {
   async deleteStored() {
     throw new Error("Test DSH session deletion failed.");
@@ -248,6 +280,53 @@ test("runs and restores a DSH session behind the existing rrbox core", async () 
     "The restored DSH session continued.",
   );
   await second.dispose();
+});
+
+test("composes native DSH plugins and projects their result metadata", async () => {
+  const calls = [];
+  const events = [];
+  const executor = {
+    async execute(code, signal) {
+      calls.push({ code, signal });
+      return {
+        stdout: "42\n",
+        stderr: "",
+        error: null,
+        output_truncated: false,
+      };
+    },
+    close() {},
+  };
+  const core = createCore(
+    new MemoryProjectStore(),
+    createWorkspaceBackend(),
+    new NativePythonTransport(),
+    events,
+    true,
+    new MemoryDshrboxSessionBackend(),
+    [{ plugin: DshrboxPython, config: { executor } }],
+  );
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await core.handle(createCommand("prompt", {
+    project_id: initial.active_project_id,
+    session_id: null,
+    text: "Calculate with Python.",
+  }));
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].code, "print(6 * 7)");
+  assert.ok(calls[0].signal instanceof AbortSignal);
+  const state = latestState(events);
+  const result = state.timeline.find(
+    (entry) =>
+      entry.type === "tool_result" &&
+      entry.tool_name === "run_python",
+  );
+  assert.equal(result?.content, "stdout:\n42\n");
+  assert.equal(result?.summary, "Python completed");
+  assert.equal(state.timeline.at(-1).blocks[0].text, "Python returned 42.");
+  await core.dispose();
 });
 
 test("routes the existing abort command into DSH and checkpoints partial output", async () => {
@@ -543,6 +622,7 @@ function createCore(
   events,
   useDsh = true,
   sessionBackend = new MemoryDshrboxSessionBackend(),
+  dshPlugins = [],
 ) {
   return new ResearchBoxCore({
     projectStore: store,
@@ -555,6 +635,7 @@ function createCore(
       ? {
           sessionRuntimeProvider: new DshrboxSessionRuntimeProvider({
             session_backend: sessionBackend,
+            plugins: dshPlugins,
             // Force the terminal batch through executeRun's explicit flush so
             // the final checkpoint overlaps a ProjectStore refresh.
             write_batch_max_delay_ms: 10_000,

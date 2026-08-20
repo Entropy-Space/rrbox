@@ -23,6 +23,7 @@
     "@researchbox/protocol": "workspace:*"
   },
   "devDependencies": {
+    "@researchbox/python-plugin": "workspace:*",
     "@researchbox/vfs": "workspace:*"
   }
 }

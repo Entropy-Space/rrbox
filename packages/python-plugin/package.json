@@ -6,14 +6,22 @@
   "exports": {
     ".": "./src/index.ts",
     "./browser": "./src/browser-python-executor.ts",
+    "./dsh": "./src/dsh-python-plugin.ts",
+    "./executor": "./src/python-executor.ts",
     "./native": "./src/native-python-rpc-client.ts",
     "./protocol": "./src/protocol.ts",
     "./settings": "./src/plugin-settings.ts",
     "./worker": "./src/python.worker.ts"
   },
   "dependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.7",
     "@earendil-works/pi-agent-core": "0.79.0",
     "@earendil-works/pi-ai": "0.79.0",
     "@researchbox/agent-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-system-prompt": "0.1.0-rc.7"
   }
 }

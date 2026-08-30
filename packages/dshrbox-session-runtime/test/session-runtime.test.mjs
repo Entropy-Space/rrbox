@@ -415,7 +415,6 @@ test("composes native DSH plugins and projects their result metadata", async () 
   assert.equal(calls[0].code, "print(6 * 7)");
   assert.ok(calls[0].signal instanceof AbortSignal);
   const state = latestState(events);
-  assert.equal(state.workspace_revision, 3);
   const result = state.timeline.find(
     (entry) =>
       entry.type === "tool_result" &&
@@ -448,6 +447,7 @@ test("journals native DSH workspace mutations for the existing viewer", async ()
   }));
 
   const state = latestState(events);
+  assert.equal(state.workspace_revision, 3);
   const workspace = await workspaceBackend.open(initial.active_project_id);
   await assert.rejects(
     workspace.read("/notes/agent-note.md"),

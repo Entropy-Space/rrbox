@@ -1,6 +1,6 @@
 # @dshrbox/workspace
 
-`@dshrbox/workspace` is the native DSH plugin for an existing ResearchBox
+`@dshrbox/workspace` is the native DSH plugin for an existing rrbox
 workspace. It registers `list_files`, `search_files`, `read_file`,
 `write_file`, `replace_text`, and `remove_file` with the DSH tool runtime while
 preserving `@researchbox/vfs` as the owner of filesystem semantics.

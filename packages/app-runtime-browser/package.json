@@ -21,5 +21,9 @@
     "@researchbox/storage-browser": "workspace:*",
     "@researchbox/vfs": "workspace:*",
     "@researchbox/workspace-archive": "workspace:*"
+  },
+  "devDependencies": {
+    "@dshrbox/session-persistence": "workspace:*",
+    "@dshrbox/session-runtime": "workspace:*"
   }
 }

@@ -13,11 +13,17 @@ import {
 } from "@researchbox/app-runtime-browser/core-worker";
 import { InMemoryCommandLockManager } from "@researchbox/app-runtime-browser/command-coordinator";
 import {
+  MemoryDshrboxSessionBackend,
+} from "@dshrbox/session-persistence";
+import {
+  DshrboxSessionRuntimeProvider,
+} from "@dshrbox/session-runtime";
+import {
   MemoryFileSystem,
   MemoryWorkspaceBackend,
 } from "@researchbox/vfs";
 
-test("sends selected reasoning effort through discovered browser models", async () => {
+test("runs new browser sessions through DSH with selected reasoning effort", async () => {
   const chatRequests = [];
   const chatHeaders = [];
   const modelTransport = new OpenAiCompatibleModelTransport({
@@ -70,15 +76,21 @@ test("sends selected reasoning effort through discovered browser models", async 
     },
   );
   const coreWorkerPair = createWorkerPair();
+  const projectStore = new MemoryProjectStore();
+  const sessionBackend = new MemoryDshrboxSessionBackend();
   const runtime = startResearchBoxCoreWorker({
     host: coreWorkerPair.host,
     lock_manager: new InMemoryCommandLockManager(),
     create_model_worker: () => llmWorkerPair.worker,
     create_storage_services: () => ({
-      projectStore: new MemoryProjectStore(),
+      projectStore,
       workspaceBackend: new MemoryWorkspaceBackend(
         () => new MemoryFileSystem({ "/README.md": "# Test" }),
       ),
+      sessionRuntimeProvider: new DshrboxSessionRuntimeProvider({
+        session_backend: sessionBackend,
+        max_parallel_tool_calls: 1,
+      }),
       close() {},
     }),
     providers: createResearchBoxProviderDefinitions({
@@ -144,6 +156,12 @@ test("sends selected reasoning effort through discovered browser models", async 
 
     const activeSessionId = promptedState.active_session_id;
     assert.ok(activeSessionId);
+    const persisted = await projectStore.load();
+    assert.equal(persisted.documents[0].runtime_id, "dsh");
+    assert.deepEqual(
+      (await sessionBackend.list()).map((header) => String(header.id)),
+      [activeSessionId],
+    );
     assert.equal(chatHeaders[0].get("session_id"), activeSessionId);
     assert.equal(chatHeaders[0].get("x-client-request-id"), activeSessionId);
     assert.equal(chatHeaders[0].get("x-session-affinity"), activeSessionId);

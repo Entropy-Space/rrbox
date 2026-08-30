@@ -3,6 +3,7 @@ import {
   ResearchBoxCore,
   type AgentPlugin,
   type ModelProviderDefinition,
+  type SessionRuntimeProvider,
 } from "@researchbox/agent-core";
 import {
   attachCoreWorkerLifecycle,
@@ -34,7 +35,7 @@ export type ResearchBoxCoreWorkerOptions = {
   lock_manager: CommandLockManager;
   create_model_worker(): Worker;
   create_storage_services?(): ResearchBoxStorageServices;
-  plugins?: readonly AgentPlugin[];
+  legacy_plugins?: readonly AgentPlugin[];
   close_plugins?(): void | Promise<void>;
   providers: ModelProviderDefinition[];
 };
@@ -42,6 +43,8 @@ export type ResearchBoxCoreWorkerOptions = {
 export type ResearchBoxStorageServices = {
   projectStore: ProjectStore;
   workspaceBackend: WorkspaceBackend;
+  /** Selects the runtime for new sessions; omission keeps them legacy. */
+  sessionRuntimeProvider?: SessionRuntimeProvider;
   close(): void | Promise<void>;
 };
 
@@ -76,6 +79,7 @@ export function startResearchBoxCoreWorker(
         modelTransport: modelGateway,
         projectStore: storageServices.projectStore,
         workspaceBackend: storageServices.workspaceBackend,
+        sessionRuntimeProvider: storageServices.sessionRuntimeProvider,
         async close() {
           try {
             await options.close_plugins?.();
@@ -99,7 +103,10 @@ export function startResearchBoxCoreWorker(
         providerCatalog: services.providerCatalog,
         model: researchBoxMockModel,
         systemPrompt: researchBoxSystemPrompt,
-        plugins: options.plugins,
+        plugins: options.legacy_plugins,
+        ...(services.sessionRuntimeProvider === undefined
+          ? {}
+          : { sessionRuntimeProvider: services.sessionRuntimeProvider }),
         eventSink,
         workspaceTransferOptions: BROWSER_WORKSPACE_ARCHIVE_OPTIONS,
       });

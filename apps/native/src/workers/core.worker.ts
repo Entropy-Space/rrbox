@@ -100,7 +100,7 @@ host.onmessage = (event) => {
         timeout_ms: initialization.web_search_plugin.timeout_ms,
       })
     : null;
-  const plugins = [
+  const legacyPlugins = [
     ...(pythonClient
       ? [createPythonAgentPlugin(pythonClient)]
       : []),
@@ -133,7 +133,7 @@ host.onmessage = (event) => {
     providers: createResearchBoxProviderDefinitions({
       providers: initialization.providers,
     }),
-    plugins,
+    legacy_plugins: legacyPlugins,
     close_plugins:
       pythonClient || webSearchExecutor || urlReader
         ? async () => {

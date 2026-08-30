@@ -25,5 +25,6 @@ DSH-native designs land. Summary review is available to native plugins as a
 live service; its transient viewer events are not appended to the canonical
 DSH session.
 
-This package does not activate DSH in the web or native workers. Production
-cutover remains an explicit app-runtime change.
+The web worker activates this runtime for new sessions with durable IndexedDB
+events. Existing unmarked sessions remain on the legacy runtime. The native
+worker remains legacy-only until a native DSH persistence backend lands.

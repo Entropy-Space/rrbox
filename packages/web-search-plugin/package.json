@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./dsh": "./src/dsh-web-research-plugin.ts",
     "./executor": "./src/routing-executor.ts",
     "./native": "./src/native-anysearch-provider.ts",
     "./native-protocol": "./src/native-protocol.ts",
@@ -14,8 +15,16 @@
     "./settings": "./src/plugin-settings.ts"
   },
   "dependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.7",
+    "@dshrbox/summary-review": "workspace:*",
     "@earendil-works/pi-agent-core": "0.79.0",
     "@earendil-works/pi-ai": "0.79.0",
-    "@researchbox/agent-core": "workspace:*"
+    "@researchbox/agent-core": "workspace:*",
+    "@researchbox/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-system-prompt": "0.1.0-rc.7"
   }
 }

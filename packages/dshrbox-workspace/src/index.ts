@@ -21,7 +21,7 @@ export type DshrboxWorkspaceConfig = {
 
 type MutationToolName = WorkspaceChangeMetadata["tool_name"];
 
-type WorkspaceMutationOutput = {
+export type DshrboxWorkspaceMutationOutput = {
   workspace_revision: number;
   path: string;
   change_kind: WorkspaceChangeSummary["change_kind"] | "unchanged";
@@ -97,22 +97,8 @@ const mutationOutputSchema = {
 
 const mutationOutput = {
   schema: mutationOutputSchema,
-  render: (_args: unknown, value: WorkspaceMutationOutput) => [{
-    type: "text" as const,
-    text: JSON.stringify(value.change ?? {
-      path: value.path,
-      change_kind: "unchanged",
-    }),
-  }],
-  presentationMeta: (_args: unknown, value: WorkspaceMutationOutput) => ({
-    summary: mutationSummary(value),
-    ...(value.change === null
-      ? {}
-      : {
-          file_change: value.change,
-          workspace_revision: value.workspace_revision,
-        }),
-  }),
+  render: renderDshrboxWorkspaceMutationOutput,
+  presentationMeta: dshrboxWorkspaceMutationPresentationMeta,
 };
 
 /**
@@ -254,7 +240,7 @@ export function createDshrboxWorkspaceTools(
       },
     },
     output: mutationOutput,
-    async execute(args, exec): Promise<WorkspaceMutationOutput> {
+    async execute(args, exec): Promise<DshrboxWorkspaceMutationOutput> {
       throwIfAborted(exec.signal);
       const result = await workspace.write(args.path, args.content, {
         change: createChangeMetadata(exec, "write_file"),
@@ -285,7 +271,7 @@ export function createDshrboxWorkspaceTools(
       },
     },
     output: mutationOutput,
-    async execute(args, exec): Promise<WorkspaceMutationOutput> {
+    async execute(args, exec): Promise<DshrboxWorkspaceMutationOutput> {
       if (args.old_text.length === 0) {
         throw new Error("old_text must not be empty.");
       }
@@ -329,7 +315,7 @@ export function createDshrboxWorkspaceTools(
       },
     },
     output: mutationOutput,
-    async execute(args, exec): Promise<WorkspaceMutationOutput> {
+    async execute(args, exec): Promise<DshrboxWorkspaceMutationOutput> {
       throwIfAborted(exec.signal);
       const { content } = await workspace.read(args.path);
       throwIfAborted(exec.signal);
@@ -422,7 +408,7 @@ function createChangeMetadata(
 
 function mutationResult(
   mutation: WorkspaceWriteResult | WorkspaceRemoveResult,
-): WorkspaceMutationOutput {
+): DshrboxWorkspaceMutationOutput {
   const result = mutation.result;
   if (result === undefined) {
     throw new Error(
@@ -440,30 +426,81 @@ function mutationResult(
   if (result.change === null) {
     throw new Error("The workspace mutation did not produce a change record.");
   }
-  return {
-    workspace_revision: mutation.workspace_revision,
-    path: result.path,
-    change_kind: result.change_kind,
-    change: workspaceChangeSummary(result.change),
-  };
+  const output = dshrboxWorkspaceChangeOutput(result.change);
+  if (output.workspace_revision !== mutation.workspace_revision) {
+    throw new Error(
+      "The workspace mutation receipt has a different applied revision.",
+    );
+  }
+  return output;
 }
 
-function workspaceChangeSummary(
+/** Reconstruct the canonical native DSH output for a committed VFS change. */
+export function dshrboxWorkspaceChangeOutput(
   record: WorkspaceChangeRecord,
-): WorkspaceChangeSummary {
+): DshrboxWorkspaceMutationOutput {
+  const workspaceRevision = record.applied_workspace_revision;
+  if (
+    workspaceRevision === null ||
+    !Number.isSafeInteger(workspaceRevision) ||
+    workspaceRevision < 1
+  ) {
+    throw new Error(
+      "A native DSH workspace receipt requires an applied revision.",
+    );
+  }
   return {
-    change_id: record.change_id,
-    tool_call_id: record.tool_call_id,
-    tool_name: record.tool_name,
+    workspace_revision: workspaceRevision,
     path: record.path,
     change_kind: record.change_kind,
-    additions: record.additions,
-    deletions: record.deletions,
-    byte_size: record.byte_size,
+    change: {
+      change_id: record.change_id,
+      tool_call_id: record.tool_call_id,
+      tool_name: record.tool_name,
+      path: record.path,
+      change_kind: record.change_kind,
+      additions: record.additions,
+      deletions: record.deletions,
+      byte_size: record.byte_size,
+    },
   };
 }
 
-function mutationSummary(value: WorkspaceMutationOutput): string {
+/** Render the same model-facing content for live and crash-recovered changes. */
+export function renderDshrboxWorkspaceMutationOutput(
+  _args: unknown,
+  value: DshrboxWorkspaceMutationOutput,
+): Array<{ type: "text"; text: string }> {
+  return [{
+    type: "text",
+    text: JSON.stringify(value.change ?? {
+      path: value.path,
+      change_kind: "unchanged",
+    }),
+  }];
+}
+
+/** Project the same viewer metadata for live and crash-recovered changes. */
+export function dshrboxWorkspaceMutationPresentationMeta(
+  _args: unknown,
+  value: DshrboxWorkspaceMutationOutput,
+): {
+  summary: string;
+  file_change?: WorkspaceChangeSummary;
+  workspace_revision?: number;
+} {
+  return {
+    summary: mutationSummary(value),
+    ...(value.change === null
+      ? {}
+      : {
+          file_change: value.change,
+          workspace_revision: value.workspace_revision,
+        }),
+  };
+}
+
+function mutationSummary(value: DshrboxWorkspaceMutationOutput): string {
   const change = value.change;
   if (change === null) return "No changes needed";
   const verb = change.change_kind === "created"

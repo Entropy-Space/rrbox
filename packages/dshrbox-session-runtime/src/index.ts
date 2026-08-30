@@ -21,6 +21,7 @@ import {
   DshrboxSessionPersistence,
   type DshrboxSessionBackend,
 } from "@dshrbox/session-persistence";
+import { DshrboxSummaryReview } from "@dshrbox/summary-review";
 import { DshrboxWorkspace } from "@dshrbox/workspace";
 import type {
   SessionRuntimeOptions,
@@ -173,6 +174,14 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
           plugin: DshrboxWorkspace,
           config: { workspace: options.workspace },
         },
+        {
+          plugin: DshrboxSummaryReview,
+          config: {
+            project_id: options.project_id,
+            session_id: options.session_id,
+            event_sink: options.event_sink,
+          },
+        },
         ...(config.plugins ?? []),
         {
           plugin: DshrboxEventProjection,
@@ -236,7 +245,11 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
   }
 
   abort(): void {
-    this.core.runtime.cancel();
+    try {
+      this.core.context.dshrboxSummaryReview.cancel();
+    } finally {
+      this.core.runtime.cancel();
+    }
   }
 
   async stopAndWait(): Promise<void> {
@@ -259,23 +272,24 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
     interactionId: string,
     resolution: SummaryReviewResolution,
   ): void {
-    void interactionId;
-    void resolution;
-    throw new Error("DSH summary-review plugins are not installed.");
+    this.core.context.dshrboxSummaryReview.resolve(
+      interactionId,
+      resolution,
+    );
   }
 
   touchSummaryReview(interactionId: string): boolean {
-    void interactionId;
-    return false;
+    return this.core.context.dshrboxSummaryReview.touch(interactionId);
   }
 
   setSummaryReviewVisibility(
     interactionId: string,
     isVisible: boolean,
   ): boolean {
-    void interactionId;
-    void isVisible;
-    return false;
+    return this.core.context.dshrboxSummaryReview.setVisibility(
+      interactionId,
+      isVisible,
+    );
   }
 
   private startRun(
@@ -286,10 +300,20 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
       return Promise.reject(new Error("The DSH session already has an active run."));
     }
     this.activeRequestId = requestId;
+    try {
+      this.core.context.dshrboxSummaryReview.beginRequest(requestId);
+    } catch (error) {
+      this.activeRequestId = null;
+      return Promise.reject(error);
+    }
     this.projectedView.input_draft = "";
     const run = this.executeRun(text).finally(() => {
-      if (this.activeRun === run) this.activeRun = null;
-      this.activeRequestId = null;
+      try {
+        this.core.context.dshrboxSummaryReview.endRequest();
+      } finally {
+        if (this.activeRun === run) this.activeRun = null;
+        this.activeRequestId = null;
+      }
     });
     this.activeRun = run;
     return run;

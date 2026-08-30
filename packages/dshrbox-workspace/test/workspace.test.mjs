@@ -27,13 +27,24 @@ async function executeTool(context, name, argumentsValue) {
   });
 }
 
-test("registers read-only workspace tools with canonical values", async () => {
+test("registers native workspace tools with canonical read values", async () => {
   const workspace = new MemoryWorkspace({
     "/notes/one.md": "First needle",
     "/notes/two.md": "Second needle",
   });
   const context = await createToolContext(workspace);
   try {
+    assert.deepEqual(
+      context.tools.schemas().map((schema) => schema.name).sort(),
+      [
+        "list_files",
+        "read_file",
+        "remove_file",
+        "replace_text",
+        "search_files",
+        "write_file",
+      ],
+    );
     const list = await executeTool(context, "list_files", {
       path: "/notes",
     });
@@ -104,6 +115,28 @@ test("registers read-only workspace tools with canonical values", async () => {
       type: "text",
       text: JSON.stringify(search.value),
     }]);
+  } finally {
+    await context.fiber.dispose();
+  }
+});
+
+test("refuses workspace mutations outside an active DSH agent", async () => {
+  const workspace = new MemoryWorkspace({
+    "/note.txt": "Original content.",
+  });
+  const context = await createToolContext(workspace);
+  try {
+    const result = await executeTool(context, "write_file", {
+      path: "/note.txt",
+      content: "Unjournaled content.",
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.error.message, /active DSH agent/u);
+    assert.equal(
+      (await workspace.read("/note.txt")).content,
+      "Original content.",
+    );
+    assert.deepEqual((await workspace.listChanges()).changes, []);
   } finally {
     await context.fiber.dispose();
   }

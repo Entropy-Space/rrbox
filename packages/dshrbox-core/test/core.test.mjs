@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { LlmAdapter } from "@deepseek-ai/dsh-llm";
-import { createDshrboxCore } from "../src/index.ts";
+import {
+  createDshrboxCore,
+  dshrboxToolCallBlockId,
+} from "../src/index.ts";
 
 class ScriptedAdapter extends LlmAdapter {
   constructor(script) {
@@ -93,4 +96,19 @@ test("refuses an overlapping run without a platform-specific policy", async () =
   } finally {
     await core.dispose();
   }
+});
+
+test("builds stable encoded identities for native DSH tool calls", () => {
+  assert.equal(
+    dshrboxToolCallBlockId("session/one", 2, 3, "call:one"),
+    "dshrbox:session%2Fone:turn:2:step:3:assistant:tool-call:call%3Aone",
+  );
+  assert.throws(
+    () => dshrboxToolCallBlockId("", 0, 0, "call"),
+    /session_id/u,
+  );
+  assert.throws(
+    () => dshrboxToolCallBlockId("session", -1, 0, "call"),
+    /turn/u,
+  );
 });

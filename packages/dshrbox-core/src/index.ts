@@ -16,6 +16,8 @@ import SessionStore, {
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime from "@deepseek-ai/dsh-tools";
 
+export { dshrboxToolCallBlockId } from "./identity.ts";
+
 export type { SessionEvent } from "@deepseek-ai/dsh-session";
 
 export type DshrboxRuntimeConfig = {

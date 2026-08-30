@@ -10,10 +10,10 @@
     "@deepseek-ai/cordis": "4.0.1",
     "@deepseek-ai/dsh-llm": "0.1.0-rc.7",
     "@deepseek-ai/dsh-session": "0.1.0-rc.7",
+    "@dshrbox/core": "workspace:*",
     "@researchbox/protocol": "workspace:*"
   },
   "devDependencies": {
-    "@dshrbox/core": "workspace:*",
     "@dshrbox/model-adapter": "workspace:*",
     "@dshrbox/workspace": "workspace:*",
     "@researchbox/model-transport": "workspace:*",

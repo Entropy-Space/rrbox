@@ -430,6 +430,9 @@ importers:
       '@dshrbox/session-persistence':
         specifier: workspace:*
         version: link:../dshrbox-session-persistence
+      '@dshrbox/summary-review':
+        specifier: workspace:*
+        version: link:../dshrbox-summary-review
       '@dshrbox/workspace':
         specifier: workspace:*
         version: link:../dshrbox-workspace
@@ -452,6 +455,15 @@ importers:
       '@researchbox/vfs':
         specifier: workspace:*
         version: link:../vfs
+
+  packages/dshrbox-summary-review:
+    dependencies:
+      '@deepseek-ai/cordis':
+        specifier: 4.0.1
+        version: 4.0.1
+      '@researchbox/protocol':
+        specifier: workspace:*
+        version: link:../protocol
 
   packages/dshrbox-workspace:
     dependencies:

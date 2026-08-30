@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { SessionId } from "@deepseek-ai/dsh-session";
+import { defineTool } from "@deepseek-ai/dsh-tools";
 import { MemoryDshrboxSessionBackend } from "@dshrbox/session-persistence";
 import { DshrboxSessionRuntimeProvider } from "@dshrbox/session-runtime";
 import { DshrboxPython } from "@researchbox/python-plugin/dsh";
@@ -175,6 +176,40 @@ class NativePythonTransport {
   }
 }
 
+class SummaryReviewTransport {
+  requestCount = 0;
+  observedDecision = null;
+
+  async *stream(request) {
+    const requestIndex = this.requestCount;
+    this.requestCount += 1;
+    if (requestIndex === 0) {
+      assert.ok(
+        request.tools.some((tool) => tool.name === "request_summary_review"),
+      );
+      yield* toolCallEvents({
+        tool_call_id: "summary-review-call",
+        tool_name: "request_summary_review",
+        arguments: {},
+      });
+      yield { type: "done", stop_reason: "tool_use" };
+      return;
+    }
+    if (requestIndex === 1) {
+      const result = request.messages.find(
+        (message) =>
+          message.role === "tool" &&
+          message.tool_call_id === "summary-review-call",
+      );
+      this.observedDecision = result?.content ?? null;
+      yield* textEvents("The reviewed evidence was accepted.");
+      yield { type: "done", stop_reason: "stop" };
+      return;
+    }
+    throw new Error(`Unexpected summary-review request ${requestIndex}.`);
+  }
+}
+
 class FailingDeleteSessionBackend extends MemoryDshrboxSessionBackend {
   async deleteStored() {
     throw new Error("Test DSH session deletion failed.");
@@ -326,6 +361,72 @@ test("composes native DSH plugins and projects their result metadata", async () 
   assert.equal(result?.content, "stdout:\n42\n");
   assert.equal(result?.summary, "Python completed");
   assert.equal(state.timeline.at(-1).blocks[0].text, "Python returned 42.");
+  await core.dispose();
+});
+
+test("routes summary-review commands into a native DSH interaction", async () => {
+  const events = [];
+  const transport = new SummaryReviewTransport();
+  const core = createCore(
+    new MemoryProjectStore(),
+    createWorkspaceBackend(),
+    transport,
+    events,
+    true,
+    new MemoryDshrboxSessionBackend(),
+    [{ plugin: SummaryReviewTestPlugin }],
+  );
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  const prompting = core.handle(createCommand("prompt", {
+    project_id: initial.active_project_id,
+    session_id: null,
+    text: "Ask me to review the evidence.",
+  }));
+  const requested = await waitForEvent(
+    events,
+    (event) => event.type === "summary_review_requested",
+  );
+  assert.deepEqual(parseCoreEvent(requested), requested);
+
+  await core.handle(createCommand("summary_review_visibility", {
+    project_id: requested.payload.project_id,
+    session_id: requested.payload.session_id,
+    interaction_id: requested.payload.interaction_id,
+    is_visible: false,
+  }));
+  await core.handle(createCommand("summary_review_touch", {
+    project_id: requested.payload.project_id,
+    session_id: requested.payload.session_id,
+    interaction_id: requested.payload.interaction_id,
+  }));
+  await core.handle(createCommand("summary_review_resolve", {
+    project_id: requested.payload.project_id,
+    session_id: requested.payload.session_id,
+    interaction_id: requested.payload.interaction_id,
+    resolution: {
+      decision: "summarize",
+      approved_text: "",
+      selected_section_ids: ["result-1"],
+      feedback_text: "",
+      summary_model: null,
+      search_provider: "exa",
+      query_text: "",
+    },
+  }));
+  await prompting;
+
+  assert.equal(transport.observedDecision, "summary-review:summarize");
+  const resolved = events.findLast(
+    (event) => event.type === "summary_review_resolved",
+  );
+  assert.equal(resolved.payload.interaction_id, requested.payload.interaction_id);
+  assert.equal(resolved.payload.decision, "summarize");
+  assert.deepEqual(parseCoreEvent(resolved), resolved);
+  assert.equal(
+    latestState(events).timeline.at(-1).blocks[0].text,
+    "The reviewed evidence was accepted.",
+  );
   await core.dispose();
 });
 
@@ -690,4 +791,65 @@ function* toolCallEvents(toolCall, contentIndex = 0) {
     content_index: contentIndex,
     tool_call: structuredClone(toolCall),
   };
+}
+
+function SummaryReviewTestPlugin(context) {
+  context.tools.register(defineTool({
+    name: "request_summary_review",
+    description: "Request a summary review for a test.",
+    parameters: {},
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          decision: { type: "string", required: true },
+        },
+      },
+      render: (_args, value) => [{
+        type: "text",
+        text: `summary-review:${value.decision}`,
+      }],
+    },
+    async execute(_args, execution) {
+      const interaction = context.dshrboxSummaryReview.open({
+        stage: "select-evidence",
+        is_loading: false,
+        loading_phase: null,
+        auto_submit_at: null,
+        title: "Review evidence",
+        draft_text: "",
+        summary_model: null,
+        draft_metadata: null,
+        query_draft: "",
+        query_notice: null,
+        search_providers: [{
+          provider_id: "exa",
+          display_name: "Exa",
+        }],
+        search_provider: "exa",
+        sections: [{
+          section_id: "result-1",
+          title: "Result one",
+          body: "Evidence",
+          is_selectable: true,
+          sources: [{ title: "Source", url: "https://example.com" }],
+        }],
+        selected_section_ids: ["result-1"],
+      }, execution.signal);
+      const resolution = await interaction.resolution;
+      return { decision: resolution.decision };
+    },
+  }));
+}
+
+SummaryReviewTestPlugin.inject = ["dshrboxSummaryReview", "tools"];
+
+async function waitForEvent(events, predicate) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const event = events.find(predicate);
+    if (event !== undefined) return event;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw new Error("Timed out waiting for a CoreEvent.");
 }

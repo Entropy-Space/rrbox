@@ -17,6 +17,7 @@
     "@dshrbox/event-projector": "workspace:*",
     "@dshrbox/model-adapter": "workspace:*",
     "@dshrbox/session-persistence": "workspace:*",
+    "@dshrbox/summary-review": "workspace:*",
     "@dshrbox/workspace": "workspace:*",
     "@researchbox/agent-core": "workspace:*",
     "@researchbox/project-store": "workspace:*",

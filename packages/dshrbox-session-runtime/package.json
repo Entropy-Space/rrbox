@@ -11,6 +11,7 @@
     "@deepseek-ai/dsh-agent": "0.1.0-rc.7",
     "@deepseek-ai/dsh-llm": "0.1.0-rc.7",
     "@deepseek-ai/dsh-session": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-session-persistence": "0.1.0-rc.7",
     "@deepseek-ai/dsh-tools": "0.1.0-rc.7",
     "@earendil-works/pi-ai": "0.79.0",
     "@dshrbox/core": "workspace:*",
@@ -21,10 +22,10 @@
     "@dshrbox/workspace": "workspace:*",
     "@researchbox/agent-core": "workspace:*",
     "@researchbox/project-store": "workspace:*",
-    "@researchbox/protocol": "workspace:*"
+    "@researchbox/protocol": "workspace:*",
+    "@researchbox/vfs": "workspace:*"
   },
   "devDependencies": {
-    "@researchbox/python-plugin": "workspace:*",
-    "@researchbox/vfs": "workspace:*"
+    "@researchbox/python-plugin": "workspace:*"
   }
 }

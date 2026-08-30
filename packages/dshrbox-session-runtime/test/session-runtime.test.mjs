@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { SessionId } from "@deepseek-ai/dsh-session";
+import {
+  SessionId,
+  TOOL_OUTCOME_UNKNOWN,
+} from "@deepseek-ai/dsh-session";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { MemoryDshrboxSessionBackend } from "@dshrbox/session-persistence";
 import { DshrboxSessionRuntimeProvider } from "@dshrbox/session-runtime";
@@ -235,6 +238,42 @@ class NativeWorkspaceMutationTransport {
       return;
     }
     throw new Error(`Unexpected workspace-mutation request ${requestIndex}.`);
+  }
+}
+
+class RecoverableWorkspaceMutationTransport {
+  requestCount = 0;
+  observedRecoveredResult = false;
+
+  async *stream(request) {
+    const requestIndex = this.requestCount;
+    this.requestCount += 1;
+    if (requestIndex === 0) {
+      yield* toolCallEvents({
+        tool_call_id: "recover-write",
+        tool_name: "write_file",
+        arguments: {
+          path: "/notes/recovered.md",
+          content: "# Recovered\n\nDurable workspace content.\n",
+        },
+      });
+      yield { type: "done", stop_reason: "tool_use" };
+      return;
+    }
+    if (requestIndex === 1) {
+      assertMutationResult(request, "recover-write", "created");
+      yield* textEvents("The workspace write completed.");
+      yield { type: "done", stop_reason: "stop" };
+      return;
+    }
+    if (requestIndex === 2) {
+      assertMutationResult(request, "recover-write", "created");
+      this.observedRecoveredResult = true;
+      yield* textEvents("The recovered DSH session continued.");
+      yield { type: "done", stop_reason: "stop" };
+      return;
+    }
+    throw new Error(`Unexpected recoverable-mutation request ${requestIndex}.`);
   }
 }
 
@@ -602,6 +641,181 @@ test("journals native DSH workspace mutations for the existing viewer", async ()
     "# Agent note\n\nready to review\n",
   );
   await core.dispose();
+});
+
+test("recovers a committed workspace mutation after a DSH result crash", async () => {
+  const store = new MemoryProjectStore();
+  const workspaceBackend = createWorkspaceBackend();
+  const transport = new RecoverableWorkspaceMutationTransport();
+  const completeBackend = new MemoryDshrboxSessionBackend();
+  const firstEvents = [];
+  const first = createCore(
+    store,
+    workspaceBackend,
+    transport,
+    firstEvents,
+    true,
+    completeBackend,
+  );
+  await first.handle(createCommand("bootstrap", {}));
+  const initial = latestState(firstEvents);
+  await first.handle(createCommand("prompt", {
+    project_id: initial.active_project_id,
+    session_id: null,
+    text: "Write a file whose result can be recovered.",
+  }));
+  const completed = latestState(firstEvents);
+  const sessionId = SessionId(completed.active_session_id);
+  await first.dispose();
+
+  const completeStored = await completeBackend.loadStored(sessionId);
+  assert.ok(completeStored);
+  const callIndex = completeStored.events.findIndex(
+    (event) =>
+      event.type === "tool/call" &&
+      String(event.data.callId) === "recover-write",
+  );
+  assert.notEqual(callIndex, -1);
+  const crashPrefix = completeStored.events.slice(0, callIndex + 1);
+
+  const unprovenBackend = new MemoryDshrboxSessionBackend();
+  await unprovenBackend.appendBatch(
+    completeStored.meta,
+    crashPrefix,
+    false,
+  );
+  const unprovenWorkspaceBackend = createWorkspaceBackend();
+  await unprovenWorkspaceBackend.create(completed.active_project_id);
+  const unprovenEvents = [];
+  const unproven = createCore(
+    store,
+    unprovenWorkspaceBackend,
+    transport,
+    unprovenEvents,
+    true,
+    unprovenBackend,
+  );
+  await unproven.handle(createCommand("bootstrap", {
+    active_project_id: completed.active_project_id,
+    active_session_id: completed.active_session_id,
+  }));
+  const unknownResult = latestState(unprovenEvents).timeline.find(
+    (entry) =>
+      entry.type === "tool_result" &&
+      entry.tool_call_id === "recover-write",
+  );
+  assert.ok(unknownResult);
+  assert.equal(unknownResult.is_error, true);
+  assert.equal(unknownResult.file_change, undefined);
+  const unprovenStored = await unprovenBackend.loadStored(sessionId);
+  assert.equal(
+    unprovenStored.events.find(
+      (event) =>
+        event.type === "tool/result" &&
+        String(event.data.message.source.callId) === "recover-write",
+    )?.data.error?.code,
+    TOOL_OUTCOME_UNKNOWN,
+  );
+  await unproven.dispose();
+
+  const crashedBackend = new MemoryDshrboxSessionBackend();
+  await crashedBackend.appendBatch(
+    completeStored.meta,
+    crashPrefix,
+    false,
+  );
+
+  const secondEvents = [];
+  const second = createCore(
+    store,
+    workspaceBackend,
+    transport,
+    secondEvents,
+    true,
+    crashedBackend,
+  );
+  await second.handle(createCommand("bootstrap", {
+    active_project_id: completed.active_project_id,
+    active_session_id: completed.active_session_id,
+  }));
+
+  const recovered = latestState(secondEvents);
+  const result = recovered.timeline.find(
+    (entry) =>
+      entry.type === "tool_result" &&
+      entry.tool_call_id === "recover-write",
+  );
+  assert.ok(result);
+  assert.equal(result.is_error, false);
+  assert.equal(result.summary, "Created · +3 −0");
+  assert.equal(result.file_change?.path, "/notes/recovered.md");
+  assert.equal(result.file_change?.change_kind, "created");
+  assert.equal(recovered.workspace_revision, 1);
+
+  const workspace = await workspaceBackend.open(completed.active_project_id);
+  assert.equal(
+    (await workspace.read("/notes/recovered.md")).content,
+    "# Recovered\n\nDurable workspace content.\n",
+  );
+  const { changes } = await workspace.listChanges();
+  const change = changes.find(
+    (candidate) => candidate.tool_call_id === "recover-write",
+  );
+  assert.ok(change);
+  assert.equal(result.tool_call_block_id, change.tool_call_block_id);
+
+  const inspectedCommand = createCommand("workspace_change_read", {
+    project_id: completed.active_project_id,
+    change_id: change.change_id,
+  });
+  await second.handle(inspectedCommand);
+  const inspected = secondEvents.at(-1);
+  assert.equal(inspected.type, "workspace_change_snapshot");
+  assert.equal(inspected.request_id, inspectedCommand.request_id);
+  assert.equal(inspected.payload.change.revert_status, "available");
+
+  const repairedStored = await crashedBackend.loadStored(sessionId);
+  const repairedResults = repairedStored.events.filter(
+    (event) =>
+      event.type === "tool/result" &&
+      String(event.data.message.source.callId) === "recover-write",
+  );
+  assert.equal(repairedResults.length, 1);
+  assert.equal(
+    repairedResults[0].data.message.content[0].isError,
+    false,
+  );
+  assert.equal(repairedResults[0].data.error, undefined);
+  assert.equal(
+    repairedStored.events.some(
+      (event) =>
+        event.type === "tool/result" &&
+        event.data.error?.code === TOOL_OUTCOME_UNKNOWN,
+    ),
+    false,
+  );
+
+  await second.handle(createCommand("prompt", {
+    project_id: recovered.active_project_id,
+    session_id: recovered.active_session_id,
+    text: "Continue after recovering the workspace result.",
+  }));
+  assert.equal(transport.observedRecoveredResult, true);
+  assert.equal(
+    latestState(secondEvents).timeline.at(-1).blocks[0].text,
+    "The recovered DSH session continued.",
+  );
+  await second.dispose();
+
+  const persistedAfterContinuation = await crashedBackend.loadStored(sessionId);
+  assert.equal(
+    persistedAfterContinuation.events.filter(
+      (event) =>
+        event.type === "tool/result" &&
+        String(event.data.message.source.callId) === "recover-write",
+    ).length,
+    1,
+  );
 });
 
 test("routes summary-review commands into a native DSH interaction", async () => {

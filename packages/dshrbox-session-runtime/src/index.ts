@@ -40,6 +40,7 @@ import type {
   ReasoningEffort,
   SummaryReviewResolution,
 } from "@researchbox/protocol";
+import { createDshrboxWorkspaceRecoveryBackend } from "./workspace-recovery.ts";
 
 export type DshrboxSessionRuntimeProviderConfig = {
   session_backend: DshrboxSessionBackend;
@@ -127,6 +128,15 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
     const persistedRevision = await config.session_backend.readStoredRevision(
       SessionId(options.session_id),
     );
+    const sessionBackend = persistedRevision === undefined
+      ? config.session_backend
+      : createDshrboxWorkspaceRecoveryBackend(
+          config.session_backend,
+          {
+            session_id: options.session_id,
+            workspace: options.workspace,
+          },
+        );
     let runtime: DshrboxSessionRuntime | null = null;
     const checkpointPolicy = createCheckpointPolicy({
       session_id: options.session_id,
@@ -155,7 +165,7 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
         {
           plugin: DshrboxSessionPersistence,
           config: {
-            backend: config.session_backend,
+            backend: sessionBackend,
             ...(config.prepared_session_cache_size === undefined
               ? {}
               : {

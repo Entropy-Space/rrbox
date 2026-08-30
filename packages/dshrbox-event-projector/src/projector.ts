@@ -9,6 +9,7 @@ import type {
   SessionEvent,
   TurnEndReason,
 } from "@deepseek-ai/dsh-session";
+import { dshrboxToolCallBlockId } from "@dshrbox/core/identity";
 import {
   parseWorkspaceChangeSummary,
   PROTOCOL_VERSION,
@@ -569,6 +570,23 @@ export class DshrboxEventProjector {
       callId,
       call.name,
     );
+    if (
+      metadata.file_change !== undefined &&
+      metadata.workspace_revision !== undefined &&
+      resultBlock.isError !== true &&
+      event.data.error === undefined
+    ) {
+      projected.push(this.coreEvent(
+        event,
+        `tool-result-${identitySegment(callId)}-workspace-change`,
+        "workspace_changed",
+        {
+          ...this.scope(),
+          workspace_revision: metadata.workspace_revision,
+          change: structuredClone(metadata.file_change),
+        },
+      ));
+    }
     const entry: ToolResultEntry = {
       type: "tool_result",
       entry_id: this.messageEntryId(String(event.data.message.id)),
@@ -864,11 +882,12 @@ export class DshrboxEventProjector {
     step: number,
     callId: string,
   ): string {
-    return [
-      this.assistantEntryId(turn, step),
-      "tool-call",
-      identitySegment(callId),
-    ].join(":");
+    return dshrboxToolCallBlockId(
+      this.sessionId,
+      turn,
+      step,
+      callId,
+    );
   }
 }
 
@@ -1028,6 +1047,7 @@ function projectToolResultMetadata(
 ): {
   summary?: string;
   file_change?: WorkspaceChangeSummary;
+  workspace_revision?: number;
 } {
   if (!isRecord(value)) return {};
   const summary = typeof value.summary === "string"
@@ -1038,9 +1058,16 @@ function projectToolResultMetadata(
     toolCallId,
     toolName,
   );
+  const workspaceRevision = Number.isSafeInteger(value.workspace_revision) &&
+      (value.workspace_revision as number) >= 0
+    ? value.workspace_revision as number
+    : undefined;
   return {
     ...(summary === undefined ? {} : { summary }),
     ...(fileChange === undefined ? {} : { file_change: fileChange }),
+    ...(workspaceRevision === undefined
+      ? {}
+      : { workspace_revision: workspaceRevision }),
   };
 }
 

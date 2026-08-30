@@ -42,7 +42,14 @@ class ResumableWorkspaceTransport {
     if (requestIndex === 0) {
       assert.deepEqual(
         request.tools.map((tool) => tool.name).sort(),
-        ["list_files", "read_file", "search_files"],
+        [
+          "list_files",
+          "read_file",
+          "remove_file",
+          "replace_text",
+          "search_files",
+          "write_file",
+        ],
       );
       yield* toolCallEvents({
         tool_call_id: "read-note",
@@ -173,6 +180,61 @@ class NativePythonTransport {
       return;
     }
     throw new Error(`Unexpected native-Python request ${requestIndex}.`);
+  }
+}
+
+class NativeWorkspaceMutationTransport {
+  requestCount = 0;
+
+  async *stream(request) {
+    const requestIndex = this.requestCount;
+    this.requestCount += 1;
+    if (requestIndex === 0) {
+      assert.ok(request.tools.some((tool) => tool.name === "write_file"));
+      assert.ok(request.tools.some((tool) => tool.name === "replace_text"));
+      assert.ok(request.tools.some((tool) => tool.name === "remove_file"));
+      yield* toolCallEvents({
+        tool_call_id: "write-note",
+        tool_name: "write_file",
+        arguments: {
+          path: "/notes/agent-note.md",
+          content: "# Agent note\n\nfirst draft\n",
+        },
+      });
+      yield { type: "done", stop_reason: "tool_use" };
+      return;
+    }
+    if (requestIndex === 1) {
+      assertMutationResult(request, "write-note", "created");
+      yield* toolCallEvents({
+        tool_call_id: "revise-note",
+        tool_name: "replace_text",
+        arguments: {
+          path: "/notes/agent-note.md",
+          old_text: "first draft",
+          new_text: "ready to review",
+        },
+      });
+      yield { type: "done", stop_reason: "tool_use" };
+      return;
+    }
+    if (requestIndex === 2) {
+      assertMutationResult(request, "revise-note", "updated");
+      yield* toolCallEvents({
+        tool_call_id: "remove-note",
+        tool_name: "remove_file",
+        arguments: { path: "/notes/agent-note.md" },
+      });
+      yield { type: "done", stop_reason: "tool_use" };
+      return;
+    }
+    if (requestIndex === 3) {
+      assertMutationResult(request, "remove-note", "deleted");
+      yield* textEvents("The note was removed through DSH.");
+      yield { type: "done", stop_reason: "stop" };
+      return;
+    }
+    throw new Error(`Unexpected workspace-mutation request ${requestIndex}.`);
   }
 }
 
@@ -361,6 +423,184 @@ test("composes native DSH plugins and projects their result metadata", async () 
   assert.equal(result?.content, "stdout:\n42\n");
   assert.equal(result?.summary, "Python completed");
   assert.equal(state.timeline.at(-1).blocks[0].text, "Python returned 42.");
+  await core.dispose();
+});
+
+test("journals native DSH workspace mutations for the existing viewer", async () => {
+  const store = new MemoryProjectStore();
+  const workspaceBackend = createWorkspaceBackend();
+  const events = [];
+  const core = createCore(
+    store,
+    workspaceBackend,
+    new NativeWorkspaceMutationTransport(),
+    events,
+    true,
+    new MemoryDshrboxSessionBackend(),
+  );
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await core.handle(createCommand("prompt", {
+    project_id: initial.active_project_id,
+    session_id: null,
+    text: "Create, revise, and remove a note through DSH.",
+  }));
+
+  const state = latestState(events);
+  assert.equal(state.workspace_revision, 3);
+  const workspace = await workspaceBackend.open(initial.active_project_id);
+  await assert.rejects(
+    workspace.read("/notes/agent-note.md"),
+    (error) => error?.code === "not_found",
+  );
+  const { changes } = await workspace.listChanges();
+  assert.deepEqual(
+    changes.map((change) => ({
+      tool_call_id: change.tool_call_id,
+      tool_name: change.tool_name,
+      path: change.path,
+      change_kind: change.change_kind,
+      before_content: change.before_content,
+      after_content: change.after_content,
+    })),
+    [
+      {
+        tool_call_id: "write-note",
+        tool_name: "write_file",
+        path: "/notes/agent-note.md",
+        change_kind: "created",
+        before_content: null,
+        after_content: "# Agent note\n\nfirst draft\n",
+      },
+      {
+        tool_call_id: "revise-note",
+        tool_name: "replace_text",
+        path: "/notes/agent-note.md",
+        change_kind: "updated",
+        before_content: "# Agent note\n\nfirst draft\n",
+        after_content: "# Agent note\n\nready to review\n",
+      },
+      {
+        tool_call_id: "remove-note",
+        tool_name: "remove_file",
+        path: "/notes/agent-note.md",
+        change_kind: "deleted",
+        before_content: "# Agent note\n\nready to review\n",
+        after_content: null,
+      },
+    ],
+  );
+
+  const toolResults = state.timeline.filter(
+    (entry) => entry.type === "tool_result",
+  );
+  assert.deepEqual(
+    toolResults.map((entry) => ({
+      tool_call_id: entry.tool_call_id,
+      is_error: entry.is_error,
+      path: entry.file_change?.path,
+      change_kind: entry.file_change?.change_kind,
+      summary: entry.summary,
+    })),
+    [
+      {
+        tool_call_id: "write-note",
+        is_error: false,
+        path: "/notes/agent-note.md",
+        change_kind: "created",
+        summary: "Created · +3 −0",
+      },
+      {
+        tool_call_id: "revise-note",
+        is_error: false,
+        path: "/notes/agent-note.md",
+        change_kind: "updated",
+        summary: "Updated · +1 −1",
+      },
+      {
+        tool_call_id: "remove-note",
+        is_error: false,
+        path: "/notes/agent-note.md",
+        change_kind: "deleted",
+        summary: "Deleted · +0 −3",
+      },
+    ],
+  );
+  const toolCalls = state.timeline
+    .filter((entry) => entry.type === "assistant_message")
+    .flatMap((entry) => entry.blocks)
+    .filter((block) => block.type === "tool_call");
+  for (const result of toolResults) {
+    const call = toolCalls.find(
+      (block) => block.tool_call_id === result.tool_call_id,
+    );
+    const change = changes.find(
+      (candidate) => candidate.tool_call_id === result.tool_call_id,
+    );
+    assert.ok(call);
+    assert.ok(change);
+    assert.equal(result.tool_call_block_id, call.block_id);
+    assert.equal(change.tool_call_block_id, call.block_id);
+    assert.equal(change.session_id, state.active_session_id);
+    assert.ok(Number.isSafeInteger(change.assistant_message_index));
+  }
+
+  const changeEvents = events.filter(
+    (event) => event.type === "workspace_changed",
+  );
+  assert.deepEqual(
+    changeEvents.map((event) => ({
+      workspace_revision: event.payload.workspace_revision,
+      tool_call_id: event.payload.change.tool_call_id,
+      change_kind: event.payload.change.change_kind,
+    })),
+    [
+      {
+        workspace_revision: 1,
+        tool_call_id: "write-note",
+        change_kind: "created",
+      },
+      {
+        workspace_revision: 2,
+        tool_call_id: "revise-note",
+        change_kind: "updated",
+      },
+      {
+        workspace_revision: 3,
+        tool_call_id: "remove-note",
+        change_kind: "deleted",
+      },
+    ],
+  );
+  for (const event of changeEvents) {
+    assert.deepEqual(parseCoreEvent(event), event);
+  }
+
+  const deletion = changes.at(-1);
+  const read = createCommand("workspace_change_read", {
+    project_id: initial.active_project_id,
+    change_id: deletion.change_id,
+  });
+  await core.handle(read);
+  const inspected = events.at(-1);
+  assert.equal(inspected.type, "workspace_change_snapshot");
+  assert.equal(inspected.request_id, read.request_id);
+  assert.equal(inspected.payload.change.revert_status, "available");
+  assert.equal(inspected.payload.change.current_content, null);
+
+  const revert = createCommand("workspace_change_revert", {
+    project_id: initial.active_project_id,
+    change_id: deletion.change_id,
+  });
+  await core.handle(revert);
+  const reverted = events.at(-1);
+  assert.equal(reverted.type, "workspace_change_reverted");
+  assert.equal(reverted.request_id, revert.request_id);
+  assert.equal(reverted.payload.revert_outcome, "applied");
+  assert.equal(
+    (await workspace.read("/notes/agent-note.md")).content,
+    "# Agent note\n\nready to review\n",
+  );
   await core.dispose();
 });
 
@@ -791,6 +1031,17 @@ function* toolCallEvents(toolCall, contentIndex = 0) {
     content_index: contentIndex,
     tool_call: structuredClone(toolCall),
   };
+}
+
+function assertMutationResult(request, toolCallId, changeKind) {
+  const result = request.messages.findLast(
+    (message) =>
+      message.role === "tool" &&
+      message.tool_call_id === toolCallId,
+  );
+  assert.ok(result);
+  assert.equal(result.is_error, false);
+  assert.equal(JSON.parse(result.content).change_kind, changeKind);
 }
 
 function SummaryReviewTestPlugin(context) {

@@ -1008,6 +1008,7 @@ test("durably checkpoints a failed DSH turn", async () => {
 test("deletes DSH persistence after deleting its host session", async () => {
   const store = new MemoryProjectStore();
   const sessionBackend = new MemoryDshrboxSessionBackend();
+  const resolvedProjectIds = [];
   const events = [];
   const core = createCore(
     store,
@@ -1015,7 +1016,10 @@ test("deletes DSH persistence after deleting its host session", async () => {
     new ReasoningEffortTransport(),
     events,
     true,
-    sessionBackend,
+    (projectId) => {
+      resolvedProjectIds.push(projectId);
+      return sessionBackend;
+    },
   );
   await core.handle(createCommand("bootstrap", {}));
   const initial = latestState(events);
@@ -1042,6 +1046,10 @@ test("deletes DSH persistence after deleting its host session", async () => {
   assert.equal(
     await sessionBackend.loadStored(SessionId(deletedSessionId)),
     undefined,
+  );
+  assert.deepEqual(
+    new Set(resolvedProjectIds),
+    new Set([created.active_project_id]),
   );
   await core.dispose();
 });

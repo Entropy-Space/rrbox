@@ -6,7 +6,9 @@ import {
   type NativeStorageResponse,
 } from "./wire-types.ts";
 import {
+  hasOwnField,
   requireAllowedFields,
+  requireArray,
   requireBoolean,
   requireNonEmptyString,
   requireNonNegativeSafeInteger,
@@ -94,6 +96,8 @@ function validateNativeStorageResult(
       return;
     case "initialized":
     case "project_store_saved":
+    case "dsh_session_appended":
+    case "dsh_session_deleted":
     case "workspace_deleted":
     case "workspace_orphans_reconciled":
       requireAllowedFields(
@@ -110,6 +114,37 @@ function validateNativeStorageResult(
       );
       if (result.state !== null) {
         requireRecord(result.state, "result.state");
+      }
+      return;
+    case "dsh_session_loaded":
+      requireValueResultFields(result, kind);
+      if (result.value !== null) {
+        validateDshStoredSession(result.value, true);
+      }
+      return;
+    case "dsh_session_suffix_loaded":
+      requireValueResultFields(result, kind);
+      if (result.value !== null) {
+        validateDshStoredSession(result.value, false);
+      }
+      return;
+    case "dsh_session_revision":
+      requireValueResultFields(result, kind);
+      if (result.value !== null) {
+        validateDshRevision(result.value, "result.value");
+      }
+      return;
+    case "dsh_sessions_listed":
+      requireAllowedFields(
+        result,
+        ["kind", "headers"],
+        "Native DSH session-list result",
+      );
+      for (const [index, header] of requireArray(
+        result.headers,
+        "result.headers",
+      ).entries()) {
+        validateDshHeader(header, `result.headers[${index}]`);
       }
       return;
     case "project_usage":
@@ -172,6 +207,65 @@ function validateNativeStorageResult(
       );
       parseNativeStorageError(result.error);
       return;
+  }
+}
+
+function validateDshStoredSession(
+  value: unknown,
+  includeRevision: boolean,
+): void {
+  const stored = requireRecord(value, "result.value");
+  requireAllowedFields(
+    stored,
+    includeRevision
+      ? ["header", "events", "storage_id", "revision"]
+      : ["header", "events"],
+    "Native DSH stored session",
+  );
+  validateDshHeader(stored.header, "result.value.header");
+  for (const [index, event] of requireArray(
+    stored.events,
+    "result.value.events",
+  ).entries()) {
+    validateDshEvent(event, `result.value.events[${index}]`);
+  }
+  if (includeRevision) {
+    validateDshRevision(stored, "result.value");
+  }
+}
+
+function validateDshRevision(value: unknown, label: string): void {
+  const revision = requireRecord(value, label);
+  const storageId = requireNonEmptyString(
+    revision.storage_id,
+    `${label}.storage_id`,
+  );
+  if (!/^[0-9a-f]{32}$/u.test(storageId)) {
+    throw new Error(`${label}.storage_id must be a lowercase UUID hex value.`);
+  }
+  const revisionNumber = requireNonNegativeSafeInteger(
+    revision.revision,
+    `${label}.revision`,
+  );
+  if (revisionNumber === 0) {
+    throw new Error(`${label}.revision must be positive.`);
+  }
+}
+
+function validateDshHeader(value: unknown, label: string): void {
+  const header = requireRecord(value, label);
+  requireNonEmptyString(header.id, `${label}.id`);
+  requireNonNegativeSafeInteger(header.version, `${label}.version`);
+  requireNonNegativeSafeInteger(header.createdAt, `${label}.createdAt`);
+}
+
+function validateDshEvent(value: unknown, label: string): void {
+  const event = requireRecord(value, label);
+  requireNonEmptyString(event.type, `${label}.type`);
+  requireNonNegativeSafeInteger(event.seq, `${label}.seq`);
+  requireNonNegativeSafeInteger(event.time, `${label}.time`);
+  if (!hasOwnField(event, "data")) {
+    throw new Error(`${label}.data is required.`);
   }
 }
 

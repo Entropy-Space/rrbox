@@ -1593,7 +1593,10 @@ export class ResearchBoxCore {
     for (const document of documents) {
       if (document.runtime_id !== provider.runtime_id) continue;
       try {
-        await provider.deleteSession(document.session_id);
+        await provider.deleteSession(
+          document.project_id,
+          document.session_id,
+        );
       } catch (error) {
         this.emitError(
           "session_cleanup_failed",

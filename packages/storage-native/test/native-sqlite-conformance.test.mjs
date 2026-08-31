@@ -13,6 +13,9 @@ import {
   NativeStorageRpcClient,
   NativeWorkspaceBackend,
 } from "../src/index.ts";
+import {
+  NativeDshrboxSessionBackend,
+} from "../../dshrbox-session-persistence-native/src/index.ts";
 
 const repositoryRoot = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -126,6 +129,71 @@ test("Native SQLite create preserves lifecycle error precedence", async () => {
   }
 });
 
+test("Native SQLite persists canonical DSH sessions across process reopen", async () => {
+  const root = await mkdtemp(
+    resolve(tmpdir(), "researchbox-native-dsh-persistence-"),
+  );
+  const projectId = "project-dsh";
+  const sessionId = "session-dsh";
+  let connection;
+  try {
+    connection = await openConnection(root, {});
+    await connection.client.request({
+      kind: "project_store_save",
+      state: runtimeProjectState(projectId, sessionId),
+      expected_revision: null,
+    });
+    const first = new NativeDshrboxSessionBackend(
+      connection.client,
+      projectId,
+    );
+    const header = {
+      version: 0,
+      id: sessionId,
+      createdAt: 1_785_456_000_000,
+    };
+    const events = [
+      {
+        type: "turn/start",
+        seq: 0,
+        time: 1_785_456_000_001,
+        data: { turn: 1 },
+      },
+      {
+        type: "turn/end",
+        seq: 1,
+        time: 1_785_456_000_002,
+        data: { turn: 1, reason: { kind: "completed" } },
+      },
+    ];
+    await first.appendBatch(header, events, false);
+    const firstRevision = await first.readStoredRevision(sessionId);
+    assert.match(firstRevision, /^[0-9a-f]{32}:1$/u);
+
+    await connection.close();
+    connection = await openConnection(root, {});
+    const reopened = new NativeDshrboxSessionBackend(
+      connection.client,
+      projectId,
+    );
+    assert.deepEqual(await reopened.loadStored(sessionId), {
+      meta: header,
+      events,
+      revision: firstRevision,
+    });
+    assert.deepEqual(await reopened.loadStoredFrom(sessionId, 1), {
+      meta: header,
+      events: [events[1]],
+    });
+    assert.deepEqual(await reopened.list(), [header]);
+    await reopened.deleteStored(sessionId);
+    assert.equal(await reopened.loadStored(sessionId), undefined);
+  } finally {
+    await connection?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 async function openConnection(root, seedFiles) {
   const endpoint = new NativeStorageProcessEndpoint(root);
   const client = new NativeStorageRpcClient(endpoint);
@@ -137,6 +205,7 @@ async function openConnection(root, seedFiles) {
     throw error;
   }
   return {
+    client,
     backend: new NativeWorkspaceBackend(client, {
       default_initial_files: seedFiles,
     }),
@@ -144,6 +213,49 @@ async function openConnection(root, seedFiles) {
       client.close();
       await endpoint.waitForExit();
     },
+  };
+}
+
+function runtimeProjectState(projectId, sessionId) {
+  return {
+    schema_version: 4,
+    state_revision: 1,
+    active_project_id: projectId,
+    active_session_id: sessionId,
+    projects: [{
+      project_id: projectId,
+      name: "DSH project",
+      created_at: "2026-08-31T00:00:00.000Z",
+      updated_at: "2026-08-31T00:00:00.000Z",
+      last_session_id: sessionId,
+      new_chat_draft: "",
+      new_chat_model: {
+        provider_id: "researchbox",
+        model_id: "researchbox-mock",
+      },
+      new_chat_reasoning_effort: "default",
+    }],
+    sessions: [{
+      session_id: sessionId,
+      project_id: projectId,
+      title: "DSH session",
+      title_is_custom: false,
+      created_at: "2026-08-31T00:00:00.000Z",
+      updated_at: "2026-08-31T00:00:00.000Z",
+      selected_model: {
+        provider_id: "researchbox",
+        model_id: "researchbox-mock",
+      },
+      reasoning_effort: "default",
+    }],
+    documents: [{
+      format_version: 6,
+      session_id: sessionId,
+      project_id: projectId,
+      input_draft: "",
+      runtime_id: "dsh",
+      message_count: 0,
+    }],
   };
 }
 

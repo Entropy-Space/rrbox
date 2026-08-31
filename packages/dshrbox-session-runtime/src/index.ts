@@ -43,7 +43,9 @@ import type {
 import { createDshrboxWorkspaceRecoveryBackend } from "./workspace-recovery.ts";
 
 export type DshrboxSessionRuntimeProviderConfig = {
-  session_backend: DshrboxSessionBackend;
+  session_backend:
+    | DshrboxSessionBackend
+    | ((projectId: string) => DshrboxSessionBackend);
   api?: string;
   max_parallel_tool_calls?: number;
   prepared_session_cache_size?: number;
@@ -82,8 +84,9 @@ export class DshrboxSessionRuntimeProvider implements SessionRuntimeProvider {
     return DshrboxSessionRuntime.create(options, this.config);
   }
 
-  deleteSession(sessionId: string): Promise<void> {
-    return this.config.session_backend.deleteStored(SessionId(sessionId));
+  deleteSession(projectId: string, sessionId: string): Promise<void> {
+    return sessionBackendForProject(this.config, projectId)
+      .deleteStored(SessionId(sessionId));
   }
 }
 
@@ -125,13 +128,17 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
         "Legacy AgentPlugin values cannot be installed in DSH; configure native DSH plugins on DshrboxSessionRuntimeProvider.",
       );
     }
-    const persistedRevision = await config.session_backend.readStoredRevision(
+    const configuredSessionBackend = sessionBackendForProject(
+      config,
+      options.project_id,
+    );
+    const persistedRevision = await configuredSessionBackend.readStoredRevision(
       SessionId(options.session_id),
     );
     const sessionBackend = persistedRevision === undefined
-      ? config.session_backend
+      ? configuredSessionBackend
       : createDshrboxWorkspaceRecoveryBackend(
-          config.session_backend,
+          configuredSessionBackend,
           {
             session_id: options.session_id,
             workspace: options.workspace,
@@ -561,12 +568,39 @@ function assertProviderConfig(
     config === null ||
     typeof config !== "object" ||
     config.session_backend === null ||
-    typeof config.session_backend !== "object"
+    (
+      typeof config.session_backend !== "object" &&
+      typeof config.session_backend !== "function"
+    )
   ) {
     throw new TypeError(
       "dshrbox session runtime requires a session_backend",
     );
   }
+}
+
+function sessionBackendForProject(
+  config: DshrboxSessionRuntimeProviderConfig,
+  projectId: string,
+): DshrboxSessionBackend {
+  const backend = typeof config.session_backend === "function"
+    ? config.session_backend(projectId)
+    : config.session_backend;
+  if (
+    backend === null ||
+    typeof backend !== "object" ||
+    typeof backend.loadStored !== "function" ||
+    typeof backend.readStoredRevision !== "function" ||
+    typeof backend.appendBatch !== "function" ||
+    typeof backend.commitRepair !== "function" ||
+    typeof backend.list !== "function" ||
+    typeof backend.deleteStored !== "function"
+  ) {
+    throw new TypeError(
+      "dshrbox session_backend must resolve a DSH persistence backend",
+    );
+  }
+  return backend;
 }
 
 function snapshotProviderConfig(

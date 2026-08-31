@@ -21,6 +21,32 @@ pub enum NativeStorageOperation {
     state: Value,
     expected_revision: Option<u64>,
   },
+  DshSessionLoad {
+    project_id: String,
+    session_id: String,
+  },
+  DshSessionLoadFrom {
+    project_id: String,
+    session_id: String,
+    from_seq: u64,
+  },
+  DshSessionReadRevision {
+    project_id: String,
+    session_id: String,
+  },
+  DshSessionAppend {
+    project_id: String,
+    header: Value,
+    events: Vec<Value>,
+    is_materialized: bool,
+  },
+  DshSessionList {
+    project_id: String,
+  },
+  DshSessionDelete {
+    project_id: String,
+    session_id: String,
+  },
   WorkspaceCreate {
     project_id: String,
     #[serde(default)]
@@ -84,6 +110,26 @@ pub enum NativeStorageOperation {
 pub struct WorkspaceHandle {
   pub project_id: String,
   pub incarnation_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DshSessionRevision {
+  pub storage_id: String,
+  pub revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DshStoredSession {
+  pub header: Value,
+  pub events: Vec<Value>,
+  pub storage_id: String,
+  pub revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DshStoredSessionSuffix {
+  pub header: Value,
+  pub events: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -186,24 +232,66 @@ pub struct NativeStorageResponse {
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NativeStorageResult {
-  Health { initialized: bool },
+  Health {
+    initialized: bool,
+  },
   Initialized,
-  ProjectStoreLoaded { state: Option<Value> },
+  ProjectStoreLoaded {
+    state: Option<Value>,
+  },
   ProjectStoreSaved,
-  WorkspaceOpened { workspace: WorkspaceHandle },
+  DshSessionLoaded {
+    value: Option<DshStoredSession>,
+  },
+  DshSessionSuffixLoaded {
+    value: Option<DshStoredSessionSuffix>,
+  },
+  DshSessionRevision {
+    value: Option<DshSessionRevision>,
+  },
+  DshSessionAppended,
+  DshSessionsListed {
+    headers: Vec<Value>,
+  },
+  DshSessionDeleted,
+  WorkspaceOpened {
+    workspace: WorkspaceHandle,
+  },
   WorkspaceDeleted,
   WorkspaceOrphansReconciled,
-  WorkspaceListed { value: Value },
-  WorkspaceRead { value: Value },
-  WorkspacePathState { value: Value },
-  WorkspaceFilesSnapshot { value: Value },
-  WorkspaceWritten { value: Value },
-  WorkspaceRemoved { value: Value },
-  WorkspaceChangesListed { value: Value },
-  WorkspaceChange { value: Value },
-  WorkspaceChangeReverted { value: Value },
-  ProjectUsage { value: ProjectUsage },
-  Error { error: NativeStorageErrorPayload },
+  WorkspaceListed {
+    value: Value,
+  },
+  WorkspaceRead {
+    value: Value,
+  },
+  WorkspacePathState {
+    value: Value,
+  },
+  WorkspaceFilesSnapshot {
+    value: Value,
+  },
+  WorkspaceWritten {
+    value: Value,
+  },
+  WorkspaceRemoved {
+    value: Value,
+  },
+  WorkspaceChangesListed {
+    value: Value,
+  },
+  WorkspaceChange {
+    value: Value,
+  },
+  WorkspaceChangeReverted {
+    value: Value,
+  },
+  ProjectUsage {
+    value: ProjectUsage,
+  },
+  Error {
+    error: NativeStorageErrorPayload,
+  },
 }
 
 #[derive(Debug, Serialize)]

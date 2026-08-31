@@ -34,6 +34,21 @@ export type NativeProjectUsage = {
   breakdown: NativeProjectUsageBreakdown;
 };
 
+export type NativeDshSessionRevision = {
+  storage_id: string;
+  revision: number;
+};
+
+export type NativeDshStoredSession = NativeDshSessionRevision & {
+  header: unknown;
+  events: readonly unknown[];
+};
+
+export type NativeDshStoredSessionSuffix = {
+  header: unknown;
+  events: readonly unknown[];
+};
+
 export type NativeStorageOperation =
   | {
       kind: "health";
@@ -52,6 +67,38 @@ export type NativeStorageOperation =
   | {
       kind: "project_usage";
       project_id: string;
+    }
+  | {
+      kind: "dsh_session_load";
+      project_id: string;
+      session_id: string;
+    }
+  | {
+      kind: "dsh_session_load_from";
+      project_id: string;
+      session_id: string;
+      from_seq: number;
+    }
+  | {
+      kind: "dsh_session_read_revision";
+      project_id: string;
+      session_id: string;
+    }
+  | {
+      kind: "dsh_session_append";
+      project_id: string;
+      header: unknown;
+      events: readonly unknown[];
+      is_materialized: boolean;
+    }
+  | {
+      kind: "dsh_session_list";
+      project_id: string;
+    }
+  | {
+      kind: "dsh_session_delete";
+      project_id: string;
+      session_id: string;
     }
   | {
       kind: "workspace_create";
@@ -165,6 +212,28 @@ export type NativeStorageSuccessResult =
       value: NativeProjectUsage;
     }
   | {
+      kind: "dsh_session_loaded";
+      value: NativeDshStoredSession | null;
+    }
+  | {
+      kind: "dsh_session_suffix_loaded";
+      value: NativeDshStoredSessionSuffix | null;
+    }
+  | {
+      kind: "dsh_session_revision";
+      value: NativeDshSessionRevision | null;
+    }
+  | {
+      kind: "dsh_session_appended";
+    }
+  | {
+      kind: "dsh_sessions_listed";
+      headers: readonly unknown[];
+    }
+  | {
+      kind: "dsh_session_deleted";
+    }
+  | {
       kind: "workspace_opened";
       workspace: NativeWorkspaceHandle;
     }
@@ -244,6 +313,30 @@ export interface NativeStorageOperationResultMap {
     NativeStorageSuccessResult,
     { kind: "project_usage" }
   >;
+  dsh_session_load: Extract<
+    NativeStorageSuccessResult,
+    { kind: "dsh_session_loaded" }
+  >;
+  dsh_session_load_from: Extract<
+    NativeStorageSuccessResult,
+    { kind: "dsh_session_suffix_loaded" }
+  >;
+  dsh_session_read_revision: Extract<
+    NativeStorageSuccessResult,
+    { kind: "dsh_session_revision" }
+  >;
+  dsh_session_append: Extract<
+    NativeStorageSuccessResult,
+    { kind: "dsh_session_appended" }
+  >;
+  dsh_session_list: Extract<
+    NativeStorageSuccessResult,
+    { kind: "dsh_sessions_listed" }
+  >;
+  dsh_session_delete: Extract<
+    NativeStorageSuccessResult,
+    { kind: "dsh_session_deleted" }
+  >;
   workspace_create: Extract<
     NativeStorageSuccessResult,
     { kind: "workspace_opened" }
@@ -308,6 +401,12 @@ export const nativeStorageResultKindByOperation = {
   project_store_load: "project_store_loaded",
   project_store_save: "project_store_saved",
   project_usage: "project_usage",
+  dsh_session_load: "dsh_session_loaded",
+  dsh_session_load_from: "dsh_session_suffix_loaded",
+  dsh_session_read_revision: "dsh_session_revision",
+  dsh_session_append: "dsh_session_appended",
+  dsh_session_list: "dsh_sessions_listed",
+  dsh_session_delete: "dsh_session_deleted",
   workspace_create: "workspace_opened",
   workspace_open: "workspace_opened",
   workspace_delete: "workspace_deleted",

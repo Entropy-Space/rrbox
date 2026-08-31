@@ -5,8 +5,10 @@ Copy-on-write DSH implementation of rrbox's session-runtime port.
 `ResearchBoxCore` continues to own projects, commands, provider selection,
 filesystem state, and viewer events. Newly created documents contain only a
 DSH runtime reference, draft state, and cached message count; unmarked timeline
-documents continue using the legacy runtime. Canonical headers and events live
-in the configured DSH persistence backend. The rrbox timeline is rebuilt as an
+documents continue through an explicit `PiSessionRuntimeProvider`
+compatibility lane. `ResearchBoxCore` coordinates both providers but imports
+neither runtime implementation. Canonical headers and events live in the
+configured DSH persistence backend. The rrbox timeline is rebuilt as an
 in-memory viewer projection and is never written beside the DSH log.
 
 The runtime composes the DSH model adapter, native workspace tools,

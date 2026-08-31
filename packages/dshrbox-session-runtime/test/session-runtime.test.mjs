@@ -8,7 +8,10 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import { MemoryDshrboxSessionBackend } from "@dshrbox/session-persistence";
 import { DshrboxSessionRuntimeProvider } from "@dshrbox/session-runtime";
 import { DshrboxPython } from "@researchbox/python-plugin/dsh";
-import { ResearchBoxCore } from "@researchbox/agent-core";
+import {
+  PiSessionRuntimeProvider,
+  ResearchBoxCore,
+} from "@researchbox/agent-core";
 import { MemoryProjectStore } from "@researchbox/project-store";
 import {
   createCommand,
@@ -322,6 +325,18 @@ test("runs and restores a DSH session behind the existing rrbox core", async () 
   const workspace = createWorkspaceBackend();
   const transport = new ResumableWorkspaceTransport();
   const sessionBackend = new MemoryDshrboxSessionBackend();
+  let legacyStageCount = 0;
+  let legacyCreateCount = 0;
+  const forbiddenLegacySessionRuntimeProvider = {
+    stagePrompt() {
+      legacyStageCount += 1;
+      throw new Error("A new DSH session entered the legacy staging lane.");
+    },
+    create() {
+      legacyCreateCount += 1;
+      throw new Error("A DSH document entered the legacy runtime lane.");
+    },
+  };
   const firstEvents = [];
   const first = createCore(
     store,
@@ -330,6 +345,9 @@ test("runs and restores a DSH session behind the existing rrbox core", async () 
     firstEvents,
     true,
     sessionBackend,
+    [],
+    [],
+    forbiddenLegacySessionRuntimeProvider,
   );
   await first.handle(createCommand("bootstrap", {}));
   const initial = latestState(firstEvents);
@@ -368,6 +386,8 @@ test("runs and restores a DSH session behind the existing rrbox core", async () 
   assert.equal(firstDocument.runtime_id, "dsh");
   assert.equal(firstDocument.timeline, undefined);
   assert.equal(firstDocument.history, undefined);
+  assert.equal(legacyStageCount, 0);
+  assert.equal(legacyCreateCount, 0);
   assert.ok(
     (await sessionBackend.loadStored(SessionId(firstDocument.session_id)))
       .events.length > 0,
@@ -391,12 +411,17 @@ test("runs and restores a DSH session behind the existing rrbox core", async () 
     secondEvents,
     true,
     sessionBackend,
+    [],
+    [],
+    forbiddenLegacySessionRuntimeProvider,
   );
   await second.handle(createCommand("bootstrap", {
     active_project_id: firstState.active_project_id,
     active_session_id: firstState.active_session_id,
   }));
   const restored = latestState(secondEvents);
+  assert.equal(legacyStageCount, 0);
+  assert.equal(legacyCreateCount, 0);
   assert.deepEqual(restored.timeline, firstState.timeline);
 
   await second.handle(createCommand("prompt", {
@@ -1211,6 +1236,9 @@ function createCore(
   sessionBackend = new MemoryDshrboxSessionBackend(),
   dshPlugins = [],
   legacyPlugins = [],
+  legacySessionRuntimeProvider = new PiSessionRuntimeProvider({
+    plugins: legacyPlugins,
+  }),
 ) {
   return new ResearchBoxCore({
     projectStore: store,
@@ -1219,7 +1247,7 @@ function createCore(
     model,
     systemPrompt: "You are a DSH session-runtime test agent.",
     eventSink: (event) => events.push(event),
-    plugins: legacyPlugins,
+    legacySessionRuntimeProvider,
     ...(useDsh
       ? {
           sessionRuntimeProvider: new DshrboxSessionRuntimeProvider({

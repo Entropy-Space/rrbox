@@ -15,7 +15,6 @@ import {
   synchronizeSessionHistory,
   type LegacySessionDocument,
   type SessionDocument,
-  type SessionHistory,
 } from "@researchbox/project-store";
 import {
   PROTOCOL_VERSION,
@@ -23,10 +22,8 @@ import {
   type AssistantMessageEntry,
   type CoreEvent,
   type ModelSelection,
-  type ReasoningEffort,
   type SummaryReviewRequest,
   type SummaryReviewResolution,
-  type TimelineEntry,
   type ToolCallBlock,
   type UserMessageEntry,
   type WorkspaceChangeSummary,
@@ -39,6 +36,7 @@ import { searchWorkspaceText } from "@researchbox/workspace-search";
 import { createModelStreamFn } from "./pi-stream.ts";
 import {
   createAgentPluginTools,
+  snapshotAgentPlugins,
   type AgentPlugin,
   type SummaryReviewInteraction,
 } from "./agent-plugin.ts";
@@ -49,72 +47,18 @@ import {
   timelineToAgentMessages,
 } from "./session-codec.ts";
 import { repairUnansweredToolCalls } from "./tool-transcript.ts";
+import type {
+  CoreEventSink,
+  LegacySessionRuntimeProvider,
+  SessionRuntimeOptions,
+  SessionRuntimePort,
+  SessionRuntimeView,
+} from "./session-runtime-port.ts";
 import { WorkspaceController } from "./workspace-controller.ts";
 
-export type CoreEventSink = (event: CoreEvent) => void;
-
-export type SessionRuntimeOptions = {
-  project_id: string;
-  session_id: string;
-  document: SessionDocument;
-  workspace: WorkspaceController;
-  model_transport: ModelTransport;
-  model: Model<string>;
-  reasoning_effort: ReasoningEffort;
-  resolve_model?: (selection: ModelSelection) => Model<string> | undefined;
-  system_prompt: string;
+type PiSessionRuntimeOptions = SessionRuntimeOptions & {
   plugins?: readonly AgentPlugin[];
-  event_sink: CoreEventSink;
-  checkpoint: (
-    phase: "staged" | "tool_started" | "tool_finished" | "finished",
-    requestId: string,
-  ) => Promise<void>;
 };
-
-export type SessionRuntimeView = {
-  input_draft: string;
-  timeline: TimelineEntry[];
-  history?: SessionHistory;
-};
-
-/** Runtime boundary owned by ResearchBoxCore's project/session coordinator. */
-export interface SessionRuntimePort {
-  readonly project_id: string;
-  readonly session_id: string;
-  readonly is_running: boolean;
-  /** Includes persistence and checkpoint finalization after model execution. */
-  readonly is_busy: boolean;
-  /** Current host-view projection; it is not necessarily persisted. */
-  view(): SessionRuntimeView;
-  usesModel(model: Model<string>): boolean;
-  bindDocument(document: SessionDocument): void;
-  startPrompt(text: string, requestId: string): Promise<void>;
-  continueStagedPrompt(runId: string, requestId: string): Promise<void>;
-  abort(): void;
-  stopAndWait(): Promise<void>;
-  waitForIdle(): Promise<void>;
-  dispose(): void | Promise<void>;
-  resolveSummaryReview(
-    interactionId: string,
-    resolution: SummaryReviewResolution,
-  ): void;
-  touchSummaryReview(interactionId: string): boolean;
-  setSummaryReviewVisibility(
-    interactionId: string,
-    isVisible: boolean,
-  ): boolean;
-}
-
-/** Optional copy-on-write runtime for newly-created runtime references. */
-export interface SessionRuntimeProvider {
-  readonly runtime_id: string;
-  initializeDocument(document: LegacySessionDocument): SessionDocument;
-  create(options: SessionRuntimeOptions):
-    | SessionRuntimePort
-    | Promise<SessionRuntimePort>;
-  /** Idempotently removes runtime-owned persistence after host metadata commits. */
-  deleteSession?(projectId: string, sessionId: string): void | Promise<void>;
-}
 
 type WorkspaceToolDetails = {
   summary: string;
@@ -154,6 +98,33 @@ export type StagedPrompt = {
   run_id: string;
 };
 
+export type PiSessionRuntimeProviderConfig = {
+  plugins?: readonly AgentPlugin[];
+};
+
+/** Pi-backed compatibility provider for unmarked timeline documents. */
+export class PiSessionRuntimeProvider implements LegacySessionRuntimeProvider {
+  private readonly plugins: readonly AgentPlugin[];
+
+  constructor(config: PiSessionRuntimeProviderConfig = {}) {
+    this.plugins = snapshotAgentPlugins(config.plugins);
+  }
+
+  stagePrompt(
+    document: LegacySessionDocument,
+    text: string,
+  ): StagedPrompt {
+    return stagePrompt(document, text);
+  }
+
+  create(options: SessionRuntimeOptions): SessionRuntimePort {
+    return new PiSessionRuntime({
+      ...options,
+      plugins: this.plugins,
+    });
+  }
+}
+
 function cloneSummaryReviewRequest(
   request: Omit<SummaryReviewRequest, "interaction_id">,
   interactionId: string,
@@ -181,7 +152,7 @@ function cloneSummaryReviewRequest(
   };
 }
 
-export class SessionRuntime implements SessionRuntimePort {
+export class PiSessionRuntime implements SessionRuntimePort {
   readonly project_id: string;
   readonly session_id: string;
   private document: LegacySessionDocument;
@@ -195,7 +166,7 @@ export class SessionRuntime implements SessionRuntimePort {
   private runPromise: Promise<void> | null = null;
   private pendingSummaryReview: PendingSummaryReview | null = null;
 
-  constructor(options: SessionRuntimeOptions) {
+  constructor(options: PiSessionRuntimeOptions) {
     if (!isLegacySessionDocument(options.document)) {
       throw new Error("The legacy session runtime requires a timeline document.");
     }

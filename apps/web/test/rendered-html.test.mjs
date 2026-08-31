@@ -178,6 +178,7 @@ test("keeps package boundaries explicit", async () => {
   assert.match(sharedCoreWorker, /WorkerModelTransport/);
   assert.match(sharedCoreWorker, /startBrowserRuntime/);
   assert.match(sharedCoreWorker, /new ResearchBoxCore/);
+  assert.match(sharedCoreWorker, /new PiSessionRuntimeProvider/);
   assert.match(sharedCoreWorker, /IndexedDbProjectStore/);
   assert.match(sharedCoreWorker, /BrowserWorkspaceBackend/);
   assert.doesNotMatch(sharedCoreWorker, /@dshrbox|DshrboxSession/);
@@ -198,6 +199,7 @@ test("keeps package boundaries explicit", async () => {
   );
   assert.match(core, /ProjectStore/);
   assert.match(core, /WorkspaceBackend/);
+  assert.doesNotMatch(core, /new PiSessionRuntime/);
   assert.match(runtime, /new Agent\(/);
   assert.match(runtime, /WorkspaceController/);
   assert.match(protocol, /PROTOCOL_VERSION = 24/);

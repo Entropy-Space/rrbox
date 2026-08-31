@@ -1,4 +1,5 @@
 import {
+  PiSessionRuntimeProvider,
   ProviderCatalogService,
   ResearchBoxCore,
   type AgentPlugin,
@@ -103,7 +104,9 @@ export function startResearchBoxCoreWorker(
         providerCatalog: services.providerCatalog,
         model: researchBoxMockModel,
         systemPrompt: researchBoxSystemPrompt,
-        plugins: options.legacy_plugins,
+        legacySessionRuntimeProvider: new PiSessionRuntimeProvider({
+          plugins: options.legacy_plugins,
+        }),
         ...(services.sessionRuntimeProvider === undefined
           ? {}
           : { sessionRuntimeProvider: services.sessionRuntimeProvider }),

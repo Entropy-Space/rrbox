@@ -7,7 +7,10 @@ import {
   MemoryFileSystem,
   MemoryWorkspaceBackend,
 } from "@researchbox/vfs";
-import { ResearchBoxCore } from "../src/index.ts";
+import {
+  PiSessionRuntimeProvider,
+  ResearchBoxCore,
+} from "../src/index.ts";
 
 const model = {
   id: "test-model",
@@ -798,11 +801,55 @@ test("accepts the deprecated workspace provider composition option", async () =>
     },
     model,
     systemPrompt: "You are a test agent.",
+    legacySessionRuntimeProvider: new PiSessionRuntimeProvider(),
     eventSink: (event) => events.push(event),
   });
 
   await core.handle(createCommand("bootstrap", {}));
   assert.equal(latestState(events).active_session_id, null);
+});
+
+test("delegates unmarked sessions to the explicit legacy provider", async () => {
+  const store = new MemoryProjectStore();
+  const events = [];
+  const piProvider = new PiSessionRuntimeProvider();
+  let stageCount = 0;
+  let createCount = 0;
+  const legacySessionRuntimeProvider = {
+    stagePrompt(document, text) {
+      stageCount += 1;
+      return piProvider.stagePrompt(document, text);
+    },
+    create(options) {
+      createCount += 1;
+      return piProvider.create(options);
+    },
+  };
+  const core = createCore(
+    store,
+    createWorkspaceProvider(),
+    events,
+    undefined,
+    { legacySessionRuntimeProvider },
+  );
+
+  await core.handle(createCommand("bootstrap", {}));
+  const initial = latestState(events);
+  await core.handle(createCommand("prompt", {
+    project_id: initial.active_project_id,
+    session_id: null,
+    text: "Use the compatibility runtime.",
+  }));
+
+  assert.equal(stageCount, 1);
+  assert.equal(createCount, 1);
+  const stored = await store.load();
+  assert.equal(stored.documents[0].runtime_id, undefined);
+  assert.equal(
+    stored.documents[0].timeline[0].content,
+    "Use the compatibility runtime.",
+  );
+  await core.dispose();
 });
 
 test("concurrent first bootstraps converge before orphan reconciliation", async () => {
@@ -1237,6 +1284,7 @@ test("model selection is chat-scoped and survives first send and reload", async 
         },
       ],
       systemPrompt: "You are a test agent.",
+      legacySessionRuntimeProvider: new PiSessionRuntimeProvider(),
       eventSink,
     });
 
@@ -1347,6 +1395,7 @@ test("reasoning effort is chat-scoped, provider-visible, and capability-safe", a
         },
       ],
       systemPrompt: "You are a test agent.",
+      legacySessionRuntimeProvider: new PiSessionRuntimeProvider(),
       eventSink,
     });
 
@@ -1503,6 +1552,7 @@ test("dynamic providers refresh, reject non-tool models, and recover", async () 
       },
     ],
     systemPrompt: "You are a test agent.",
+    legacySessionRuntimeProvider: new PiSessionRuntimeProvider(),
     eventSink: (event) => events.push(event),
   });
 
@@ -1616,6 +1666,7 @@ test("persisted dynamic model becomes ready after reload discovery", async () =>
       model,
       providers,
       systemPrompt: "You are a test agent.",
+      legacySessionRuntimeProvider: new PiSessionRuntimeProvider(),
       eventSink,
     });
 
@@ -1745,6 +1796,7 @@ test("reload uses refreshed capabilities for a persisted reasoning session", asy
       model,
       providers,
       systemPrompt: "You are a test agent.",
+      legacySessionRuntimeProvider: new PiSessionRuntimeProvider(),
       eventSink,
     });
 
@@ -1868,6 +1920,7 @@ test("provider refresh recovers when its loading snapshot fails", async () => {
       },
     ],
     systemPrompt: "You are a test agent.",
+    legacySessionRuntimeProvider: new PiSessionRuntimeProvider(),
     eventSink: (event) => events.push(event),
   });
 
@@ -5355,6 +5408,11 @@ function createCore(
   modelTransport,
   coreOptions = {},
 ) {
+  const {
+    plugins,
+    legacySessionRuntimeProvider = new PiSessionRuntimeProvider({ plugins }),
+    ...remainingCoreOptions
+  } = coreOptions;
   return new ResearchBoxCore({
     projectStore: store,
     workspaceBackend: provider,
@@ -5366,8 +5424,9 @@ function createCore(
     },
     model,
     systemPrompt: "You are a test agent.",
+    legacySessionRuntimeProvider,
     eventSink: (event) => events.push(event),
-    ...coreOptions,
+    ...remainingCoreOptions,
   });
 }
 

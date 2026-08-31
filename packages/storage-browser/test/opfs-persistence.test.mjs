@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { IDBFactory } from "fake-indexeddb";
-import { ResearchBoxCore } from "@researchbox/agent-core";
+import {
+  PiSessionRuntimeProvider,
+  ResearchBoxCore,
+} from "@researchbox/agent-core";
 import { SESSION_DOCUMENT_FORMAT_VERSION } from "@researchbox/project-store";
 import { createCommand } from "@researchbox/protocol";
 import {
@@ -2039,6 +2042,7 @@ function createTestCore(projectStore, workspaceBackend, events) {
     },
     model: testModel,
     systemPrompt: "You are a test agent.",
+    legacySessionRuntimeProvider: new PiSessionRuntimeProvider(),
     eventSink: (event) => events.push(event),
   });
 }

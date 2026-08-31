@@ -1,4 +1,4 @@
-const DSH_VERSION = "0.1.0-rc.7";
+const DSH_VERSION = "0.1.1-rc.2";
 
 export function createRequire(filename: string | URL): (specifier: string) => unknown {
   void filename;

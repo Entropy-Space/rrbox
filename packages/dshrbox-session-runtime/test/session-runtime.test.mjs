@@ -940,6 +940,11 @@ test("routes the existing abort command into DSH and checkpoints partial output"
     persisted.events.at(-1).type,
     "turn/end",
   );
+  assert.equal(
+    persisted.events.find((event) => event.type === "assistant/message")
+      ?.data.interrupted,
+    true,
+  );
   await core.dispose();
 });
 

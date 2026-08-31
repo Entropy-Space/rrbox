@@ -11,7 +11,7 @@ test("composes the constrained browser runtime over core", async () => {
   const result = await runDshrboxBrowserProbe();
 
   assert.equal(result.ok, true);
-  assert.equal(result.dsh_version, "0.1.0-rc.7");
+  assert.equal(result.dsh_version, "0.1.1-rc.2");
   assert.equal(result.streaming.text, "DSH streams in a browser worker.");
   assert.equal(result.streaming.turn_end_kind, "completed");
   assert.ok(result.streaming.event_types.includes("assistant/chunk"));

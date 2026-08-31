@@ -7,15 +7,15 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@deepseek-ai/cordis": "4.0.1",
-    "@deepseek-ai/dsh-tools": "0.1.0-rc.7",
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/dsh-tools": "0.1.1-rc.2",
     "@dshrbox/core": "workspace:*",
     "@researchbox/protocol": "workspace:*",
     "@researchbox/vfs": "workspace:*",
     "@researchbox/workspace-search": "workspace:*"
   },
   "devDependencies": {
-    "@deepseek-ai/dsh-llm": "0.1.0-rc.7",
-    "@deepseek-ai/dsh-system-prompt": "0.1.0-rc.7"
+    "@deepseek-ai/dsh-llm": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "0.1.1-rc.2"
   }
 }

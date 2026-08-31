@@ -1,5 +1,5 @@
 diff --git a/lib/index.js b/lib/index.js
-index 1102035f375401c77adbbb1767759f75544ad05a..30f8c13dc3fb886e302975711e20d87fbbee308e 100644
+index 62fd0fe17593f5b2d52b8a792add164e1f16a4d1..7c8906ea80119f1883fe535576d89af9a9b8aa1c 100644
 --- a/lib/index.js
 +++ b/lib/index.js
 @@ -43,7 +43,8 @@ function hasIntrinsicConstructor(prototype, name) {

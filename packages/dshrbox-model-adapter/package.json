@@ -7,7 +7,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-llm": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-llm": "0.1.1-rc.2",
     "@researchbox/model-transport": "workspace:*"
   }
 }

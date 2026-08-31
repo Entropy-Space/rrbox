@@ -1,6 +1,20 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { runDshrboxBrowserProbe } from "../dist/browser-probe/worker.js";
+
+test("installs disposal symbols before evaluating DSH classes", async () => {
+  const source = await readFile(
+    new URL("../dist/browser-probe/worker.js", import.meta.url),
+    "utf8",
+  );
+  const installation = source.indexOf("installDisposableSymbols();");
+  const firstComputedMethod = source.indexOf("[Symbol.dispose]");
+
+  assert.notEqual(installation, -1);
+  assert.notEqual(firstComputedMethod, -1);
+  assert.ok(installation < firstComputedMethod);
+});
 
 test("executes the browser-worker bundle with DSH Node imports replaced", async () => {
   const result = await runDshrboxBrowserProbe();

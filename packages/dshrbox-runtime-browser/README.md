@@ -9,6 +9,12 @@ implementations. The `node:async_hooks` replacement supports one foreground
 async chain, so this package fixes tool parallelism to one. The core runtime
 also owns one live agent and rejects overlapping runs.
 
+DSH rc.2 uses explicit-resource-management helpers and computed
+`[Symbol.dispose]` methods. Older JavaScriptCore releases do not expose
+`Symbol.dispose` or `Symbol.asyncDispose`, so browser worker entries import
+`@dshrbox/runtime-browser/install` before any DSH module. The installer defines
+the missing symbols once with well-known-symbol-style property descriptors.
+
 DSH `0.1.1-rc.2` also identifies intrinsic `Object` and `Array` constructors by
 their V8-formatted source strings. JavaScriptCore uses multiline native source
 formatting, causing ordinary session data and tool schemas to be rejected. The

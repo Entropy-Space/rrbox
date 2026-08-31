@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./install": "./src/disposable-symbols.ts",
     "./vite": "./src/vite.ts"
   },
   "scripts": {

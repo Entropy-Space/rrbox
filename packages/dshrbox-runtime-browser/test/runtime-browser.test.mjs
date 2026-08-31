@@ -4,6 +4,7 @@ import {
   createDshrboxBrowserCore,
   DSH_BROWSER_COMPATIBILITY,
 } from "../src/index.ts";
+import { installDisposableSymbols } from "../src/disposable-symbols.ts";
 import { ProbeLlmAdapter } from "./fixtures/probe-adapter.ts";
 import { runDshrboxBrowserProbe } from "./fixtures/probe.ts";
 
@@ -65,4 +66,30 @@ test("fixes browser tool execution to the safe serial limit", async () => {
   } finally {
     await core.dispose();
   }
+});
+
+test("installs explicit-resource-management symbols for older WebKit", () => {
+  const descriptions = [];
+  const symbolConstructor = (description) => {
+    descriptions.push(description);
+    return Symbol(description);
+  };
+
+  installDisposableSymbols(symbolConstructor);
+
+  assert.equal(typeof symbolConstructor.dispose, "symbol");
+  assert.equal(typeof symbolConstructor.asyncDispose, "symbol");
+  assert.deepEqual(descriptions, ["Symbol.dispose", "Symbol.asyncDispose"]);
+  assert.deepEqual(
+    Object.getOwnPropertyDescriptor(symbolConstructor, "dispose"),
+    {
+      configurable: false,
+      enumerable: false,
+      value: symbolConstructor.dispose,
+      writable: false,
+    },
+  );
+
+  installDisposableSymbols(symbolConstructor);
+  assert.deepEqual(descriptions, ["Symbol.dispose", "Symbol.asyncDispose"]);
 });

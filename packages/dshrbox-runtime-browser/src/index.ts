@@ -1,3 +1,4 @@
+import "./disposable-symbols.ts";
 import {
   createDshrboxCore,
   type CreateDshrboxCoreOptions,

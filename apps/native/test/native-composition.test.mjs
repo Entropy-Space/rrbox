@@ -91,6 +91,8 @@ test("mounts the shared viewer through the native worker transport", async () =>
   assert.match(coreWorkerSource, /NativeAnySearchWebSearchProvider/);
   assert.match(coreWorkerSource, /NativeUrlReader/);
   assert.match(coreWorkerSource, /createWebSearchAgentPlugin/);
+  assert.match(coreWorkerSource, /legacy_plugins:\s*legacyPlugins/);
+  assert.doesNotMatch(coreWorkerSource, /dsh_plugins|DshrboxSession/);
   assert.match(
     coreWorkerSource,
     /new URL\("\.\/llm\.worker\.ts", import\.meta\.url\)/,

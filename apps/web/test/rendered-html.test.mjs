@@ -72,6 +72,7 @@ test("loads viewer styling through the viewer package export", async () => {
 test("keeps package boundaries explicit", async () => {
   const [
     app,
+    viteConfig,
     viewer,
     session,
     workerTransport,
@@ -86,6 +87,7 @@ test("keeps package boundaries explicit", async () => {
   ] =
     await Promise.all([
       readFile(new URL("../app/ResearchBoxApp.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
       readFile(
         new URL(
           "../../../packages/viewer/src/ResearchBoxViewer.tsx",
@@ -145,6 +147,8 @@ test("keeps package boundaries explicit", async () => {
     ]);
 
   assert.match(app, /new Worker\(new URL\(/);
+  assert.match(viteConfig, /dshBrowserCompatibilityAliases/);
+  assert.match(viteConfig, /alias:\s*dshBrowserCompatibilityAliases\(\)/);
   assert.match(app, /WorkerCoreTransport/);
   assert.match(app, /createTransport=\{createTransport\}/);
   assert.match(app, /workspaceTransferAdapter/);
@@ -165,11 +169,18 @@ test("keeps package boundaries explicit", async () => {
   assert.doesNotMatch(viewer, /from "@earendil-works\/pi-agent-core"/);
   assert.match(coreWorker, /new Worker\(new URL\("\.\/llm\.worker\.ts"/);
   assert.match(coreWorker, /startResearchBoxCoreWorker/);
+  assert.match(coreWorker, /DshrboxPython/);
+  assert.match(coreWorker, /DshrboxWebResearch/);
+  assert.match(coreWorker, /legacy_plugins:\s*legacyPlugins/);
+  assert.match(coreWorker, /IndexedDbDshrboxSessionBackend/);
+  assert.match(coreWorker, /DshrboxSessionRuntimeProvider/);
+  assert.match(coreWorker, /plugins:\s*dshPlugins/);
   assert.match(sharedCoreWorker, /WorkerModelTransport/);
   assert.match(sharedCoreWorker, /startBrowserRuntime/);
   assert.match(sharedCoreWorker, /new ResearchBoxCore/);
   assert.match(sharedCoreWorker, /IndexedDbProjectStore/);
   assert.match(sharedCoreWorker, /BrowserWorkspaceBackend/);
+  assert.doesNotMatch(sharedCoreWorker, /@dshrbox|DshrboxSession/);
   assert.doesNotMatch(coreWorker, /new ResearchBoxCore/);
   assert.doesNotMatch(coreWorker, /HttpNdjsonModelTransport/);
   assert.match(llmWorker, /attachLlmWorkerHost/);

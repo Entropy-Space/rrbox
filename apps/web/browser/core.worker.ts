@@ -4,15 +4,34 @@ import {
   createResearchBoxProviderDefinitions,
   startResearchBoxCoreWorker,
 } from "@researchbox/app-runtime-browser/core-worker";
+import { researchBoxSeedFiles } from "@researchbox/app-runtime-browser/seed-files";
+import {
+  DSH_BROWSER_COMPATIBILITY,
+} from "@dshrbox/runtime-browser";
+import {
+  IndexedDbDshrboxSessionBackend,
+} from "@dshrbox/session-persistence-browser";
+import {
+  DshrboxSessionRuntimeProvider,
+} from "@dshrbox/session-runtime";
 import type { WorkerHost } from "@researchbox/runtime-browser";
+import {
+  BrowserWorkspaceBackend,
+  IndexedDbProjectStore,
+  ResearchBoxDatabase,
+} from "@researchbox/storage-browser";
 import {
   BrowserPythonExecutor,
 } from "@researchbox/python-plugin/browser";
 import { createPythonAgentPlugin } from "@researchbox/python-plugin";
+import { DshrboxPython } from "@researchbox/python-plugin/dsh";
 import {
   DEFAULT_WEB_SEARCH_SUMMARY_GRACE_MS,
   createWebSearchAgentPlugin,
 } from "@researchbox/web-search-plugin";
+import {
+  DshrboxWebResearch,
+} from "@researchbox/web-search-plugin/dsh";
 import {
   RoutingWebSearchExecutor,
 } from "@researchbox/web-search-plugin/executor";
@@ -58,36 +77,54 @@ host.onmessage = (event) => {
           initialization.web_search_plugin.provider,
       })
     : null;
-  const plugins = [
+  const webSearchOptions = {
+    maximum_results:
+      initialization.web_search_plugin.maximum_results,
+    maximum_output_bytes:
+      initialization.web_search_plugin.max_output_bytes,
+    default_provider:
+      initialization.web_search_plugin.provider,
+    default_workflow:
+      initialization.web_search_plugin.workflow,
+    summary_timeout_ms:
+      initialization.web_search_plugin.summary_timeout_ms,
+    review_timeout_ms:
+      initialization.web_search_plugin.review_timeout_ms,
+    summary_grace_ms: DEFAULT_WEB_SEARCH_SUMMARY_GRACE_MS,
+  };
+  const legacyPlugins = [
     ...(pythonExecutor
       ? [createPythonAgentPlugin(pythonExecutor)]
       : []),
     ...(webSearchExecutor
       ? [createWebSearchAgentPlugin(
           webSearchExecutor,
-          {
-            maximum_results:
-              initialization.web_search_plugin.maximum_results,
-            maximum_output_bytes:
-              initialization.web_search_plugin.max_output_bytes,
-            default_provider:
-              initialization.web_search_plugin.provider,
-            default_workflow:
-              initialization.web_search_plugin.workflow,
-            summary_timeout_ms:
-              initialization.web_search_plugin.summary_timeout_ms,
-            review_timeout_ms:
-              initialization.web_search_plugin.review_timeout_ms,
-            summary_grace_ms: DEFAULT_WEB_SEARCH_SUMMARY_GRACE_MS,
-          },
+          webSearchOptions,
         )]
+      : []),
+  ];
+  const dshPlugins = [
+    ...(pythonExecutor
+      ? [{
+          plugin: DshrboxPython,
+          config: { executor: pythonExecutor },
+        }]
+      : []),
+    ...(webSearchExecutor
+      ? [{
+          plugin: DshrboxWebResearch,
+          config: {
+            executor: webSearchExecutor,
+            ...webSearchOptions,
+          },
+        }]
       : []),
   ];
 
   startResearchBoxCoreWorker({
     host,
     lock_manager: navigator.locks,
-    plugins,
+    legacy_plugins: legacyPlugins,
     close_plugins:
       pythonExecutor || webSearchExecutor
         ? async () => {
@@ -98,6 +135,27 @@ host.onmessage = (event) => {
     providers: createResearchBoxProviderDefinitions({
       providers: initialization.providers,
     }),
+    create_storage_services() {
+      const database = new ResearchBoxDatabase();
+      const projectStore = new IndexedDbProjectStore(database);
+      return {
+        projectStore,
+        workspaceBackend: new BrowserWorkspaceBackend(
+          database,
+          researchBoxSeedFiles,
+        ),
+        sessionRuntimeProvider: new DshrboxSessionRuntimeProvider({
+          session_backend: new IndexedDbDshrboxSessionBackend(database),
+          plugins: dshPlugins,
+          max_parallel_tool_calls:
+            DSH_BROWSER_COMPATIBILITY.max_parallel_tool_calls,
+        }),
+        close() {
+          projectStore.close();
+          database.close();
+        },
+      };
+    },
     create_model_worker() {
       const worker = new Worker(new URL("./llm.worker.ts", import.meta.url), {
         type: "module",

@@ -9,12 +9,16 @@
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start"
   },
   "dependencies": {
+    "@dshrbox/runtime-browser": "workspace:*",
+    "@dshrbox/session-persistence-browser": "workspace:*",
+    "@dshrbox/session-runtime": "workspace:*",
     "@researchbox/app-runtime-browser": "workspace:*",
     "@researchbox/mock-provider": "workspace:*",
     "@researchbox/model-transport": "workspace:*",
     "@researchbox/provider-settings": "workspace:*",
     "@researchbox/python-plugin": "workspace:*",
     "@researchbox/runtime-browser": "workspace:*",
+    "@researchbox/storage-browser": "workspace:*",
     "@researchbox/viewer": "workspace:*",
     "@researchbox/web-search-plugin": "workspace:*",
     "@researchbox/workspace-archive": "workspace:*",

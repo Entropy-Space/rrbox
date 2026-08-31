@@ -1,4 +1,5 @@
 import vinext from "vinext";
+import { dshBrowserCompatibilityAliases } from "@dshrbox/runtime-browser/vite";
 import { defineConfig } from "vite";
 
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
@@ -20,6 +21,9 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
+    resolve: {
+      alias: dshBrowserCompatibilityAliases(),
+    },
     server: isCodexSeatbeltSandbox
       ? { watch: { useFsEvents: false, usePolling: true } }
       : undefined,

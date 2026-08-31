@@ -99,6 +99,15 @@ importers:
 
   apps/web:
     dependencies:
+      '@dshrbox/runtime-browser':
+        specifier: workspace:*
+        version: link:../../packages/dshrbox-runtime-browser
+      '@dshrbox/session-persistence-browser':
+        specifier: workspace:*
+        version: link:../../packages/dshrbox-session-persistence-browser
+      '@dshrbox/session-runtime':
+        specifier: workspace:*
+        version: link:../../packages/dshrbox-session-runtime
       '@researchbox/app-runtime-browser':
         specifier: workspace:*
         version: link:../../packages/app-runtime-browser
@@ -117,6 +126,9 @@ importers:
       '@researchbox/runtime-browser':
         specifier: workspace:*
         version: link:../../packages/runtime-browser
+      '@researchbox/storage-browser':
+        specifier: workspace:*
+        version: link:../../packages/storage-browser
       '@researchbox/viewer':
         specifier: workspace:*
         version: link:../../packages/viewer
@@ -220,6 +232,13 @@ importers:
       '@researchbox/workspace-archive':
         specifier: workspace:*
         version: link:../workspace-archive
+    devDependencies:
+      '@dshrbox/session-persistence':
+        specifier: workspace:*
+        version: link:../dshrbox-session-persistence
+      '@dshrbox/session-runtime':
+        specifier: workspace:*
+        version: link:../dshrbox-session-runtime
 
   packages/client:
     dependencies:

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ProjectStoreConflictError,
+  createSessionHistory,
 } from "@researchbox/project-store";
 import {
   VfsError,
@@ -380,6 +381,46 @@ test("CAS-persists migrated project state after a revision conflict", async () =
     },
   ]);
 
+  store.close();
+  client.close();
+});
+
+test("persists transitional version 6 timelines as legacy documents", async () => {
+  let state = createTransitionalTimelineState(7);
+  const saves = [];
+  const endpoint = new FakeEndpoint((request) => {
+    switch (request.operation.kind) {
+      case "initialize":
+        return { kind: "initialized" };
+      case "project_store_load":
+        return {
+          kind: "project_store_loaded",
+          state: structuredClone(state),
+        };
+      case "project_store_save":
+        saves.push(structuredClone(request.operation));
+        state = structuredClone(request.operation.state);
+        return { kind: "project_store_saved" };
+      default:
+        throw new Error(`Unexpected ${request.operation.kind}`);
+    }
+  });
+  const client = createClient(endpoint);
+  const store = new NativeProjectStore(client);
+
+  const loaded = await store.load();
+
+  assert.equal(loaded.state_revision, 8);
+  assert.equal(loaded.documents[0].format_version, 5);
+  assert.deepEqual(saves.map((save) => ({
+    expected_revision: save.expected_revision,
+    state_revision: save.state.state_revision,
+    document_format_version: save.state.documents[0].format_version,
+  })), [{
+    expected_revision: 7,
+    state_revision: 8,
+    document_format_version: 5,
+  }]);
   store.close();
   client.close();
 });
@@ -949,5 +990,41 @@ function createLegacyState(stateRevision) {
   const state = createState(stateRevision);
   state.schema_version = 2;
   delete state.projects[0].new_chat_model;
+  return state;
+}
+
+function createTransitionalTimelineState(stateRevision) {
+  const state = createState(stateRevision);
+  const timestamp = "2026-08-18T00:00:00.000Z";
+  const timeline = [{
+    type: "user_message",
+    entry_id: "session-1:user",
+    run_id: "session-1:run",
+    created_at: timestamp,
+    content: "Persisted transitional message.",
+  }];
+  state.active_session_id = "session-1";
+  state.projects[0].last_session_id = "session-1";
+  state.sessions = [{
+    session_id: "session-1",
+    project_id: "project-1",
+    title: "Transitional session",
+    title_is_custom: false,
+    created_at: timestamp,
+    updated_at: timestamp,
+    selected_model: {
+      provider_id: "researchbox",
+      model_id: "researchbox-mock",
+    },
+    reasoning_effort: "default",
+  }];
+  state.documents = [{
+    format_version: 6,
+    session_id: "session-1",
+    project_id: "project-1",
+    input_draft: "",
+    timeline,
+    history: createSessionHistory(timeline),
+  }];
   return state;
 }

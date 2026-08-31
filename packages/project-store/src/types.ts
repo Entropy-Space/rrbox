@@ -337,6 +337,24 @@ function parseSessionDocument(
     formatVersion === LEGACY_SESSION_DOCUMENT_FORMAT_VERSION
       ? ""
       : requireString(value, "input_draft", true);
+  if (
+    formatVersion === RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION &&
+    isTransitionalTimelineDocument(value)
+  ) {
+    const timeline = parseTimeline(value.timeline);
+    const parsedHistory = parseSessionHistory(value.history, timeline);
+    return {
+      document: {
+        format_version: SESSION_DOCUMENT_FORMAT_VERSION,
+        session_id: sessionId,
+        project_id: projectId,
+        input_draft: inputDraft,
+        timeline,
+        history: parsedHistory.history,
+      },
+      was_migrated: true,
+    };
+  }
   if (formatVersion === RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION) {
     for (const forbidden of ["timeline", "history", "runtime_state"]) {
       if (Object.prototype.hasOwnProperty.call(value, forbidden)) {
@@ -414,6 +432,21 @@ function parseSessionDocument(
     },
     was_migrated: true,
   };
+}
+
+function isTransitionalTimelineDocument(
+  value: Record<string, unknown>,
+): boolean {
+  // A pre-release bridge briefly used format 6 for legacy timeline documents
+  // before format 6 was reassigned to runtime references. Only recover the
+  // unambiguous shape that contains no runtime metadata.
+  return (
+    Object.prototype.hasOwnProperty.call(value, "timeline") &&
+    Object.prototype.hasOwnProperty.call(value, "history") &&
+    !Object.prototype.hasOwnProperty.call(value, "runtime_id") &&
+    !Object.prototype.hasOwnProperty.call(value, "message_count") &&
+    !Object.prototype.hasOwnProperty.call(value, "runtime_state")
+  );
 }
 
 function migrateNormalizedTimeline(value: unknown): TimelineEntry[] {

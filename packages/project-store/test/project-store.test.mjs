@@ -68,6 +68,31 @@ test("version 5 timeline documents remain canonical legacy sessions", () => {
   );
 });
 
+test("transitional version 6 timelines migrate back to legacy documents", () => {
+  const state = createState(1);
+  state.documents[0].format_version = 6;
+
+  const result = parseProjectStoreStateWithMigration(state);
+
+  assert.equal(result.was_migrated, true);
+  assert.equal(
+    result.state.documents[0].format_version,
+    SESSION_DOCUMENT_FORMAT_VERSION,
+  );
+  assert.deepEqual(
+    result.state.documents[0].timeline,
+    state.documents[0].timeline,
+  );
+  assert.deepEqual(
+    result.state.documents[0].history,
+    state.documents[0].history,
+  );
+  assert.equal(
+    parseProjectStoreStateWithMigration(result.state).was_migrated,
+    false,
+  );
+});
+
 test("runtime session documents reject persisted viewer projections", () => {
   const state = createState(1);
   state.documents[0] = {
@@ -78,6 +103,23 @@ test("runtime session documents reject persisted viewer projections", () => {
     runtime_id: "dsh",
     message_count: 1,
     timeline: [],
+  };
+  assert.throws(
+    () => parseProjectStoreState(state),
+    /cannot persist timeline/u,
+  );
+});
+
+test("ambiguous transitional runtime state is not treated as legacy", () => {
+  const state = createState(1);
+  state.documents[0] = {
+    ...state.documents[0],
+    format_version: RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION,
+    runtime_state: {
+      runtime_id: "dsh",
+      format_version: 1,
+      payload: {},
+    },
   };
   assert.throws(
     () => parseProjectStoreState(state),

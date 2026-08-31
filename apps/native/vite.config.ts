@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { dshBrowserCompatibilityAliases } from "@dshrbox/runtime-browser/vite";
 
 const host = process.env.TAURI_DEV_HOST;
 const platform = process.env.TAURI_ENV_PLATFORM;
@@ -7,6 +8,9 @@ const platform = process.env.TAURI_ENV_PLATFORM;
 // https://vite.dev/config/
 export default defineConfig(() => ({
   plugins: react(),
+  resolve: {
+    alias: dshBrowserCompatibilityAliases(),
+  },
   envPrefix: ["VITE_", "TAURI_ENV_*"],
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

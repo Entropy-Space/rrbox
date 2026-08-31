@@ -7,6 +7,6 @@ Each backend instance is bound to one rrbox project. Session headers and events
 live in that project's database, append batches commit atomically, suffix reads
 seek by event sequence, and revisions are qualified by a durable storage ID.
 
-This package supplies persistence only. The native application continues to use
-the legacy runtime until its composition root explicitly installs the DSH
-runtime provider and native DSH plugins.
+This package supplies persistence only. The native application composition root
+binds one backend instance per project and installs it through the DSH session
+runtime provider.

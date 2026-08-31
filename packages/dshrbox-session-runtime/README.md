@@ -19,13 +19,11 @@ recover a mutation whose DSH `tool/result` was interrupted after the VFS
 commit; the proven result is written through DSH's canonical repair path before
 the session is published.
 
-Python is the first existing component with a native DSH entry point. Web
-search and history-tree navigation remain deliberately unavailable until their
-DSH-native designs land. Summary review is available to native plugins as a
-live service; its transient viewer events are not appended to the canonical
-DSH session.
+Python and web research have native DSH entry points. History-tree navigation
+remains deliberately unavailable until its DSH-native design lands. Summary
+review is available to native plugins as a live service; its transient viewer
+events are not appended to the canonical DSH session.
 
-The web worker activates this runtime for new sessions with durable IndexedDB
-events. Existing unmarked sessions remain on the legacy runtime. The native
-worker remains legacy-only until its new project-scoped SQLite backend and DSH
-plugins are explicitly wired at the native composition root.
+The web and native workers activate this runtime for new sessions, using
+durable IndexedDB and project-scoped SQLite events respectively. Existing
+unmarked sessions remain on the legacy runtime in both applications.

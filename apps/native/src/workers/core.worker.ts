@@ -8,6 +8,15 @@ import { researchBoxSeedFiles } from "@researchbox/app-runtime-browser/seed-file
 import {
   InMemoryCommandLockManager,
 } from "@researchbox/app-runtime-browser/command-coordinator";
+import {
+  DSH_BROWSER_COMPATIBILITY,
+} from "@dshrbox/runtime-browser";
+import {
+  NativeDshrboxSessionBackend,
+} from "@dshrbox/session-persistence-native";
+import {
+  DshrboxSessionRuntimeProvider,
+} from "@dshrbox/session-runtime";
 import type { WorkerHost } from "@researchbox/runtime-browser";
 import {
   NativeProjectStore,
@@ -23,10 +32,14 @@ import { createPythonAgentPlugin } from "@researchbox/python-plugin";
 import {
   NativePythonRpcClient,
 } from "@researchbox/python-plugin/native";
+import { DshrboxPython } from "@researchbox/python-plugin/dsh";
 import {
   DEFAULT_WEB_SEARCH_SUMMARY_GRACE_MS,
   createWebSearchAgentPlugin,
 } from "@researchbox/web-search-plugin";
+import {
+  DshrboxWebResearch,
+} from "@researchbox/web-search-plugin/dsh";
 import {
   RoutingWebSearchExecutor,
 } from "@researchbox/web-search-plugin/executor";
@@ -100,6 +113,22 @@ host.onmessage = (event) => {
         timeout_ms: initialization.web_search_plugin.timeout_ms,
       })
     : null;
+  const webSearchOptions = {
+    maximum_results:
+      initialization.web_search_plugin.maximum_results,
+    maximum_output_bytes:
+      initialization.web_search_plugin.max_output_bytes,
+    default_provider:
+      initialization.web_search_plugin.provider,
+    default_workflow:
+      initialization.web_search_plugin.workflow,
+    summary_timeout_ms:
+      initialization.web_search_plugin.summary_timeout_ms,
+    review_timeout_ms:
+      initialization.web_search_plugin.review_timeout_ms,
+    summary_grace_ms: DEFAULT_WEB_SEARCH_SUMMARY_GRACE_MS,
+    ...(urlReader ? { url_reader: urlReader } : {}),
+  };
   const legacyPlugins = [
     ...(pythonClient
       ? [createPythonAgentPlugin(pythonClient)]
@@ -107,23 +136,25 @@ host.onmessage = (event) => {
     ...(webSearchExecutor
       ? [createWebSearchAgentPlugin(
           webSearchExecutor,
-          {
-            maximum_results:
-              initialization.web_search_plugin.maximum_results,
-            maximum_output_bytes:
-              initialization.web_search_plugin.max_output_bytes,
-            default_provider:
-              initialization.web_search_plugin.provider,
-            default_workflow:
-              initialization.web_search_plugin.workflow,
-            summary_timeout_ms:
-              initialization.web_search_plugin.summary_timeout_ms,
-            review_timeout_ms:
-              initialization.web_search_plugin.review_timeout_ms,
-            summary_grace_ms: DEFAULT_WEB_SEARCH_SUMMARY_GRACE_MS,
-            ...(urlReader ? { url_reader: urlReader } : {}),
-          },
+          webSearchOptions,
         )]
+      : []),
+  ];
+  const dshPlugins = [
+    ...(pythonClient
+      ? [{
+          plugin: DshrboxPython,
+          config: { executor: pythonClient },
+        }]
+      : []),
+    ...(webSearchExecutor
+      ? [{
+          plugin: DshrboxWebResearch,
+          config: {
+            executor: webSearchExecutor,
+            ...webSearchOptions,
+          },
+        }]
       : []),
   ];
 
@@ -147,6 +178,13 @@ host.onmessage = (event) => {
         projectStore,
         workspaceBackend: new NativeWorkspaceBackend(storageClient, {
           default_initial_files: researchBoxSeedFiles,
+        }),
+        sessionRuntimeProvider: new DshrboxSessionRuntimeProvider({
+          session_backend: (projectId) =>
+            new NativeDshrboxSessionBackend(storageClient, projectId),
+          plugins: dshPlugins,
+          max_parallel_tool_calls:
+            DSH_BROWSER_COMPATIBILITY.max_parallel_tool_calls,
         }),
         close() {
           projectStore.close();

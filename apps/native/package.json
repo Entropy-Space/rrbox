@@ -12,6 +12,9 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@dshrbox/runtime-browser": "workspace:*",
+    "@dshrbox/session-persistence-native": "workspace:*",
+    "@dshrbox/session-runtime": "workspace:*",
     "@researchbox/app-runtime-browser": "workspace:*",
     "@researchbox/client": "workspace:*",
     "@researchbox/mock-provider": "workspace:*",

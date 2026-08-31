@@ -1,4 +1,5 @@
 mod database;
+mod dsh_session;
 mod layout;
 mod project_state;
 mod workspace;
@@ -110,6 +111,48 @@ impl StorageService {
       } => {
         self.save_project_state(&state, expected_revision)?;
         Ok(NativeStorageResult::ProjectStoreSaved)
+      }
+      NativeStorageOperation::DshSessionLoad {
+        project_id,
+        session_id,
+      } => {
+        let value = self.dsh_session_load(&project_id, &session_id)?;
+        Ok(NativeStorageResult::DshSessionLoaded { value })
+      }
+      NativeStorageOperation::DshSessionLoadFrom {
+        project_id,
+        session_id,
+        from_seq,
+      } => {
+        let value = self.dsh_session_load_from(&project_id, &session_id, from_seq)?;
+        Ok(NativeStorageResult::DshSessionSuffixLoaded { value })
+      }
+      NativeStorageOperation::DshSessionReadRevision {
+        project_id,
+        session_id,
+      } => {
+        let value = self.dsh_session_read_revision(&project_id, &session_id)?;
+        Ok(NativeStorageResult::DshSessionRevision { value })
+      }
+      NativeStorageOperation::DshSessionAppend {
+        project_id,
+        header,
+        events,
+        is_materialized,
+      } => {
+        self.dsh_session_append(&project_id, &header, &events, is_materialized)?;
+        Ok(NativeStorageResult::DshSessionAppended)
+      }
+      NativeStorageOperation::DshSessionList { project_id } => {
+        let headers = self.dsh_session_list(&project_id)?;
+        Ok(NativeStorageResult::DshSessionsListed { headers })
+      }
+      NativeStorageOperation::DshSessionDelete {
+        project_id,
+        session_id,
+      } => {
+        self.dsh_session_delete(&project_id, &session_id)?;
+        Ok(NativeStorageResult::DshSessionDeleted)
       }
       NativeStorageOperation::WorkspaceCreate {
         project_id,

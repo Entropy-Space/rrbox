@@ -8,4 +8,5 @@ storage boundary. DSH's persistence coordinator continues to own batching,
 revisions, resume preparation, and crash repair.
 
 `MemoryDshrboxSessionBackend` is provided for tests and explicitly ephemeral
-hosts. Browser and native durability adapters remain composition-root work.
+hosts. Browser IndexedDB and project-scoped native SQLite adapters are supplied
+by their platform packages and selected only at composition roots.

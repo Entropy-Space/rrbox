@@ -101,6 +101,23 @@ fn runtime_document(session_id: &str, project_id: &str) -> Value {
   })
 }
 
+fn dsh_header(session_id: &str) -> Value {
+  json!({
+    "version": 0,
+    "id": session_id,
+    "createdAt": 1_785_456_000_000_u64,
+  })
+}
+
+fn dsh_event(seq: u64, event_type: &str) -> Value {
+  json!({
+    "type": event_type,
+    "seq": seq,
+    "time": 1_785_456_000_000_u64 + seq,
+    "data": { "turn": 1 },
+  })
+}
+
 fn state(
   revision: u64,
   active_project_id: &str,
@@ -258,6 +275,151 @@ fn project_state_accepts_runtime_references_without_viewer_history() {
   assert_eq!(
     storage.load_project_state().expect("load project state"),
     Some(initial)
+  );
+}
+
+#[test]
+fn dsh_sessions_append_seek_reopen_and_delete_with_their_project() {
+  let (directory, storage) = service();
+  let initial = state(
+    1,
+    "project-1",
+    vec![project("project-1", "Project", Some("session-1"))],
+    vec![session("session-1", "project-1")],
+    vec![runtime_document("session-1", "project-1")],
+  );
+  storage
+    .save_project_state(&initial, None)
+    .expect("runtime host state");
+  let header = dsh_header("session-1");
+  let first_events = vec![dsh_event(0, "turn/start"), dsh_event(1, "turn/end")];
+  storage
+    .dsh_session_append("project-1", &header, &first_events, false)
+    .expect("first DSH append");
+  let first = storage
+    .dsh_session_load("project-1", "session-1")
+    .expect("load DSH session")
+    .expect("materialized DSH session");
+  assert_eq!(first.header, header);
+  assert_eq!(first.events, first_events);
+  assert_eq!(first.revision, 1);
+  assert_eq!(first.storage_id.len(), 32);
+
+  let continuation = vec![dsh_event(2, "turn/start")];
+  storage
+    .dsh_session_append("project-1", &header, &continuation, true)
+    .expect("continued DSH append");
+  let suffix = storage
+    .dsh_session_load_from("project-1", "session-1", 1)
+    .expect("load DSH suffix")
+    .expect("stored DSH suffix");
+  assert_eq!(suffix.header, header);
+  assert_eq!(
+    suffix.events,
+    vec![first_events[1].clone(), continuation[0].clone()],
+  );
+  let revision = storage
+    .dsh_session_read_revision("project-1", "session-1")
+    .expect("read DSH revision")
+    .expect("stored DSH revision");
+  assert_eq!(revision.storage_id, first.storage_id);
+  assert_eq!(revision.revision, 2);
+  assert_eq!(
+    storage
+      .dsh_session_list("project-1")
+      .expect("list DSH sessions"),
+    vec![header.clone()],
+  );
+  assert!(
+    storage
+      .project_usage("project-1")
+      .expect("project usage")
+      .breakdown
+      .conversation_bytes
+      > serde_json::to_string(&initial).expect("state JSON").len() as u64
+  );
+
+  drop(storage);
+  let reopened = initialized_service(directory.path().join("researchbox"));
+  assert_eq!(
+    reopened
+      .dsh_session_load("project-1", "session-1")
+      .expect("reopened DSH session")
+      .expect("stored DSH session")
+      .events
+      .len(),
+    3,
+  );
+  reopened
+    .dsh_session_delete("project-1", "session-1")
+    .expect("delete DSH session");
+  reopened
+    .dsh_session_delete("project-1", "session-1")
+    .expect("idempotent DSH delete");
+  assert!(
+    reopened
+      .dsh_session_load("project-1", "session-1")
+      .expect("deleted DSH session")
+      .is_none()
+  );
+}
+
+#[test]
+fn dsh_session_append_requires_its_host_document_and_contiguous_events() {
+  let (_directory, storage) = service();
+  let initial = state(
+    1,
+    "project-1",
+    vec![project("project-1", "Project", Some("legacy-session"))],
+    vec![session("legacy-session", "project-1")],
+    vec![document("legacy-session", "project-1")],
+  );
+  storage
+    .save_project_state(&initial, None)
+    .expect("legacy host state");
+  assert!(matches!(
+    storage.dsh_session_append(
+      "project-1",
+      &dsh_header("missing-session"),
+      &[dsh_event(0, "turn/start")],
+      false,
+    ),
+    Err(StorageError::InvalidRequest(_))
+  ));
+  assert!(matches!(
+    storage.dsh_session_append(
+      "project-1",
+      &dsh_header("legacy-session"),
+      &[dsh_event(0, "turn/start")],
+      false,
+    ),
+    Err(StorageError::WorkspaceCorruption(_))
+  ));
+
+  let runtime_state = state(
+    2,
+    "project-1",
+    vec![project("project-1", "Project", Some("session-1"))],
+    vec![session("session-1", "project-1")],
+    vec![runtime_document("session-1", "project-1")],
+  );
+  storage
+    .save_project_state(&runtime_state, Some(1))
+    .expect("DSH host state");
+  assert!(matches!(
+    storage.dsh_session_append(
+      "project-1",
+      &dsh_header("session-1"),
+      &[dsh_event(1, "turn/start")],
+      false,
+    ),
+    Err(StorageError::InvalidRequest(_))
+  ));
+  assert!(
+    storage
+      .dsh_session_load("project-1", "session-1")
+      .expect("unmaterialized session")
+      .is_none()
   );
 }
 
@@ -789,6 +951,96 @@ fn construction_is_io_free_and_schema_versions_are_not_overwritten() {
     )
     .expect("schema version");
   assert_eq!(version, "2");
+}
+
+#[test]
+fn project_schema_v1_additively_migrates_dsh_session_storage() {
+  let (_directory, storage) = service();
+  let initial = state(
+    1,
+    "project-1",
+    vec![project("project-1", "Project", None)],
+    vec![],
+    vec![],
+  );
+  storage
+    .save_project_state(&initial, None)
+    .expect("project state");
+  let storage_id = storage_id(&storage, "project-1");
+  let database_path = storage
+    .project_database_path(&storage_id)
+    .expect("project database path");
+  let raw = rusqlite::Connection::open(&database_path).expect("raw project database");
+  raw
+    .execute_batch(
+      "DROP TABLE dsh_session_events;
+       DROP TABLE dsh_session_headers;
+       UPDATE native_meta SET value = '1' WHERE key = 'schema_version';",
+    )
+    .expect("install v1 schema shape");
+  drop(raw);
+
+  let migrated = storage
+    .open_project_database(&storage_id)
+    .expect("migrated project database");
+  let version: String = migrated
+    .query_row(
+      "SELECT value FROM native_meta WHERE key = 'schema_version'",
+      [],
+      |row| row.get(0),
+    )
+    .expect("migrated schema version");
+  assert_eq!(version, "2");
+  let dsh_table_count: u64 = migrated
+    .query_row(
+      "SELECT COUNT(*) FROM sqlite_master
+       WHERE type = 'table' AND name IN ('dsh_session_headers', 'dsh_session_events')",
+      [],
+      |row| row.get(0),
+    )
+    .expect("DSH session tables");
+  assert_eq!(dsh_table_count, 2);
+}
+
+#[test]
+fn future_project_schema_is_rejected_without_being_overwritten() {
+  let (_directory, storage) = service();
+  let initial = state(
+    1,
+    "project-1",
+    vec![project("project-1", "Project", None)],
+    vec![],
+    vec![],
+  );
+  storage
+    .save_project_state(&initial, None)
+    .expect("project state");
+  let storage_id = storage_id(&storage, "project-1");
+  let database_path = storage
+    .project_database_path(&storage_id)
+    .expect("project database path");
+  let raw = rusqlite::Connection::open(&database_path).expect("raw project database");
+  raw
+    .execute(
+      "UPDATE native_meta SET value = '99' WHERE key = 'schema_version'",
+      [],
+    )
+    .expect("install future project schema marker");
+  drop(raw);
+
+  assert!(matches!(
+    storage.open_project_database(&storage_id),
+    Err(StorageError::WorkspaceCorruption(_))
+  ));
+  let raw = rusqlite::Connection::open(database_path).expect("raw project database");
+  let version: String = raw
+    .query_row(
+      "SELECT value FROM native_meta WHERE key = 'schema_version'",
+      [],
+      |row| row.get(0),
+    )
+    .expect("future schema version");
+  assert_eq!(version, "99");
 }
 
 #[test]

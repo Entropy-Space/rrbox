@@ -27,4 +27,5 @@ DSH session.
 
 The web worker activates this runtime for new sessions with durable IndexedDB
 events. Existing unmarked sessions remain on the legacy runtime. The native
-worker remains legacy-only until a native DSH persistence backend lands.
+worker remains legacy-only until its new project-scoped SQLite backend and DSH
+plugins are explicitly wired at the native composition root.

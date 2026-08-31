@@ -10,7 +10,7 @@ use uuid::Uuid;
 use super::{StorageError, StorageService};
 
 const CATALOG_SCHEMA_VERSION: u32 = 1;
-const PROJECT_SCHEMA_VERSION: u32 = 1;
+const PROJECT_SCHEMA_VERSION: u32 = 2;
 
 impl StorageService {
   pub(super) fn open_catalog(&self) -> Result<Connection, StorageError> {
@@ -60,13 +60,14 @@ impl StorageService {
         "Native project database {storage_id} is missing."
       )));
     }
-    let connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    let mut connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    configure_connection(&connection)?;
+    self.migrate_project_schema(&mut connection)?;
     validate_schema_version(
       &connection,
       PROJECT_SCHEMA_VERSION,
       "native project database",
     )?;
-    configure_connection(&connection)?;
     Ok(connection)
   }
 
@@ -169,6 +170,21 @@ impl StorageService {
         session_json TEXT NOT NULL,
         document_json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS dsh_session_headers (
+        session_id TEXT PRIMARY KEY COLLATE BINARY,
+        header_json TEXT NOT NULL,
+        storage_id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        event_count INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS dsh_session_events (
+        session_id TEXT NOT NULL COLLATE BINARY,
+        seq INTEGER NOT NULL,
+        event_json TEXT NOT NULL,
+        PRIMARY KEY (session_id, seq),
+        FOREIGN KEY (session_id) REFERENCES dsh_session_headers(session_id)
+          ON DELETE CASCADE
+      );
       CREATE TABLE IF NOT EXISTS workspace_meta (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         active INTEGER NOT NULL,
@@ -197,6 +213,55 @@ impl StorageService {
     )?;
     transaction.execute(
       "INSERT INTO native_meta (key, value) VALUES ('schema_version', ?1)",
+      [PROJECT_SCHEMA_VERSION.to_string()],
+    )?;
+    transaction.commit()?;
+    Ok(())
+  }
+
+  fn migrate_project_schema(&self, connection: &mut Connection) -> Result<(), StorageError> {
+    let version = read_schema_version(connection, "native project database")?;
+    if version == PROJECT_SCHEMA_VERSION {
+      return Ok(());
+    }
+    if version != 1 {
+      return Err(StorageError::WorkspaceCorruption(format!(
+        "Unsupported native project database schema version {version}; expected {PROJECT_SCHEMA_VERSION}."
+      )));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let locked_version = read_schema_version(&transaction, "native project database")?;
+    if locked_version == PROJECT_SCHEMA_VERSION {
+      transaction.commit()?;
+      return Ok(());
+    }
+    if locked_version != 1 {
+      return Err(StorageError::WorkspaceCorruption(format!(
+        "Unsupported native project database schema version {locked_version}; expected {PROJECT_SCHEMA_VERSION}."
+      )));
+    }
+    transaction.execute_batch(
+      "
+      CREATE TABLE dsh_session_headers (
+        session_id TEXT PRIMARY KEY COLLATE BINARY,
+        header_json TEXT NOT NULL,
+        storage_id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        event_count INTEGER NOT NULL
+      );
+      CREATE TABLE dsh_session_events (
+        session_id TEXT NOT NULL COLLATE BINARY,
+        seq INTEGER NOT NULL,
+        event_json TEXT NOT NULL,
+        PRIMARY KEY (session_id, seq),
+        FOREIGN KEY (session_id) REFERENCES dsh_session_headers(session_id)
+          ON DELETE CASCADE
+      );
+      ",
+    )?;
+    transaction.execute(
+      "UPDATE native_meta SET value = ?1 WHERE key = 'schema_version'",
       [PROJECT_SCHEMA_VERSION.to_string()],
     )?;
     transaction.commit()?;
@@ -286,6 +351,16 @@ fn validate_schema_version(
   expected: u32,
   label: &str,
 ) -> Result<(), StorageError> {
+  let version = read_schema_version(connection, label)?;
+  if version != expected {
+    return Err(StorageError::WorkspaceCorruption(format!(
+      "Unsupported {label} schema version {version}; expected {expected}."
+    )));
+  }
+  Ok(())
+}
+
+fn read_schema_version(connection: &Connection, label: &str) -> Result<u32, StorageError> {
   let stored: String = connection
     .query_row(
       "SELECT value FROM native_meta WHERE key = 'schema_version'",
@@ -302,12 +377,7 @@ fn validate_schema_version(
       "The {label} has an invalid schema version: {stored}."
     ))
   })?;
-  if version != expected {
-    return Err(StorageError::WorkspaceCorruption(format!(
-      "Unsupported {label} schema version {version}; expected {expected}."
-    )));
-  }
-  Ok(())
+  Ok(version)
 }
 
 pub(super) fn validate_opaque_id(value: &str, field: &str) -> Result<(), StorageError> {

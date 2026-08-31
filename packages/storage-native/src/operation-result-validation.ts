@@ -18,6 +18,28 @@ export function validateNativeStorageResultForOperation(
   result: NativeStorageSuccessResult,
 ): void {
   switch (operation.kind) {
+    case "dsh_session_load":
+      if (
+        result.kind === "dsh_session_loaded" &&
+        result.value !== null &&
+        getDshSessionId(result.value.header) !== operation.session_id
+      ) {
+        throw new Error(
+          "Native storage returned a different DSH session than requested.",
+        );
+      }
+      return;
+    case "dsh_session_load_from":
+      if (
+        result.kind === "dsh_session_suffix_loaded" &&
+        result.value !== null &&
+        getDshSessionId(result.value.header) !== operation.session_id
+      ) {
+        throw new Error(
+          "Native storage returned a different DSH session suffix than requested.",
+        );
+      }
+      return;
     case "workspace_create":
     case "workspace_open":
       if (
@@ -73,6 +95,12 @@ export function validateNativeStorageResultForOperation(
     default:
       return;
   }
+}
+
+function getDshSessionId(header: unknown): string | undefined {
+  if (header === null || typeof header !== "object") return undefined;
+  const id = (header as { id?: unknown }).id;
+  return typeof id === "string" ? id : undefined;
 }
 
 function validateWriteResult(

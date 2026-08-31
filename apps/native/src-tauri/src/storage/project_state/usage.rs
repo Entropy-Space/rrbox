@@ -25,7 +25,7 @@ impl StorageService {
       [],
       |row| row.get(0),
     )?;
-    let conversation_bytes: u64 = transaction.query_row(
+    let host_conversation_bytes: u64 = transaction.query_row(
       "SELECT COALESCE(SUM(
         length(CAST(session_json AS BLOB)) +
         length(CAST(document_json AS BLOB))
@@ -33,6 +33,21 @@ impl StorageService {
       [],
       |row| row.get(0),
     )?;
+    let dsh_header_bytes: u64 = transaction.query_row(
+      "SELECT COALESCE(SUM(length(CAST(header_json AS BLOB))), 0)
+       FROM dsh_session_headers",
+      [],
+      |row| row.get(0),
+    )?;
+    let dsh_event_bytes: u64 = transaction.query_row(
+      "SELECT COALESCE(SUM(length(CAST(event_json AS BLOB))), 0)
+       FROM dsh_session_events",
+      [],
+      |row| row.get(0),
+    )?;
+    let conversation_bytes = host_conversation_bytes
+      .saturating_add(dsh_header_bytes)
+      .saturating_add(dsh_event_bytes);
     let workspace_bytes: u64 = transaction.query_row(
       "SELECT COALESCE(SUM(length(CAST(content AS BLOB))), 0)
        FROM workspace_files",

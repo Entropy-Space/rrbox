@@ -11,6 +11,7 @@ import {
   hasOwnField,
   requireAllowedFields,
   requireArray,
+  requireBoolean,
   requireEnum,
   requireNonEmptyString,
   requireNonNegativeSafeInteger,
@@ -66,6 +67,28 @@ function validateNativeStorageOperation(
     case "project_usage":
     case "workspace_open":
     case "workspace_delete":
+      requireAllowedFields(
+        operation,
+        ["kind", "project_id"],
+        `Operation ${kind}`,
+      );
+      requireNonEmptyString(
+        operation.project_id,
+        "operation.project_id",
+      );
+      return;
+    case "dsh_session_load":
+    case "dsh_session_read_revision":
+    case "dsh_session_delete":
+      validateDshSessionIdentityOperation(operation, kind);
+      return;
+    case "dsh_session_load_from":
+      validateDshSessionLoadFrom(operation, kind);
+      return;
+    case "dsh_session_append":
+      validateDshSessionAppend(operation, kind);
+      return;
+    case "dsh_session_list":
       requireAllowedFields(
         operation,
         ["kind", "project_id"],
@@ -135,6 +158,81 @@ function validateNativeStorageOperation(
       );
       return;
   }
+}
+
+function validateDshSessionIdentityOperation(
+  operation: Record<string, unknown>,
+  kind: string,
+): void {
+  requireAllowedFields(
+    operation,
+    ["kind", "project_id", "session_id"],
+    `Operation ${kind}`,
+  );
+  requireNonEmptyString(operation.project_id, "operation.project_id");
+  requireNonEmptyString(operation.session_id, "operation.session_id");
+}
+
+function validateDshSessionLoadFrom(
+  operation: Record<string, unknown>,
+  kind: string,
+): void {
+  requireAllowedFields(
+    operation,
+    ["kind", "project_id", "session_id", "from_seq"],
+    `Operation ${kind}`,
+  );
+  requireNonEmptyString(operation.project_id, "operation.project_id");
+  requireNonEmptyString(operation.session_id, "operation.session_id");
+  requireNonNegativeSafeInteger(
+    operation.from_seq,
+    "operation.from_seq",
+  );
+}
+
+function validateDshSessionAppend(
+  operation: Record<string, unknown>,
+  kind: string,
+): void {
+  requireAllowedFields(
+    operation,
+    ["kind", "project_id", "header", "events", "is_materialized"],
+    `Operation ${kind}`,
+  );
+  requireNonEmptyString(operation.project_id, "operation.project_id");
+  const header = requireRecord(operation.header, "operation.header");
+  requireNonEmptyString(header.id, "operation.header.id");
+  requireNonNegativeSafeInteger(
+    header.version,
+    "operation.header.version",
+  );
+  requireNonNegativeSafeInteger(
+    header.createdAt,
+    "operation.header.createdAt",
+  );
+  const events = requireArray(operation.events, "operation.events");
+  for (const [index, value] of events.entries()) {
+    const event = requireRecord(value, `operation.events[${index}]`);
+    requireNonEmptyString(
+      event.type,
+      `operation.events[${index}].type`,
+    );
+    requireNonNegativeSafeInteger(
+      event.seq,
+      `operation.events[${index}].seq`,
+    );
+    requireNonNegativeSafeInteger(
+      event.time,
+      `operation.events[${index}].time`,
+    );
+    if (!hasOwnField(event, "data")) {
+      throw new Error(`operation.events[${index}].data is required.`);
+    }
+  }
+  requireBoolean(
+    operation.is_materialized,
+    "operation.is_materialized",
+  );
 }
 
 function validateProjectStoreSave(

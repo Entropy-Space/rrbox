@@ -22,6 +22,7 @@ test("keeps the proposed workspace surfaces present", async () => {
     "packages/runtime-browser",
     "packages/storage-browser",
     "packages/storage-native",
+    "packages/dshrbox-session-persistence-native",
     "packages/vfs",
     "packages/workspace-archive",
   ];

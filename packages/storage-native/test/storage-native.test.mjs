@@ -13,6 +13,7 @@ import {
   NativeStorageProtocolError,
   NativeStorageRpcClient,
   NativeWorkspaceBackend,
+  parseNativeStorageRequest,
 } from "../src/index.ts";
 
 test("correlates concurrent requests and validates result kinds", async () => {
@@ -89,6 +90,83 @@ test("rejects additive fields outside the versioned response contract", async ()
 
   await assert.rejects(pending, NativeStorageProtocolError);
   assert.equal(endpoint.closed, true);
+});
+
+test("strictly validates and correlates native DSH session operations", async () => {
+  const append = {
+    protocol_version: NATIVE_STORAGE_PROTOCOL_VERSION,
+    request_id: "dsh-append",
+    operation: {
+      kind: "dsh_session_append",
+      project_id: "project-1",
+      header: {
+        version: 0,
+        id: "session-1",
+        createdAt: 1,
+      },
+      events: [{
+        type: "turn/start",
+        seq: 0,
+        time: 1,
+        data: { turn: 1 },
+      }],
+      is_materialized: false,
+    },
+  };
+  assert.deepEqual(parseNativeStorageRequest(append), append);
+  assert.throws(
+    () => parseNativeStorageRequest({
+      ...append,
+      operation: {
+        ...append.operation,
+        events: [{ type: "turn/start", seq: 0, time: 1 }],
+      },
+    }),
+    /data is required/,
+  );
+
+  const endpoint = new FakeEndpoint();
+  const client = createClient(endpoint, "dsh-correlation");
+  const pending = client.request({
+    kind: "dsh_session_load",
+    project_id: "project-1",
+    session_id: "session-1",
+  });
+  endpoint.respond(endpoint.requests[0], {
+    kind: "dsh_session_loaded",
+    value: {
+      header: {
+        version: 0,
+        id: "session-other",
+        createdAt: 1,
+      },
+      events: [],
+      storage_id: "a".repeat(32),
+      revision: 1,
+    },
+  });
+  await assert.rejects(
+    pending,
+    /different DSH session than requested/,
+  );
+  client.close();
+
+  const malformedEndpoint = new FakeEndpoint();
+  const malformedClient = createClient(malformedEndpoint, "dsh-malformed");
+  const malformedPending = malformedClient.request({
+    kind: "dsh_session_read_revision",
+    project_id: "project-1",
+    session_id: "session-1",
+  });
+  malformedEndpoint.respond(malformedEndpoint.requests[0], {
+    kind: "dsh_session_revision",
+    value: {
+      storage_id: "not-a-storage-id",
+      revision: 0,
+    },
+  });
+  await assert.rejects(malformedPending, NativeStorageProtocolError);
+  assert.equal(malformedEndpoint.closed, true);
 });
 
 test("maps native errors to project, workspace, and VFS errors", async () => {

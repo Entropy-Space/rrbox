@@ -4,7 +4,10 @@ import { ModelTransportLlmAdapter } from "@dshrbox/model-adapter";
 import { MemoryDshrboxSessionBackend } from "@dshrbox/session-persistence";
 import { DshrboxSessionRuntimeProvider } from "@dshrbox/session-runtime";
 import DshrboxWorkspace from "@dshrbox/workspace";
-import { ResearchBoxCore } from "@researchbox/agent-core";
+import {
+  PiSessionRuntimeProvider,
+  ResearchBoxCore,
+} from "@researchbox/agent-core";
 import { MemoryProjectStore } from "@researchbox/project-store";
 import { createCommand } from "@researchbox/protocol";
 import {
@@ -210,6 +213,7 @@ async function runSessionRuntimeProbe(): Promise<DshrboxSessionRuntimeProbe> {
     modelTransport: transport,
     model,
     systemPrompt: "Run the DSH browser session probe.",
+    legacySessionRuntimeProvider: new PiSessionRuntimeProvider(),
     eventSink: (event) => events.push(event),
     sessionRuntimeProvider: new DshrboxSessionRuntimeProvider({
       session_backend: sessionBackend,

@@ -52,18 +52,13 @@ import {
   type WorkspaceArchiveOptions,
 } from "@researchbox/workspace-archive/snapshot";
 import {
-  SessionRuntime,
-  stagePrompt,
   type CoreEventSink,
+  type LegacySessionRuntimeProvider,
   type SessionRuntimeOptions,
   type SessionRuntimePort,
   type SessionRuntimeProvider,
   type SessionRuntimeView,
-} from "./session-runtime.ts";
-import {
-  snapshotAgentPlugins,
-  type AgentPlugin,
-} from "./agent-plugin.ts";
+} from "./session-runtime-port.ts";
 import { emptyAssistantUsage } from "./session-codec.ts";
 import {
   ProviderCatalogService,
@@ -92,7 +87,7 @@ export type ResearchBoxCoreOptions = {
   model: Model<string>;
   providers?: ModelProviderDefinition[];
   systemPrompt: string;
-  plugins?: readonly AgentPlugin[];
+  legacySessionRuntimeProvider: LegacySessionRuntimeProvider;
   eventSink: CoreEventSink;
   workspaceTransferOptions?: WorkspaceArchiveOptions;
   sessionRuntimeProvider?: SessionRuntimeProvider;
@@ -112,6 +107,21 @@ type WorkspaceChangeReconciliation = WorkspaceChangeQuarantineSummary & {
 
 const STARTUP_REPAIR_SAVE_ATTEMPTS = 5;
 
+function requireLegacySessionRuntimeProvider(
+  provider: LegacySessionRuntimeProvider,
+): LegacySessionRuntimeProvider {
+  if (
+    !provider ||
+    typeof provider.stagePrompt !== "function" ||
+    typeof provider.create !== "function"
+  ) {
+    throw new TypeError(
+      "ResearchBoxCore requires an explicit legacy session runtime provider.",
+    );
+  }
+  return provider;
+}
+
 export class ResearchBoxCore {
   private readonly projectStore: ProjectStore;
   private readonly workspaceBackend: WorkspaceBackend;
@@ -119,7 +129,7 @@ export class ResearchBoxCore {
   private readonly providerCatalog: ProviderCatalogService;
   private readonly defaultModelSelection: ModelSelection;
   private readonly systemPrompt: string;
-  private readonly plugins: readonly AgentPlugin[];
+  private readonly legacySessionRuntimeProvider: LegacySessionRuntimeProvider;
   private readonly eventSink: CoreEventSink;
   private readonly workspaceTransferOptions: WorkspaceArchiveOptions | undefined;
   private readonly sessionRuntimeProvider: SessionRuntimeProvider | undefined;
@@ -175,7 +185,10 @@ export class ResearchBoxCore {
         modelCatalog: options.modelCatalog,
       });
     this.systemPrompt = options.systemPrompt;
-    this.plugins = snapshotAgentPlugins(options.plugins);
+    this.legacySessionRuntimeProvider =
+      requireLegacySessionRuntimeProvider(
+        options.legacySessionRuntimeProvider,
+      );
     this.eventSink = options.eventSink;
     this.workspaceTransferOptions = snapshotWorkspaceTransferOptions(
       options.workspaceTransferOptions,
@@ -657,7 +670,10 @@ export class ResearchBoxCore {
           currentProject.new_chat_reasoning_effort,
         );
         const staged = this.sessionRuntimeProvider === undefined
-          ? stagePrompt(created.document, promptText)
+          ? this.legacySessionRuntimeProvider.stagePrompt(
+              created.document,
+              promptText,
+            )
           : null;
         const sessionDocument = this.sessionRuntimeProvider === undefined
           ? created.document
@@ -1564,11 +1580,8 @@ export class ResearchBoxCore {
         };
     const nextRuntime = runtimeOptions === null
       ? null
-      : await (runtimeProvider?.create(runtimeOptions) ??
-        new SessionRuntime({
-          ...runtimeOptions,
-          plugins: this.plugins,
-        }));
+      : await (runtimeProvider ?? this.legacySessionRuntimeProvider)
+        .create(runtimeOptions);
     await this.runtime?.dispose();
     this.workspace = workspace;
     this.runtime = nextRuntime;

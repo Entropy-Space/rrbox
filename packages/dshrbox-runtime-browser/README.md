@@ -3,11 +3,25 @@
 `@dshrbox/runtime-browser` adapts the platform-neutral `@dshrbox/core`
 composition for browser workers.
 
-DSH `0.1.0-rc.7` imports Node built-ins from core packages. Browser builds use
+DSH `0.1.1-rc.2` imports Node built-ins from core packages. Browser builds use
 `dshBrowserCompatibilityAliases()` to replace those imports with narrow worker
 implementations. The `node:async_hooks` replacement supports one foreground
 async chain, so this package fixes tool parallelism to one. The core runtime
 also owns one live agent and rejects overlapping runs.
+
+DSH rc.2 uses explicit-resource-management helpers and computed
+`[Symbol.dispose]` methods. Older JavaScriptCore releases do not expose
+`Symbol.dispose` or `Symbol.asyncDispose`, so browser worker entries import
+`@dshrbox/runtime-browser/install` before any DSH module. The installer defines
+the missing symbols once with well-known-symbol-style property descriptors.
+
+DSH `0.1.1-rc.2` also identifies intrinsic `Object` and `Array` constructors by
+their V8-formatted source strings. JavaScriptCore uses multiline native source
+formatting, causing ordinary session data and tool schemas to be rejected. The
+workspace-level pnpm patches normalize whitespace in that intrinsic check for
+`dsh-session` and `dsh-tools`. The executable browser probe simulates the
+JavaScriptCore format so the patches can be removed safely after an upstream
+release includes the fix.
 
 Multi-agent runs, parallel tool calls, or detached initiator-scoped work require
 an upstream browser-safe async-context seam, or a replacement with equivalent

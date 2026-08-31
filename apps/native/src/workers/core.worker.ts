@@ -1,5 +1,6 @@
 /// <reference lib="webworker" />
 
+import "@dshrbox/runtime-browser/install";
 import {
   createResearchBoxProviderDefinitions,
   startResearchBoxCoreWorker,

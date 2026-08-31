@@ -259,6 +259,11 @@ test("finalizes partial assistant output when DSH aborts a turn", async () => {
     assert.equal(assistant.status, "aborted");
     assert.equal(assistant.stop_reason, "aborted");
     assert.equal(assistant.blocks[0].text, "partial");
+    assert.equal(
+      raw.find((event) => event.type === "assistant/message")
+        ?.data.interrupted,
+      true,
+    );
     assert.equal(snapshot.is_running, false);
     assert.equal(
       projected.findLast((event) => event.type === "run_state")

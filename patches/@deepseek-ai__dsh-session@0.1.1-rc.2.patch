@@ -1,0 +1,30 @@
+diff --git a/lib/index.js b/lib/index.js
+index 62fd0fe17593f5b2d52b8a792add164e1f16a4d1..7c8906ea80119f1883fe535576d89af9a9b8aa1c 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -43,7 +43,8 @@ function hasIntrinsicConstructor(prototype, name) {
+ 	const constructor = Object.getOwnPropertyDescriptor(prototype, "constructor")?.value;
+ 	if (typeof constructor !== "function") return false;
+ 	try {
+-		return constructor.name === name && constructor.prototype === prototype && Function.prototype.toString.call(constructor) === `function ${name}() { [native code] }`;
++		const source = Function.prototype.toString.call(constructor).replace(/\s+/g, " ").trim();
++		return constructor.name === name && constructor.prototype === prototype && source === `function ${name}() { [native code] }`;
+ 	} catch {
+ 		return false;
+ 	}
+diff --git a/lib/types/json.js b/lib/types/json.js
+index de672ae12e18fe33b4db7ead0e8cb0752b2e81ef..291e38c1ecf828888d36e740cefe8108f6457c11 100644
+--- a/lib/types/json.js
++++ b/lib/types/json.js
+@@ -6,9 +6,10 @@ function hasIntrinsicConstructor(prototype, name) {
+     if (typeof constructor !== 'function')
+         return false;
+     try {
++        const source = Function.prototype.toString.call(constructor).replace(/\s+/g, ' ').trim();
+         return constructor.name === name
+             && constructor.prototype === prototype
+-            && Function.prototype.toString.call(constructor) === `function ${name}() { [native code] }`;
++            && source === `function ${name}() { [native code] }`;
+     }
+     catch {
+         return false;

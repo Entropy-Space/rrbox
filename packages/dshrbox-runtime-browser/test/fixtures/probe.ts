@@ -18,7 +18,7 @@ import {
   WorkspaceProbeModelTransport,
 } from "./probe-adapter.ts";
 
-const DSH_VERSION = "0.1.0-rc.7";
+const DSH_VERSION = "0.1.1-rc.2";
 const PROBE_PROJECT_ID = "dshrbox-browser-probe-project";
 const PROBE_PROVIDER = "dshrbox-probe";
 const PROBE_MODEL = "fake-streaming-model";

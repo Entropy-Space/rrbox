@@ -1,3 +1,4 @@
+import "../../src/disposable-symbols.ts";
 import {
   runDshrboxBrowserProbe,
   type DshrboxBrowserProbeResult,

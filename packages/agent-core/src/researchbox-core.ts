@@ -1549,7 +1549,6 @@ export class ResearchBoxCore {
               ? this.providerCatalog.getModel(selection)
               : undefined,
           system_prompt: this.systemPrompt,
-          plugins: this.plugins,
           event_sink: this.eventSink,
           checkpoint: (phase, requestId) =>
             this.enqueueMutation(async () => {
@@ -1566,7 +1565,10 @@ export class ResearchBoxCore {
     const nextRuntime = runtimeOptions === null
       ? null
       : await (runtimeProvider?.create(runtimeOptions) ??
-        new SessionRuntime(runtimeOptions));
+        new SessionRuntime({
+          ...runtimeOptions,
+          plugins: this.plugins,
+        }));
     await this.runtime?.dispose();
     this.workspace = workspace;
     this.runtime = nextRuntime;

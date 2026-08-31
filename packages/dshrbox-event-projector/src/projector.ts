@@ -481,7 +481,11 @@ export class DshrboxEventProjector {
     if (event.data.usage !== undefined) {
       assistant.entry.usage = toAssistantUsage(event.data.usage);
     }
-    if (assistant.entry.status === "streaming") {
+    if (event.data.interrupted === true) {
+      assistant.entry.status = "aborted";
+      assistant.entry.stop_reason = "aborted";
+      delete assistant.entry.error_message;
+    } else if (assistant.entry.status === "streaming") {
       assistant.entry.status = "complete";
       assistant.entry.stop_reason = blocks.some(
         (block) => block.type === "tool_call",

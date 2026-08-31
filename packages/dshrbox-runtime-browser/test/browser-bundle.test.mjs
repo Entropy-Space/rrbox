@@ -27,3 +27,34 @@ test("executes the browser-worker bundle with DSH Node imports replaced", async 
     "assistant_message",
   ]);
 });
+
+test("accepts JavaScriptCore native constructor source formatting", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(
+    Function.prototype,
+    "toString",
+  );
+  assert.ok(descriptor);
+  const nativeToString = descriptor.value;
+  assert.equal(typeof nativeToString, "function");
+
+  Object.defineProperty(Function.prototype, "toString", {
+    ...descriptor,
+    value() {
+      const source = Reflect.apply(nativeToString, this, []);
+      if (this !== Object && this !== Array) return source;
+      return source.replace(
+        "{ [native code] }",
+        "{\n    [native code]\n}",
+      );
+    },
+  });
+
+  try {
+    const result = await runDshrboxBrowserProbe();
+    assert.equal(result.ok, true);
+    assert.equal(result.workspace.tool_name, "read_file");
+    assert.equal(result.session_runtime.runtime_id, "dsh");
+  } finally {
+    Object.defineProperty(Function.prototype, "toString", descriptor);
+  }
+});

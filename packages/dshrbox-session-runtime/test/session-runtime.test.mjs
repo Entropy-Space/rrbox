@@ -418,9 +418,10 @@ test("runs and restores a DSH session behind the existing rrbox core", async () 
   await second.dispose();
 });
 
-test("composes native DSH plugins and projects their result metadata", async () => {
+test("composes native DSH plugins without binding legacy plugins", async () => {
   const calls = [];
   const events = [];
+  let legacyPluginBindings = 0;
   const executor = {
     async execute(code, signal) {
       calls.push({ code, signal });
@@ -441,6 +442,13 @@ test("composes native DSH plugins and projects their result metadata", async () 
     true,
     new MemoryDshrboxSessionBackend(),
     [{ plugin: DshrboxPython, config: { executor } }],
+    [{
+      id: "legacy-probe",
+      createTools() {
+        legacyPluginBindings += 1;
+        return [];
+      },
+    }],
   );
   await core.handle(createCommand("bootstrap", {}));
   const initial = latestState(events);
@@ -451,6 +459,7 @@ test("composes native DSH plugins and projects their result metadata", async () 
   }));
 
   assert.equal(calls.length, 1);
+  assert.equal(legacyPluginBindings, 0);
   assert.equal(calls[0].code, "print(6 * 7)");
   assert.ok(calls[0].signal instanceof AbortSignal);
   const state = latestState(events);
@@ -1155,6 +1164,7 @@ test("keeps unmarked existing sessions on the legacy runtime", async () => {
 
   const dshConfiguredEvents = [];
   const sessionBackend = new MemoryDshrboxSessionBackend();
+  let legacyPluginBindings = 0;
   const dshConfigured = createCore(
     store,
     workspace,
@@ -1162,6 +1172,14 @@ test("keeps unmarked existing sessions on the legacy runtime", async () => {
     dshConfiguredEvents,
     true,
     sessionBackend,
+    [],
+    [{
+      id: "legacy-probe",
+      createTools() {
+        legacyPluginBindings += 1;
+        return [];
+      },
+    }],
   );
   await dshConfigured.handle(createCommand("bootstrap", {
     active_project_id: legacyState.active_project_id,
@@ -1174,6 +1192,7 @@ test("keeps unmarked existing sessions on the legacy runtime", async () => {
   }));
   const stored = await store.load();
   assert.equal(stored.documents[0].runtime_id, undefined);
+  assert.ok(legacyPluginBindings > 0);
   assert.ok(transport.toolNames.at(-1).includes("write_file"));
   await dshConfigured.dispose();
 });
@@ -1186,6 +1205,7 @@ function createCore(
   useDsh = true,
   sessionBackend = new MemoryDshrboxSessionBackend(),
   dshPlugins = [],
+  legacyPlugins = [],
 ) {
   return new ResearchBoxCore({
     projectStore: store,
@@ -1194,6 +1214,7 @@ function createCore(
     model,
     systemPrompt: "You are a DSH session-runtime test agent.",
     eventSink: (event) => events.push(event),
+    plugins: legacyPlugins,
     ...(useDsh
       ? {
           sessionRuntimeProvider: new DshrboxSessionRuntimeProvider({

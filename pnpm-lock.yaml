@@ -32,6 +32,15 @@ importers:
 
   apps/native:
     dependencies:
+      '@dshrbox/runtime-browser':
+        specifier: workspace:*
+        version: link:../../packages/dshrbox-runtime-browser
+      '@dshrbox/session-persistence-native':
+        specifier: workspace:*
+        version: link:../../packages/dshrbox-session-persistence-native
+      '@dshrbox/session-runtime':
+        specifier: workspace:*
+        version: link:../../packages/dshrbox-session-runtime
       '@researchbox/app-runtime-browser':
         specifier: workspace:*
         version: link:../../packages/app-runtime-browser

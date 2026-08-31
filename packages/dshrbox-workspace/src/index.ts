@@ -363,27 +363,40 @@ function createChangeMetadata(
     throw new Error("Workspace mutations require an active DSH agent.");
   }
   const callId = String(exec.callId);
-  const call = agent.session.events.findLast(
-    (event) =>
+  let call: (typeof agent.session.events)[number] | undefined;
+  for (let index = agent.session.events.length - 1; index >= 0; index -= 1) {
+    const event = agent.session.events[index];
+    if (
       event.type === "tool/call" &&
       String(event.data.callId) === callId &&
-      event.data.name === toolName,
-  );
+      event.data.name === toolName
+    ) {
+      call = event;
+      break;
+    }
+  }
   if (call?.type !== "tool/call") {
     throw new Error(
       `Workspace mutation ${callId} is missing its DSH tool-call event.`,
     );
   }
-  const assistantMessageIndex = agent.session.deriveMessages().findLastIndex(
-    (message) =>
+  const messages = agent.session.deriveMessages();
+  let assistantMessageIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (
       message.role === "assistant" &&
       message.content.some(
         (block) =>
           block.type === "tool-call" &&
           String(block.id) === callId &&
           block.name === toolName,
-      ),
-  );
+      )
+    ) {
+      assistantMessageIndex = index;
+      break;
+    }
+  }
   if (assistantMessageIndex === -1) {
     throw new Error(
       `Workspace mutation ${callId} is missing its DSH assistant message.`,

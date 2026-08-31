@@ -398,10 +398,14 @@ function toModelToolCall(block: ToolCallBlock) {
   try {
     argumentsValue = JSON.parse(block.arguments) as unknown;
   } catch (error) {
-    throw new Error(
+    const invalidArguments = new Error(
       `Invalid JSON arguments for DSH tool ${block.name}.`,
-      { cause: error },
     );
+    Object.defineProperty(invalidArguments, "cause", {
+      configurable: true,
+      value: error,
+    });
+    throw invalidArguments;
   }
   return parseModelToolCall({
     tool_call_id: String(block.id),

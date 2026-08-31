@@ -1095,9 +1095,14 @@ function parseArguments(
   try {
     parsed = JSON.parse(value) as unknown;
   } catch (error) {
-    throw new Error(`Invalid JSON arguments for DSH tool ${toolName}.`, {
-      cause: error,
+    const invalidArguments = new Error(
+      `Invalid JSON arguments for DSH tool ${toolName}.`,
+    );
+    Object.defineProperty(invalidArguments, "cause", {
+      configurable: true,
+      value: error,
     });
+    throw invalidArguments;
   }
   if (
     typeof parsed !== "object" ||

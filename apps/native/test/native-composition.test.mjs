@@ -17,6 +17,8 @@ test("mounts the shared viewer through the native worker transport", async () =>
     pythonBrokerSource,
     webSearchBrokerSource,
     urlReaderBrokerSource,
+    viteConfigSource,
+    nativeManifestSource,
   ] = await Promise.all([
     readFile(new URL("App.tsx", sourceRoot), "utf8"),
     readFile(new URL("pages/ResearchBoxPage.tsx", sourceRoot), "utf8"),
@@ -41,7 +43,10 @@ test("mounts the shared viewer through the native worker transport", async () =>
       new URL("lib/native-url-reader-broker.ts", sourceRoot),
       "utf8",
     ),
+    readFile(new URL("../vite.config.ts", sourceRoot), "utf8"),
+    readFile(new URL("../package.json", sourceRoot), "utf8"),
   ]);
+  const nativeManifest = JSON.parse(nativeManifestSource);
 
   assert.match(appSource, /@researchbox\/viewer\/styles\.css/);
   assert.match(appSource, /<ResearchBoxPage \/>/);
@@ -75,6 +80,9 @@ test("mounts the shared viewer through the native worker transport", async () =>
   assert.match(coreWorkerSource, /NativeStorageRpcClient/);
   assert.match(coreWorkerSource, /NativeProjectStore/);
   assert.match(coreWorkerSource, /NativeWorkspaceBackend/);
+  assert.match(coreWorkerSource, /NativeDshrboxSessionBackend/);
+  assert.match(coreWorkerSource, /DshrboxSessionRuntimeProvider/);
+  assert.match(coreWorkerSource, /DSH_BROWSER_COMPATIBILITY/);
   assert.match(coreWorkerSource, /create_storage_services/);
   assert.match(coreWorkerSource, /InMemoryCommandLockManager/);
   assert.match(
@@ -86,13 +94,23 @@ test("mounts the shared viewer through the native worker transport", async () =>
   assert.match(coreWorkerSource, /initialization\.provider_port/);
   assert.match(coreWorkerSource, /NativePythonRpcClient/);
   assert.match(coreWorkerSource, /createPythonAgentPlugin/);
+  assert.match(coreWorkerSource, /DshrboxPython/);
   assert.match(coreWorkerSource, /RoutingWebSearchExecutor/);
   assert.match(coreWorkerSource, /ExaMcpWebSearchProvider/);
   assert.match(coreWorkerSource, /NativeAnySearchWebSearchProvider/);
   assert.match(coreWorkerSource, /NativeUrlReader/);
   assert.match(coreWorkerSource, /createWebSearchAgentPlugin/);
+  assert.match(coreWorkerSource, /DshrboxWebResearch/);
   assert.match(coreWorkerSource, /legacy_plugins:\s*legacyPlugins/);
-  assert.doesNotMatch(coreWorkerSource, /dsh_plugins|DshrboxSession/);
+  assert.match(coreWorkerSource, /plugins:\s*dshPlugins/);
+  assert.match(
+    coreWorkerSource,
+    /session_backend:\s*\(projectId\)\s*=>\s*\n\s*new NativeDshrboxSessionBackend\(storageClient, projectId\)/,
+  );
+  assert.match(
+    coreWorkerSource,
+    /sessionRuntimeProvider:\s*new DshrboxSessionRuntimeProvider/,
+  );
   assert.match(
     coreWorkerSource,
     /new URL\("\.\/llm\.worker\.ts", import\.meta\.url\)/,
@@ -125,4 +143,21 @@ test("mounts the shared viewer through the native worker transport", async () =>
   assert.match(urlReaderBrokerSource, /parseNativeUrlReaderRequest/);
   assert.match(urlReaderBrokerSource, /nativeUrlReaderCommands/);
   assert.match(pageSource, /nativeWebSearchPluginCatalogEntry/);
+  assert.match(viteConfigSource, /dshBrowserCompatibilityAliases/);
+  assert.match(
+    viteConfigSource,
+    /alias:\s*dshBrowserCompatibilityAliases\(\)/,
+  );
+  assert.equal(
+    nativeManifest.dependencies["@dshrbox/runtime-browser"],
+    "workspace:*",
+  );
+  assert.equal(
+    nativeManifest.dependencies["@dshrbox/session-persistence-native"],
+    "workspace:*",
+  );
+  assert.equal(
+    nativeManifest.dependencies["@dshrbox/session-runtime"],
+    "workspace:*",
+  );
 });

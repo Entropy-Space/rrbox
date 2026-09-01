@@ -6,7 +6,10 @@ import {
 } from "@deepseek-ai/dsh-session";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { MemoryDshrboxSessionBackend } from "@dshrbox/session-persistence";
-import { DshrboxSessionRuntimeProvider } from "@dshrbox/session-runtime";
+import {
+  DshrboxSessionRuntimeProvider,
+  legacyTimelineToDshSeed,
+} from "@dshrbox/session-runtime";
 import { DshrboxPython } from "@researchbox/python-plugin/dsh";
 import {
   ResearchBoxCore,
@@ -150,8 +153,10 @@ class FailingTransport {
 
 class LegacyFallbackTransport {
   toolNames = [];
+  requests = [];
 
   async *stream(request) {
+    this.requests.push(structuredClone(request));
     this.toolNames.push(request.tools.map((tool) => tool.name));
     yield* textEvents("Legacy runtime response.");
     yield { type: "done", stop_reason: "stop" };
@@ -318,6 +323,51 @@ class FailingDeleteSessionBackend extends MemoryDshrboxSessionBackend {
   async deleteStored() {
     throw new Error("Test DSH session deletion failed.");
   }
+}
+
+class MigrationFinalizeFailingStore {
+  failMigrationFinalize = false;
+
+  constructor(inner = new MemoryProjectStore()) {
+    this.inner = inner;
+  }
+
+  load() {
+    return this.inner.load();
+  }
+
+  save(state, expectedRevision) {
+    return this.inner.save(state, expectedRevision);
+  }
+
+  saveInputDraft(update) {
+    return this.inner.saveInputDraft(update);
+  }
+
+  subscribe(listener) {
+    return this.inner.subscribe(listener);
+  }
+
+  mutate(mutation) {
+    return this.inner.mutate((draft) => {
+      const pendingBefore = countPendingMigrations(draft);
+      const result = mutation(draft);
+      if (
+        this.failMigrationFinalize &&
+        result !== null &&
+        pendingBefore > countPendingMigrations(draft)
+      ) {
+        throw new Error("Test migration finalization failed.");
+      }
+      return result;
+    });
+  }
+}
+
+function countPendingMigrations(state) {
+  return state.documents.filter(
+    (document) => document.migration_source_session_id !== undefined,
+  ).length;
 }
 
 test("runs and restores a DSH session behind the existing rrbox core", async () => {
@@ -1170,7 +1220,7 @@ test("keeps host deletion committed when DSH cleanup fails", async () => {
   await core.dispose();
 });
 
-test("keeps unmarked existing sessions on the legacy runtime", async () => {
+test("copies an unmarked legacy session into DSH on its first write", async () => {
   const store = new MemoryProjectStore();
   const workspace = createWorkspaceBackend();
   const transport = new LegacyFallbackTransport();
@@ -1190,6 +1240,8 @@ test("keeps unmarked existing sessions on the legacy runtime", async () => {
     text: "Create a legacy session.",
   }));
   const legacyState = latestState(legacyEvents);
+  const legacyStored = await store.load();
+  const legacyDocument = structuredClone(legacyStored.documents[0]);
   await legacy.dispose();
 
   const dshConfiguredEvents = [];
@@ -1218,13 +1270,275 @@ test("keeps unmarked existing sessions on the legacy runtime", async () => {
   await dshConfigured.handle(createCommand("prompt", {
     project_id: legacyState.active_project_id,
     session_id: legacyState.active_session_id,
-    text: "Continue without migrating runtimes.",
+    text: "Continue through the DSH runtime.",
   }));
   const stored = await store.load();
-  assert.equal(stored.documents[0].runtime_id, undefined);
+  assert.equal(stored.documents.length, 2);
+  assert.deepEqual(
+    stored.documents.find(
+      (document) => document.session_id === legacyState.active_session_id,
+    ),
+    { ...legacyDocument, input_draft: "" },
+  );
+  const migrated = stored.documents.find(
+    (document) => document.session_id !== legacyState.active_session_id,
+  );
+  assert.equal(migrated.runtime_id, "dsh");
+  assert.equal(migrated.migration_source_session_id, undefined);
+  assert.equal(stored.active_session_id, migrated.session_id);
+  const persisted = await sessionBackend.loadStored(
+    SessionId(migrated.session_id),
+  );
+  assert.equal(
+    persisted.meta.parentSession,
+    legacyState.active_session_id,
+  );
+  assert.ok(persisted.meta.seedLength > 0);
+  const continuedRequest = transport.requests.at(-1);
+  assert.deepEqual(
+    continuedRequest.messages.filter((message) => message.role === "user")
+      .map((message) => message.content),
+    ["Create a legacy session.", "Continue through the DSH runtime."],
+  );
+  assert.ok(
+    continuedRequest.messages.some(
+      (message) =>
+        message.role === "assistant" &&
+        message.content_blocks.some(
+          (block) =>
+            block.type === "text" &&
+            block.text === "Legacy runtime response.",
+        ),
+    ),
+  );
   assert.ok(legacyPluginBindings > 0);
   assert.ok(transport.toolNames.at(-1).includes("write_file"));
   await dshConfigured.dispose();
+});
+
+test("migrates legacy tool-call history as balanced DSH steps", async () => {
+  const store = new MemoryProjectStore();
+  const workspace = createWorkspaceBackend();
+  const transport = new ResumableWorkspaceTransport();
+  const legacyEvents = [];
+  const legacy = createCore(
+    store,
+    workspace,
+    transport,
+    legacyEvents,
+    false,
+  );
+  await legacy.handle(createCommand("bootstrap", {}));
+  const initial = latestState(legacyEvents);
+  await legacy.handle(createCommand("prompt", {
+    project_id: initial.active_project_id,
+    session_id: null,
+    text: "Read the workspace note.",
+  }));
+  const legacyState = latestState(legacyEvents);
+  assert.deepEqual(
+    legacyState.timeline.map((entry) => entry.type),
+    [
+      "user_message",
+      "assistant_message",
+      "tool_result",
+      "assistant_message",
+    ],
+  );
+  await legacy.dispose();
+
+  const migratedEvents = [];
+  const migrated = createCore(
+    store,
+    workspace,
+    transport,
+    migratedEvents,
+    true,
+  );
+  await migrated.handle(createCommand("bootstrap", {
+    active_project_id: legacyState.active_project_id,
+    active_session_id: legacyState.active_session_id,
+  }));
+  await migrated.handle(createCommand("prompt", {
+    project_id: legacyState.active_project_id,
+    session_id: legacyState.active_session_id,
+    text: "Continue from the restored session.",
+  }));
+
+  const continued = latestState(migratedEvents);
+  assert.equal(transport.observedRestoredHistory, true);
+  assert.deepEqual(
+    continued.timeline.filter((entry) => entry.type === "user_message")
+      .map((entry) => entry.content),
+    ["Read the workspace note.", "Continue from the restored session."],
+  );
+  assert.equal(
+    continued.timeline.filter((entry) => entry.type === "tool_result").length,
+    1,
+  );
+  await migrated.dispose();
+});
+
+test("closes an unresolved legacy tool call in the imported DSH seed", () => {
+  const createdAt = "2026-08-01T00:00:00.000Z";
+  const events = legacyTimelineToDshSeed({
+    format_version: 5,
+    session_id: "legacy-session",
+    project_id: "project",
+    input_draft: "",
+    timeline: [
+      {
+        type: "user_message",
+        entry_id: "user-entry",
+        run_id: "legacy-run",
+        created_at: createdAt,
+        content: "Start a tool.",
+      },
+      {
+        type: "assistant_message",
+        entry_id: "assistant-entry",
+        run_id: "legacy-run",
+        created_at: createdAt,
+        status: "complete",
+        api: "openai-completions",
+        provider: "legacy-provider",
+        model: "legacy-model",
+        usage: {
+          input: 1,
+          output: 1,
+          cache_read: 0,
+          cache_write: 0,
+          total_tokens: 2,
+          cost: {
+            input: 0,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+            total: 0,
+          },
+        },
+        stop_reason: "tool_use",
+        blocks: [{
+          type: "tool_call",
+          block_id: "tool-block",
+          tool_call_id: "tool-call",
+          tool_name: "read_file",
+          arguments: { path: "/note.txt" },
+        }],
+      },
+    ],
+    history: {
+      root_ids: [],
+      nodes: [],
+      active_leaf_id: null,
+    },
+  });
+
+  const result = events.find((event) => event.type === "tool/result");
+  assert.ok(result);
+  assert.equal(result.data.error.code, TOOL_OUTCOME_UNKNOWN);
+  assert.equal(result.data.message.content[0].isError, true);
+  assert.deepEqual(
+    events.map((event) => event.seq),
+    events.map((_event, index) => index),
+  );
+  assert.equal(events.at(-1).type, "turn/end");
+});
+
+test("resumes a materialized DSH migration after host finalization fails", async () => {
+  const store = new MigrationFinalizeFailingStore();
+  const workspace = createWorkspaceBackend();
+  const transport = new LegacyFallbackTransport();
+  const legacyEvents = [];
+  const legacy = createCore(
+    store,
+    workspace,
+    transport,
+    legacyEvents,
+    false,
+  );
+  await legacy.handle(createCommand("bootstrap", {}));
+  const initial = latestState(legacyEvents);
+  await legacy.handle(createCommand("prompt", {
+    project_id: initial.active_project_id,
+    session_id: null,
+    text: "Create durable legacy history.",
+  }));
+  const legacyState = latestState(legacyEvents);
+  await legacy.dispose();
+
+  const sessionBackend = new MemoryDshrboxSessionBackend();
+  const failedEvents = [];
+  store.failMigrationFinalize = true;
+  const failed = createCore(
+    store,
+    workspace,
+    transport,
+    failedEvents,
+    true,
+    sessionBackend,
+  );
+  await failed.handle(createCommand("bootstrap", {
+    active_project_id: legacyState.active_project_id,
+    active_session_id: legacyState.active_session_id,
+  }));
+  await failed.handle(createCommand("prompt", {
+    project_id: legacyState.active_project_id,
+    session_id: legacyState.active_session_id,
+    text: "This prompt must wait for a retry.",
+  }));
+
+  const interruptedState = await store.load();
+  const pending = interruptedState.documents.find(
+    (document) => document.migration_source_session_id !== undefined,
+  );
+  assert.ok(pending);
+  assert.ok(
+    await sessionBackend.loadStored(SessionId(pending.session_id)),
+    "The DSH seed should be durable before host finalization.",
+  );
+  assert.equal(transport.requests.length, 1);
+  assert.match(
+    failedEvents.findLast((event) => event.type === "error").payload.message,
+    /migration finalization failed/,
+  );
+  await failed.dispose();
+
+  store.failMigrationFinalize = false;
+  const resumedEvents = [];
+  const resumed = createCore(
+    store,
+    workspace,
+    transport,
+    resumedEvents,
+    true,
+    sessionBackend,
+  );
+  await resumed.handle(createCommand("bootstrap", {
+    active_project_id: pending.project_id,
+    active_session_id: pending.session_id,
+  }));
+  const finalized = await store.load();
+  assert.equal(
+    finalized.documents.find(
+      (document) => document.session_id === pending.session_id,
+    ).migration_source_session_id,
+    undefined,
+  );
+
+  const restored = latestState(resumedEvents);
+  await resumed.handle(createCommand("prompt", {
+    project_id: restored.active_project_id,
+    session_id: restored.active_session_id,
+    text: "Continue after recovery.",
+  }));
+  assert.deepEqual(
+    transport.requests.at(-1).messages
+      .filter((message) => message.role === "user")
+      .map((message) => message.content),
+    ["Create durable legacy history.", "Continue after recovery."],
+  );
+  await resumed.dispose();
 });
 
 function createCore(

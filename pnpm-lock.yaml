@@ -494,9 +494,6 @@ importers:
       '@dshrbox/workspace':
         specifier: workspace:*
         version: link:../dshrbox-workspace
-      '@earendil-works/pi-ai':
-        specifier: 0.79.0
-        version: 0.79.0(ws@8.21.0)(zod@4.4.3)
       '@researchbox/agent-core':
         specifier: workspace:*
         version: link:../agent-core

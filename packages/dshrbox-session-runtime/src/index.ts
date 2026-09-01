@@ -1,4 +1,3 @@
-import type { Model } from "@earendil-works/pi-ai";
 import type { Context, Plugin } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import {
@@ -24,6 +23,7 @@ import {
 import { DshrboxSummaryReview } from "@dshrbox/summary-review";
 import { DshrboxWorkspace } from "@dshrbox/workspace";
 import type {
+  RuntimeModel,
   SessionRuntimeOptions,
   SessionRuntimePort,
   SessionRuntimeProvider,
@@ -95,7 +95,7 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
   readonly session_id: string;
 
   private readonly core: DshrboxCore;
-  private readonly model: Model<string>;
+  private readonly model: RuntimeModel;
   private readonly eventSink: SessionRuntimeOptions["event_sink"];
   private readonly checkpoint: SessionRuntimeOptions["checkpoint"];
   private document: RuntimeSessionDocument;
@@ -234,7 +234,7 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
     return this.projectedView;
   }
 
-  usesModel(model: Model<string>): boolean {
+  usesModel(model: RuntimeModel): boolean {
     return model.provider === this.model.provider && model.id === this.model.id;
   }
 
@@ -382,8 +382,8 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
   }
 }
 
-function createModelCatalog(model: Model<string>) {
-  const capabilities = model as Model<string> & {
+function createModelCatalog(model: RuntimeModel) {
+  const capabilities = model as RuntimeModel & {
     reasoning_efforts?: ReasoningEffort[];
     supports_reasoning_effort?: boolean;
     supports_tools?: boolean;

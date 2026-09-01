@@ -1,4 +1,3 @@
-import type { Model } from "@earendil-works/pi-ai";
 import type { ModelTransport } from "@researchbox/model-transport";
 import type {
   LegacySessionDocument,
@@ -12,6 +11,7 @@ import type {
   SummaryReviewResolution,
   TimelineEntry,
 } from "@researchbox/protocol";
+import type { RuntimeModel } from "./model.ts";
 import type { WorkspaceController } from "./workspace-controller.ts";
 
 export type CoreEventSink = (event: CoreEvent) => void;
@@ -22,9 +22,9 @@ export type SessionRuntimeOptions = {
   document: SessionDocument;
   workspace: WorkspaceController;
   model_transport: ModelTransport;
-  model: Model<string>;
+  model: RuntimeModel;
   reasoning_effort: ReasoningEffort;
-  resolve_model?: (selection: ModelSelection) => Model<string> | undefined;
+  resolve_model?: (selection: ModelSelection) => RuntimeModel | undefined;
   system_prompt: string;
   event_sink: CoreEventSink;
   checkpoint: (
@@ -48,7 +48,7 @@ export interface SessionRuntimePort {
   readonly is_busy: boolean;
   /** Current host-view projection; it is not necessarily persisted. */
   view(): SessionRuntimeView;
-  usesModel(model: Model<string>): boolean;
+  usesModel(model: RuntimeModel): boolean;
   bindDocument(document: SessionDocument): void;
   startPrompt(text: string, requestId: string): Promise<void>;
   continueStagedPrompt(runId: string, requestId: string): Promise<void>;

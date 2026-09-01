@@ -1,4 +1,3 @@
-import type { Model } from "@earendil-works/pi-ai";
 import type { ModelTransport } from "@researchbox/model-transport";
 import {
   createSessionHistory,
@@ -65,6 +64,7 @@ import {
   type ModelProviderDefinition,
   type ProviderModelCatalog,
 } from "./provider-catalog-service.ts";
+import type { RuntimeModel } from "./model.ts";
 import { WorkspaceController } from "./workspace-controller.ts";
 
 type WorkspaceBackendOption =
@@ -84,7 +84,7 @@ export type ResearchBoxCoreOptions = {
   modelTransport: ModelTransport;
   providerCatalog?: ProviderCatalogService;
   modelCatalog?: ProviderModelCatalog;
-  model: Model<string>;
+  model: RuntimeModel;
   providers?: ModelProviderDefinition[];
   systemPrompt: string;
   legacySessionRuntimeProvider: LegacySessionRuntimeProvider;
@@ -1527,7 +1527,7 @@ export class ResearchBoxCore {
     return this.providerCatalog.isModelReady(selection);
   }
 
-  private requireActiveModel(): Model<string> {
+  private requireActiveModel(): RuntimeModel {
     const selection = this.getActiveModelSelection();
     const model = this.providerCatalog.getModel(selection);
     if (!model) throw new Error("The selected model is not registered.");

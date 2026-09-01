@@ -11,6 +11,10 @@ neither runtime implementation. Canonical headers and events live in the
 configured DSH persistence backend. The rrbox timeline is rebuilt as an
 in-memory viewer projection and is never written beside the DSH log.
 
+The runtime receives the application's own model contract. It does
+not depend on Pi's provider or transcript types; those remain confined to the
+explicit legacy compatibility lane.
+
 The runtime composes the DSH model adapter, native workspace tools,
 canonical session persistence, live summary-review interaction service, and
 `CoreEvent` projector. Additional tools are installed as native Cordis/DSH

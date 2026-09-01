@@ -1,10 +1,10 @@
-import type { Model } from "@earendil-works/pi-ai";
 import type { ModelDescriptor } from "@researchbox/model-transport";
 import type {
   ModelSelection,
   ModelSummary,
   ProviderSummary,
 } from "@researchbox/protocol";
+import type { RuntimeModel } from "./model.ts";
 
 export type ProviderModelCatalog = {
   listModels(
@@ -13,12 +13,12 @@ export type ProviderModelCatalog = {
   ): Promise<ModelDescriptor[]>;
 };
 
-export type ProviderCatalogModel = Model<string> & {
+export type ProviderCatalogModel = RuntimeModel & {
   supports_reasoning_effort: boolean;
   reasoning_efforts: ModelSummary["reasoning_efforts"];
 };
 
-export type ProviderModelInput = Model<string> & {
+export type ProviderModelInput = RuntimeModel & {
   supports_tools?: boolean;
   supports_reasoning_effort?: boolean;
   reasoning_efforts?: ModelSummary["reasoning_efforts"];

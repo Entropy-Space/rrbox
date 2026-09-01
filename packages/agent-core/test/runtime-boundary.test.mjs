@@ -48,6 +48,19 @@ test("keeps feature and DSH runtimes independent of Pi packages", async () => {
     new URL("../../runtime-legacy/package.json", import.meta.url),
     "utf8",
   ));
+  const shippedManifests = await Promise.all([
+    "../../app-runtime-browser/package.json",
+    "../../../apps/web/package.json",
+    "../../../apps/native/package.json",
+  ].map(async (path) => JSON.parse(await readFile(
+    new URL(path, import.meta.url),
+    "utf8",
+  ))));
+  const shippedWorkerSources = await Promise.all([
+    "../../app-runtime-browser/src/researchbox-core-worker.ts",
+    "../../../apps/web/browser/core.worker.ts",
+    "../../../apps/native/src/workers/core.worker.ts",
+  ].map((path) => readFile(new URL(path, import.meta.url), "utf8")));
   const featureSources = (await Promise.all([
     readTypeScriptSources("../../python-plugin/src/"),
     readTypeScriptSources("../../web-search-plugin/src/"),
@@ -63,6 +76,16 @@ test("keeps feature and DSH runtimes independent of Pi packages", async () => {
   for (const source of featureSources) {
     assert.doesNotMatch(source, piPackageImport);
     assert.doesNotMatch(source, legacyRuntimeImport);
+  }
+  for (const source of shippedWorkerSources) {
+    assert.doesNotMatch(source, piPackageImport);
+    assert.doesNotMatch(source, legacyRuntimeImport);
+  }
+  for (const manifest of shippedManifests) {
+    assert.equal(
+      manifest.dependencies?.["@researchbox/runtime-legacy"],
+      undefined,
+    );
   }
   assert.equal(
     dshManifest.dependencies["@earendil-works/pi-ai"],

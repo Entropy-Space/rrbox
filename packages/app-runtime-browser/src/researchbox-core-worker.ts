@@ -5,19 +5,10 @@ import {
   type SessionRuntimeProvider,
 } from "@researchbox/agent-core";
 import {
-  PiSessionRuntimeProvider,
-  type AgentPlugin,
-} from "@researchbox/runtime-legacy";
-import {
   attachCoreWorkerLifecycle,
   WorkerModelTransport,
   type WorkerHost,
 } from "@researchbox/runtime-browser";
-import {
-  BrowserWorkspaceBackend,
-  IndexedDbProjectStore,
-  ResearchBoxDatabase,
-} from "@researchbox/storage-browser";
 import type { ProjectStore } from "@researchbox/project-store";
 import type { ProviderRuntimeConfiguration } from "@researchbox/provider-settings";
 import type { WorkspaceBackend } from "@researchbox/vfs";
@@ -30,15 +21,13 @@ import {
   researchBoxMockModel,
   researchBoxSystemPrompt,
 } from "./mock-model.ts";
-import { researchBoxSeedFiles } from "./seed-files.ts";
 import { BROWSER_WORKSPACE_ARCHIVE_OPTIONS } from "./workspace-transfer-limits.ts";
 
 export type ResearchBoxCoreWorkerOptions = {
   host: WorkerHost;
   lock_manager: CommandLockManager;
   create_model_worker(): Worker;
-  create_storage_services?(): ResearchBoxStorageServices;
-  legacy_plugins?: readonly AgentPlugin[];
+  create_storage_services(): ResearchBoxStorageServices;
   close_plugins?(): void | Promise<void>;
   providers: ModelProviderDefinition[];
 };
@@ -46,8 +35,7 @@ export type ResearchBoxCoreWorkerOptions = {
 export type ResearchBoxStorageServices = {
   projectStore: ProjectStore;
   workspaceBackend: WorkspaceBackend;
-  /** Selects the runtime for new sessions; omission keeps them legacy. */
-  sessionRuntimeProvider?: SessionRuntimeProvider;
+  sessionRuntimeProvider: SessionRuntimeProvider;
   close(): void | Promise<void>;
 };
 
@@ -58,9 +46,7 @@ export function startResearchBoxCoreWorker(
     host: options.host,
     lockManager: options.lock_manager,
     createServices() {
-      const storageServices =
-        options.create_storage_services?.() ??
-        createBrowserStorageServices();
+      const storageServices = options.create_storage_services();
       const modelWorker = options.create_model_worker();
       const modelGateway = new WorkerModelTransport(modelWorker);
       const providerCatalog = new ProviderCatalogService({
@@ -106,12 +92,7 @@ export function startResearchBoxCoreWorker(
         providerCatalog: services.providerCatalog,
         model: researchBoxMockModel,
         systemPrompt: researchBoxSystemPrompt,
-        legacySessionRuntimeProvider: new PiSessionRuntimeProvider({
-          plugins: options.legacy_plugins,
-        }),
-        ...(services.sessionRuntimeProvider === undefined
-          ? {}
-          : { sessionRuntimeProvider: services.sessionRuntimeProvider }),
+        sessionRuntimeProvider: services.sessionRuntimeProvider,
         eventSink,
         workspaceTransferOptions: BROWSER_WORKSPACE_ARCHIVE_OPTIONS,
       });
@@ -119,22 +100,6 @@ export function startResearchBoxCoreWorker(
   });
   attachCoreWorkerLifecycle(options.host, () => runtime.dispose());
   return runtime;
-}
-
-function createBrowserStorageServices(): ResearchBoxStorageServices {
-  const database = new ResearchBoxDatabase();
-  const projectStore = new IndexedDbProjectStore(database);
-  return {
-    projectStore,
-    workspaceBackend: new BrowserWorkspaceBackend(
-      database,
-      researchBoxSeedFiles,
-    ),
-    close() {
-      projectStore.close();
-      database.close();
-    },
-  };
 }
 
 export function createResearchBoxProviderDefinitions(options: {

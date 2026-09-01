@@ -1267,6 +1267,9 @@ test("copies an unmarked legacy session into DSH on its first write", async () =
     active_project_id: legacyState.active_project_id,
     active_session_id: legacyState.active_session_id,
   }));
+  const passiveState = latestState(dshConfiguredEvents);
+  assert.deepEqual(passiveState.timeline, legacyState.timeline);
+  assert.equal(legacyPluginBindings, 0);
   await dshConfigured.handle(createCommand("prompt", {
     project_id: legacyState.active_project_id,
     session_id: legacyState.active_session_id,
@@ -1311,7 +1314,7 @@ test("copies an unmarked legacy session into DSH on its first write", async () =
         ),
     ),
   );
-  assert.ok(legacyPluginBindings > 0);
+  assert.equal(legacyPluginBindings, 0);
   assert.ok(transport.toolNames.at(-1).includes("write_file"));
   await dshConfigured.dispose();
 });

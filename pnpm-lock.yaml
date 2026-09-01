@@ -73,9 +73,6 @@ importers:
       '@researchbox/runtime-browser':
         specifier: workspace:*
         version: link:../../packages/runtime-browser
-      '@researchbox/runtime-legacy':
-        specifier: workspace:*
-        version: link:../../packages/runtime-legacy
       '@researchbox/storage-native':
         specifier: workspace:*
         version: link:../../packages/storage-native
@@ -146,9 +143,6 @@ importers:
       '@researchbox/runtime-browser':
         specifier: workspace:*
         version: link:../../packages/runtime-browser
-      '@researchbox/runtime-legacy':
-        specifier: workspace:*
-        version: link:../../packages/runtime-legacy
       '@researchbox/storage-browser':
         specifier: workspace:*
         version: link:../../packages/storage-browser
@@ -240,12 +234,6 @@ importers:
       '@researchbox/runtime-browser':
         specifier: workspace:*
         version: link:../runtime-browser
-      '@researchbox/runtime-legacy':
-        specifier: workspace:*
-        version: link:../runtime-legacy
-      '@researchbox/storage-browser':
-        specifier: workspace:*
-        version: link:../storage-browser
       '@researchbox/vfs':
         specifier: workspace:*
         version: link:../vfs

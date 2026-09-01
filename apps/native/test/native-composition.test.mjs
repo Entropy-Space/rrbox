@@ -93,16 +93,17 @@ test("mounts the shared viewer through the native worker transport", async () =>
   assert.match(coreWorkerSource, /native_llm_initialize/);
   assert.match(coreWorkerSource, /initialization\.provider_port/);
   assert.match(coreWorkerSource, /NativePythonRpcClient/);
-  assert.match(coreWorkerSource, /createPythonAgentPlugin/);
   assert.match(coreWorkerSource, /DshrboxPython/);
   assert.match(coreWorkerSource, /RoutingWebSearchExecutor/);
   assert.match(coreWorkerSource, /ExaMcpWebSearchProvider/);
   assert.match(coreWorkerSource, /NativeAnySearchWebSearchProvider/);
   assert.match(coreWorkerSource, /NativeUrlReader/);
-  assert.match(coreWorkerSource, /createWebSearchAgentPlugin/);
   assert.match(coreWorkerSource, /DshrboxWebResearch/);
-  assert.match(coreWorkerSource, /legacy_plugins:\s*legacyPlugins/);
   assert.match(coreWorkerSource, /plugins:\s*dshPlugins/);
+  assert.doesNotMatch(
+    coreWorkerSource,
+    /runtime-legacy|legacy_plugins|createPythonAgentPlugin|createWebSearchAgentPlugin/,
+  );
   assert.match(
     coreWorkerSource,
     /session_backend:\s*\(projectId\)\s*=>\s*\n\s*new NativeDshrboxSessionBackend\(storageClient, projectId\)/,

@@ -87,7 +87,7 @@ test("shares browser app runtime composition between web and native", async () =
   );
   assert.equal(
     runtimeManifest.dependencies["@researchbox/storage-browser"],
-    "workspace:*",
+    undefined,
   );
   assert.equal(
     runtimeManifest.dependencies["@researchbox/runtime-browser"],
@@ -95,7 +95,7 @@ test("shares browser app runtime composition between web and native", async () =
   );
   assert.equal(
     runtimeManifest.dependencies["@researchbox/runtime-legacy"],
-    "workspace:*",
+    undefined,
   );
   assert.equal(runtimeManifest.dependencies["@dshrbox/session-runtime"], undefined);
   assert.equal(
@@ -116,7 +116,7 @@ test("shares browser app runtime composition between web and native", async () =
   );
   assert.equal(
     webManifest.dependencies["@researchbox/runtime-legacy"],
-    "workspace:*",
+    undefined,
   );
   assert.equal(
     nativeManifest.dependencies["@researchbox/app-runtime-browser"],
@@ -140,7 +140,7 @@ test("shares browser app runtime composition between web and native", async () =
   );
   assert.equal(
     nativeManifest.dependencies["@researchbox/runtime-legacy"],
-    "workspace:*",
+    undefined,
   );
   assert.equal(
     webManifest.dependencies["@researchbox/python-plugin"],

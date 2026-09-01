@@ -82,7 +82,6 @@ test("keeps package boundaries explicit", async () => {
     archiveWorker,
     workspaceTransfer,
     core,
-    runtime,
     protocol,
   ] =
     await Promise.all([
@@ -134,13 +133,6 @@ test("keeps package boundaries explicit", async () => {
         "utf8",
       ),
       readFile(
-        new URL(
-          "../../../packages/runtime-legacy/src/session-runtime.ts",
-          import.meta.url,
-        ),
-        "utf8",
-      ),
-      readFile(
         new URL("../../../packages/protocol/src/index.ts", import.meta.url),
         "utf8",
       ),
@@ -171,17 +163,17 @@ test("keeps package boundaries explicit", async () => {
   assert.match(coreWorker, /startResearchBoxCoreWorker/);
   assert.match(coreWorker, /DshrboxPython/);
   assert.match(coreWorker, /DshrboxWebResearch/);
-  assert.match(coreWorker, /legacy_plugins:\s*legacyPlugins/);
   assert.match(coreWorker, /IndexedDbDshrboxSessionBackend/);
   assert.match(coreWorker, /DshrboxSessionRuntimeProvider/);
   assert.match(coreWorker, /plugins:\s*dshPlugins/);
   assert.match(sharedCoreWorker, /WorkerModelTransport/);
   assert.match(sharedCoreWorker, /startBrowserRuntime/);
   assert.match(sharedCoreWorker, /new ResearchBoxCore/);
-  assert.match(sharedCoreWorker, /new PiSessionRuntimeProvider/);
-  assert.match(sharedCoreWorker, /IndexedDbProjectStore/);
-  assert.match(sharedCoreWorker, /BrowserWorkspaceBackend/);
   assert.doesNotMatch(sharedCoreWorker, /@dshrbox|DshrboxSession/);
+  assert.doesNotMatch(
+    `${coreWorker}\n${sharedCoreWorker}`,
+    /runtime-legacy|legacy_plugins|PiSessionRuntimeProvider|createPythonAgentPlugin|createWebSearchAgentPlugin/,
+  );
   assert.doesNotMatch(coreWorker, /new ResearchBoxCore/);
   assert.doesNotMatch(coreWorker, /HttpNdjsonModelTransport/);
   assert.match(llmWorker, /attachLlmWorkerHost/);
@@ -200,8 +192,6 @@ test("keeps package boundaries explicit", async () => {
   assert.match(core, /ProjectStore/);
   assert.match(core, /WorkspaceBackend/);
   assert.doesNotMatch(core, /new PiSessionRuntime/);
-  assert.match(runtime, /new Agent\(/);
-  assert.match(runtime, /WorkspaceController/);
   assert.match(protocol, /PROTOCOL_VERSION = 24/);
 
   await assert.rejects(

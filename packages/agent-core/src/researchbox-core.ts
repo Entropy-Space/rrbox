@@ -87,11 +87,18 @@ export type ResearchBoxCoreOptions = {
   model: RuntimeModel;
   providers?: ModelProviderDefinition[];
   systemPrompt: string;
-  legacySessionRuntimeProvider: LegacySessionRuntimeProvider;
   eventSink: CoreEventSink;
   workspaceTransferOptions?: WorkspaceArchiveOptions;
-  sessionRuntimeProvider?: SessionRuntimeProvider;
-} & WorkspaceBackendOption;
+} & WorkspaceBackendOption & (
+  | {
+      sessionRuntimeProvider: SessionRuntimeProvider;
+      legacySessionRuntimeProvider?: LegacySessionRuntimeProvider;
+    }
+  | {
+      sessionRuntimeProvider?: never;
+      legacySessionRuntimeProvider: LegacySessionRuntimeProvider;
+    }
+);
 
 export type AgentCoreOptions = ResearchBoxCoreOptions;
 
@@ -107,11 +114,11 @@ type WorkspaceChangeReconciliation = WorkspaceChangeQuarantineSummary & {
 
 const STARTUP_REPAIR_SAVE_ATTEMPTS = 5;
 
-function requireLegacySessionRuntimeProvider(
-  provider: LegacySessionRuntimeProvider,
-): LegacySessionRuntimeProvider {
+function validateLegacySessionRuntimeProvider(
+  provider: LegacySessionRuntimeProvider | undefined,
+): void {
+  if (provider === undefined) return;
   if (
-    !provider ||
     typeof provider.stagePrompt !== "function" ||
     typeof provider.create !== "function"
   ) {
@@ -119,7 +126,6 @@ function requireLegacySessionRuntimeProvider(
       "ResearchBoxCore requires an explicit legacy session runtime provider.",
     );
   }
-  return provider;
 }
 
 export class ResearchBoxCore {
@@ -129,7 +135,9 @@ export class ResearchBoxCore {
   private readonly providerCatalog: ProviderCatalogService;
   private readonly defaultModelSelection: ModelSelection;
   private readonly systemPrompt: string;
-  private readonly legacySessionRuntimeProvider: LegacySessionRuntimeProvider;
+  private readonly legacySessionRuntimeProvider:
+    | LegacySessionRuntimeProvider
+    | undefined;
   private readonly eventSink: CoreEventSink;
   private readonly workspaceTransferOptions: WorkspaceArchiveOptions | undefined;
   private readonly sessionRuntimeProvider: SessionRuntimeProvider | undefined;
@@ -185,10 +193,11 @@ export class ResearchBoxCore {
         modelCatalog: options.modelCatalog,
       });
     this.systemPrompt = options.systemPrompt;
+    validateLegacySessionRuntimeProvider(
+      options.legacySessionRuntimeProvider,
+    );
     this.legacySessionRuntimeProvider =
-      requireLegacySessionRuntimeProvider(
-        options.legacySessionRuntimeProvider,
-      );
+      options.legacySessionRuntimeProvider;
     this.eventSink = options.eventSink;
     this.workspaceTransferOptions = snapshotWorkspaceTransferOptions(
       options.workspaceTransferOptions,
@@ -677,7 +686,7 @@ export class ResearchBoxCore {
           currentProject.new_chat_reasoning_effort,
         );
         const staged = this.sessionRuntimeProvider === undefined
-          ? this.legacySessionRuntimeProvider.stagePrompt(
+          ? this.requireLegacySessionRuntimeProvider().stagePrompt(
               created.document,
               promptText,
             )
@@ -804,6 +813,20 @@ export class ResearchBoxCore {
         return;
       }
 
+      if (
+        isLegacySessionDocument(sourceDocument) &&
+        this.sessionRuntimeProvider !== undefined
+      ) {
+        this.emitError(
+          "session_migration_unavailable",
+          "The configured session runtime cannot migrate this legacy chat.",
+          command.request_id,
+          command.payload.project_id,
+          command.payload.session_id,
+        );
+        return;
+      }
+
       this.submittedDraft = {
         project_id: command.payload.project_id,
         session_id: command.payload.session_id,
@@ -846,7 +869,7 @@ export class ResearchBoxCore {
         command.request_id,
       )
     ) {
-      this.requireRuntime().abort();
+      this.runtime?.abort();
     }
   }
 
@@ -1629,8 +1652,12 @@ export class ResearchBoxCore {
     const document = sessionId === null
       ? null
       : this.requireDocument(sessionId);
-    const runtimeProvider = document !== null && isRuntimeSessionDocument(document)
+    const runtimeProvider = document === null
+      ? undefined
+      : isRuntimeSessionDocument(document)
       ? this.requireSessionRuntimeProvider(document.runtime_id)
+      : this.sessionRuntimeProvider === undefined
+      ? this.requireLegacySessionRuntimeProvider()
       : undefined;
     const migrationSourceDocument = document !== null &&
         isRuntimeSessionDocument(document) &&
@@ -1644,7 +1671,7 @@ export class ResearchBoxCore {
       throw new Error("Runtime migration source is not a legacy session.");
     }
     const runtimeOptions: SessionRuntimeOptions | null =
-      sessionId === null || document === null
+      sessionId === null || document === null || runtimeProvider === undefined
       ? null
       : {
           project_id: projectId,
@@ -1675,10 +1702,9 @@ export class ResearchBoxCore {
               }
             }),
         };
-    const nextRuntime = runtimeOptions === null
+    const nextRuntime = runtimeOptions === null || runtimeProvider === undefined
       ? null
-      : await (runtimeProvider ?? this.legacySessionRuntimeProvider)
-        .create(runtimeOptions);
+      : await runtimeProvider.create(runtimeOptions);
     if (
       nextRuntime !== null &&
       document !== null &&
@@ -2602,6 +2628,13 @@ export class ResearchBoxCore {
   private requireRuntime(): SessionRuntimePort {
     if (!this.runtime) throw new Error("No active session runtime is available.");
     return this.runtime;
+  }
+
+  private requireLegacySessionRuntimeProvider(): LegacySessionRuntimeProvider {
+    if (!this.legacySessionRuntimeProvider) {
+      throw new Error("No legacy session runtime is available.");
+    }
+    return this.legacySessionRuntimeProvider;
   }
 
   private sessionView(document: SessionDocument): SessionRuntimeView {

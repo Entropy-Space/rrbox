@@ -18,7 +18,6 @@
     "@researchbox/provider-settings": "workspace:*",
     "@researchbox/python-plugin": "workspace:*",
     "@researchbox/runtime-browser": "workspace:*",
-    "@researchbox/runtime-legacy": "workspace:*",
     "@researchbox/storage-browser": "workspace:*",
     "@researchbox/viewer": "workspace:*",
     "@researchbox/web-search-plugin": "workspace:*",

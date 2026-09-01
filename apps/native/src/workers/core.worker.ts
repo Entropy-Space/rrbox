@@ -37,10 +37,6 @@ import {
   DEFAULT_WEB_SEARCH_SUMMARY_GRACE_MS,
 } from "@researchbox/web-search-plugin";
 import {
-  createPythonAgentPlugin,
-  createWebSearchAgentPlugin,
-} from "@researchbox/runtime-legacy";
-import {
   DshrboxWebResearch,
 } from "@researchbox/web-search-plugin/dsh";
 import {
@@ -132,17 +128,6 @@ host.onmessage = (event) => {
     summary_grace_ms: DEFAULT_WEB_SEARCH_SUMMARY_GRACE_MS,
     ...(urlReader ? { url_reader: urlReader } : {}),
   };
-  const legacyPlugins = [
-    ...(pythonClient
-      ? [createPythonAgentPlugin(pythonClient)]
-      : []),
-    ...(webSearchExecutor
-      ? [createWebSearchAgentPlugin(
-          webSearchExecutor,
-          webSearchOptions,
-        )]
-      : []),
-  ];
   const dshPlugins = [
     ...(pythonClient
       ? [{
@@ -167,7 +152,6 @@ host.onmessage = (event) => {
     providers: createResearchBoxProviderDefinitions({
       providers: initialization.providers,
     }),
-    legacy_plugins: legacyPlugins,
     close_plugins:
       pythonClient || webSearchExecutor || urlReader
         ? async () => {

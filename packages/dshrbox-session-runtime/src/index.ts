@@ -148,11 +148,6 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
     config: DshrboxSessionRuntimeProviderConfig,
   ): Promise<DshrboxSessionRuntime> {
     assertRuntimeOptions(options);
-    if (hasLegacyPlugins(options)) {
-      throw new Error(
-        "Legacy AgentPlugin values cannot be installed in DSH; configure native DSH plugins on DshrboxSessionRuntimeProvider.",
-      );
-    }
     const configuredSessionBackend = sessionBackendForProject(
       config,
       options.project_id,
@@ -660,14 +655,6 @@ function snapshotProviderConfig(
           })),
         }),
   };
-}
-
-function hasLegacyPlugins(options: SessionRuntimeOptions): boolean {
-  const plugins = (options as SessionRuntimeOptions & {
-    plugins?: unknown;
-  }).plugins;
-  return plugins !== undefined &&
-    (!Array.isArray(plugins) || plugins.length > 0);
 }
 
 function assertRuntimeOptions(options: SessionRuntimeOptions): void {

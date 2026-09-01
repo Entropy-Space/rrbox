@@ -10,16 +10,14 @@ apps/web
   │                                  │
   ├─ WorkerCoreTransport ────────────┘
   │    └─ browser/core.worker.ts
-  │         └─ packages/app-runtime-browser
-  │              ├─ packages/runtime-browser
-  │              ├─ packages/storage-browser
-  │              ├─ packages/runtime-legacy
-  │              ├─ packages/agent-core
-  │              │    ├─ packages/protocol
-  │              │    ├─ packages/model-transport
-  │              │    ├─ packages/project-store
-  │              │    └─ packages/vfs
-  │              └─ worker model transport
+  │         ├─ packages/app-runtime-browser
+  │         │    ├─ packages/runtime-browser
+  │         │    ├─ packages/agent-core
+  │         │    │    ├─ packages/protocol
+  │         │    │    ├─ packages/model-transport
+  │         │    │    ├─ packages/project-store
+  │         │    │    └─ packages/vfs
+  │         │    └─ worker model transport
   │                   │ versioned JSON, multiplexed by stream_id
   │                   ▼
   │                 browser/llm.worker.ts
@@ -27,6 +25,15 @@ apps/web
   │                   ├─ mock NDJSON transport → /api/mock
   │                   └─ OpenAI-compatible SSE transport
   │                         └─ same-origin bridge → localhost:4141/v1
+  │         ├─ packages/storage-browser
+  │         ├─ packages/dshrbox-runtime-browser
+  │         ├─ packages/dshrbox-session-persistence-browser
+  │         └─ packages/dshrbox-session-runtime
+  │              ├─ packages/dshrbox-core
+  │              ├─ packages/dshrbox-model-adapter
+  │              ├─ packages/dshrbox-event-projector
+  │              ├─ packages/dshrbox-workspace
+  │              └─ packages/dshrbox-summary-review
   └─ thin web routes
        └─ packages/mock-provider
 ```
@@ -41,12 +48,15 @@ apps/native (Tauri 2)
   │    └─ workers/core.worker.ts
   │         ├─ packages/app-runtime-browser
   │         │    ├─ packages/agent-core
-  │         │    ├─ packages/runtime-legacy
   │         │    └─ WorkerModelTransport → workers/llm.worker.ts
   │         │         ├─ in-process packages/mock-provider handler
   │         │         └─ packages/provider-native OpenAI transport
   │         │              └─ typed MessagePort RPC
   │         │                   └─ WebView broker → Tauri Channel
+  │         ├─ packages/dshrbox-runtime-browser
+  │         ├─ packages/dshrbox-session-runtime
+  │         │    └─ core + model + projection + native plugins
+  │         ├─ packages/dshrbox-session-persistence-native
   │         └─ packages/storage-native
   │              └─ typed MessagePort RPC
   │                   └─ WebView broker → Tauri invoke
@@ -113,8 +123,8 @@ idempotent replay. Together these prevent late work from replacing a newer
 project, chat, draft, or file-navigation result. The core and LLM workers use a
 separate protocol-v6 JSON contract so provider discovery, full conversation
 requests, provider I/O, cancellation, and future credentials stay outside the
-agent runtime. The viewer never imports Pi, filesystem implementations, model
-transports, or either worker runtime.
+agent runtime. The viewer never imports an agent implementation, filesystem
+implementation, model transport, or either worker runtime.
 
 The LLM worker is an isolation and lifecycle boundary, not a security boundary
 against same-origin code. Server-held credentials must remain on the server.
@@ -137,14 +147,16 @@ against same-origin code. Server-held credentials must remain on the server.
    application root or framework.
 7. `packages/agent-core` contains the runtime-neutral project/session manager
    and session-runtime ports. It depends only on abstract model, project-store,
-   and VFS contracts and imports neither Pi nor DSH implementations.
-8. `packages/runtime-legacy` implements the explicit compatibility provider for
-   unmarked timeline documents. It alone owns the Pi agent loop, Pi stream and
-   transcript codecs, repair logic, legacy agent-plugin contract, and Pi
-   adapters for feature tools.
+   and VFS contracts and imports no concrete agent implementation.
+8. `packages/dshrbox-session-runtime` is the only executable session provider.
+   It composes canonical DSH core, persistence, model-adapter, workspace,
+   summary-review, and event-projector plugins. Browser and native applications
+   supply their platform persistence backends and native DSH feature plugins.
+   Unmarked timeline documents remain passive until a write creates and seeds a
+   distinct DSH child session.
 9. `packages/runtime-browser` hosts compatible core and LLM handlers plus the
    Web Worker transport; it does not construct rrbox, select providers,
-   or import Pi.
+   or import an agent implementation.
 10. `packages/storage-browser` owns concrete IndexedDB and OPFS adapters.
    `packages/storage-native` owns the typed native storage RPC client plus
    `ProjectStore` and `WorkspaceBackend` façades.
@@ -159,11 +171,9 @@ against same-origin code. Server-held credentials must remain on the server.
     types, not on a concrete backend.
 13. Applications compose packages; shared packages never import an application
     or platform host.
-14. Optional legacy agent-plugin adapters are exported by
-    `packages/runtime-legacy` and injected into its runtime provider. Native
-    DSH plugins are registered directly on the DSH runtime provider.
-    Application composition owns executor resources and teardown in both
-    cases.
+14. Optional tools are native DSH plugins registered directly on the DSH
+    runtime provider. Application composition owns executor resources and
+    teardown.
 15. Model transport accepts strictly named, JSON-schema-defined tools from the
     active agent registry. It does not keep a separate fixed allowlist that
     could silently remove application-composed plugin tools.
@@ -174,8 +184,7 @@ against same-origin code. Server-held credentials must remain on the server.
 `pi-web-access` search workflow. It defines runtime-neutral research behavior,
 native DSH `web_search` and `open_url` tools, a provider-independent routing
 executor, and provider adapters used by both browser and native core Workers.
-Its legacy Pi adapter belongs to `packages/runtime-legacy`. Exa MCP is
-available in both applications.
+Exa MCP is available in both applications.
 The native application also exposes anonymous AnySearch through a dedicated
 MessagePort and a fixed-endpoint Rust service because the REST endpoint is not
 a browser-CORS boundary. AnySearch is explicit-only and is not included by the
@@ -246,9 +255,8 @@ policy; it must not be smuggled through the search tool.
 
 `packages/python-plugin` defines the native DSH `run_python` tool, a strict
 versioned execution protocol, the shared RustPython execution core, and
-browser/native executor adapters. Its legacy Pi adapter belongs to
-`packages/runtime-legacy`. The plugin is absent unless an application passes
-it to the core worker composition.
+browser/native executor adapters. The plugin is absent unless an application
+passes it to the core worker composition.
 
 Each call is stateless and starts a fresh RustPython interpreter. The Python
 surface has no rrbox workspace bridge or request API in this version.
@@ -340,11 +348,12 @@ ordered timeline. Format-3 timelines are upgraded once by deriving a legacy
 file-change tool identity only from their enclosing mutation result.
 Assistant entries own ordered text, reasoning, and tool-call blocks; tool
 results are separate entries linked by internal block identifiers. For legacy
-documents, that timeline is canonical and maps back into the supported Pi
-surface. Runtime-reference documents keep DSH events canonical and rebuild the
-same viewer timeline as an in-memory projection. Projects persist their virtual
-new-chat draft and model selection; durable sessions persist their own model
-selection.
+documents, that timeline remains the immutable canonical read model. Their first
+write validates and converts the supported branch into a newly-created DSH
+child, leaving the source session unchanged. Runtime-reference documents keep
+DSH events canonical and rebuild the same viewer timeline as an in-memory
+projection. Projects persist their virtual new-chat draft and model selection;
+durable sessions persist their own model selection.
 
 Native persistence implements the same `ProjectStore` snapshot and workspace
 contracts across one catalog and one database per project. The catalog owns the
@@ -423,10 +432,11 @@ A project owns one virtual filesystem and zero or more durable sessions.
 Switching a project restores its last selected session or its virtual new chat.
 Selecting New chat is idempotent and creates no session record. On first send,
 the core atomically stores the new session, cleared project draft, selected
-model, and staged user timeline entry before starting model transport. In the
-legacy runtime, the streaming assistant entry is appended only when Pi starts
-it; DSH sessions append their canonical events and project the viewer entry.
-Deleting a
+model, and empty DSH runtime reference before starting the agent. DSH appends
+and flushes the canonical user event before requesting the model; the event
+projector produces the viewer entry. Continuing an unmarked timeline session
+first commits a distinct DSH child and migration intent, then durably seeds the
+validated history before model execution. Deleting a
 project's final session returns it to virtual new-chat state. Deleting the final
 project creates a deterministic empty replacement so the viewer always has an
 active project, but an active session is intentionally optional.

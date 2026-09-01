@@ -305,17 +305,6 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
     return this.startRun(text, requestId);
   }
 
-  continueStagedPrompt(
-    runId: string,
-    requestId: string,
-  ): Promise<void> {
-    void runId;
-    void requestId;
-    return Promise.reject(
-      new Error("DSH sessions do not persist staged timeline prompts."),
-    );
-  }
-
   abort(): void {
     try {
       this.core.context.dshrboxSummaryReview.cancel();

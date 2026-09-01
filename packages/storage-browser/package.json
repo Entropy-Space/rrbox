@@ -13,7 +13,6 @@
   "devDependencies": {
     "@researchbox/agent-core": "workspace:*",
     "@researchbox/protocol": "workspace:*",
-    "@researchbox/runtime-legacy": "workspace:*",
     "@researchbox/vfs-testkit": "workspace:*",
     "@researchbox/workspace-archive": "workspace:*",
     "fake-indexeddb": "6.2.4"

@@ -53,7 +53,6 @@ export interface SessionRuntimePort {
   usesModel(model: RuntimeModel): boolean;
   bindDocument(document: SessionDocument): void;
   startPrompt(text: string, requestId: string): Promise<void>;
-  continueStagedPrompt(runId: string, requestId: string): Promise<void>;
   abort(): void;
   stopAndWait(): Promise<void>;
   waitForIdle(): Promise<void>;
@@ -69,27 +68,12 @@ export interface SessionRuntimePort {
   ): boolean;
 }
 
-export type StagedLegacyPrompt = {
-  run_id: string;
-};
-
-/** Explicit compatibility lane for unmarked, timeline-backed documents. */
-export interface LegacySessionRuntimeProvider {
-  stagePrompt(
-    document: LegacySessionDocument,
-    text: string,
-  ): StagedLegacyPrompt;
-  create(options: SessionRuntimeOptions):
-    | SessionRuntimePort
-    | Promise<SessionRuntimePort>;
-}
-
-/** Optional copy-on-write runtime for newly-created runtime references. */
+/** Canonical runtime for newly-created and copy-on-write session references. */
 export interface SessionRuntimeProvider {
   readonly runtime_id: string;
   initializeDocument(document: LegacySessionDocument): SessionDocument;
   /** Create a new runtime reference whose initial history is copied from source. */
-  initializeMigrationDocument?(
+  initializeMigrationDocument(
     source: LegacySessionDocument,
     targetSessionId: string,
   ): SessionDocument;

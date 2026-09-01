@@ -3,7 +3,7 @@ import {
   type WebSearchRequest,
   type WebSearchResponse,
   type WebSearchSource,
-} from "./web-search-plugin.ts";
+} from "./web-research-engine.ts";
 import type { WebSearchProvider } from "./routing-executor.ts";
 
 const EXA_MCP_URL = "https://mcp.exa.ai/mcp";

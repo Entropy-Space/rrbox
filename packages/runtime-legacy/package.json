@@ -13,7 +13,9 @@
     "@researchbox/model-transport": "workspace:*",
     "@researchbox/project-store": "workspace:*",
     "@researchbox/protocol": "workspace:*",
+    "@researchbox/python-plugin": "workspace:*",
     "@researchbox/vfs": "workspace:*",
+    "@researchbox/web-search-plugin": "workspace:*",
     "@researchbox/workspace-search": "workspace:*"
   }
 }

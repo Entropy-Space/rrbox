@@ -140,7 +140,8 @@ against same-origin code. Server-held credentials must remain on the server.
    and VFS contracts and imports neither Pi nor DSH implementations.
 8. `packages/runtime-legacy` implements the explicit compatibility provider for
    unmarked timeline documents. It alone owns the Pi agent loop, Pi stream and
-   transcript codecs, repair logic, and legacy agent-plugin contract.
+   transcript codecs, repair logic, legacy agent-plugin contract, and Pi
+   adapters for feature tools.
 9. `packages/runtime-browser` hosts compatible core and LLM handlers plus the
    Web Worker transport; it does not construct rrbox, select providers,
    or import Pi.
@@ -158,10 +159,11 @@ against same-origin code. Server-held credentials must remain on the server.
     types, not on a concrete backend.
 13. Applications compose packages; shared packages never import an application
     or platform host.
-14. Optional legacy agent plugins are injected into
-    `packages/runtime-legacy`. Native DSH plugins are registered directly on
-    the DSH runtime provider. Application composition owns executor resources
-    and teardown in both cases.
+14. Optional legacy agent-plugin adapters are exported by
+    `packages/runtime-legacy` and injected into its runtime provider. Native
+    DSH plugins are registered directly on the DSH runtime provider.
+    Application composition owns executor resources and teardown in both
+    cases.
 15. Model transport accepts strictly named, JSON-schema-defined tools from the
     active agent registry. It does not keep a separate fixed allowlist that
     could silently remove application-composed plugin tools.
@@ -169,9 +171,11 @@ against same-origin code. Server-held credentials must remain on the server.
 ## Web search plugin boundary
 
 `packages/web-search-plugin` is a stateless adaptation of the MIT-licensed
-`pi-web-access` search workflow. It defines one `web_search` tool, a
-provider-independent routing executor, and provider adapters used by both
-browser and native core Workers. Exa MCP is available in both applications.
+`pi-web-access` search workflow. It defines runtime-neutral research behavior,
+native DSH `web_search` and `open_url` tools, a provider-independent routing
+executor, and provider adapters used by both browser and native core Workers.
+Its legacy Pi adapter belongs to `packages/runtime-legacy`. Exa MCP is
+available in both applications.
 The native application also exposes anonymous AnySearch through a dedicated
 MessagePort and a fixed-endpoint Rust service because the REST endpoint is not
 a browser-CORS boundary. AnySearch is explicit-only and is not included by the
@@ -240,10 +244,11 @@ policy; it must not be smuggled through the search tool.
 
 ## Python plugin boundary
 
-`packages/python-plugin` defines the `run_python` tool, a strict versioned
-execution protocol, the shared RustPython execution core, and browser/native
-executor adapters. The plugin is absent unless an application passes it to the
-core worker composition.
+`packages/python-plugin` defines the native DSH `run_python` tool, a strict
+versioned execution protocol, the shared RustPython execution core, and
+browser/native executor adapters. Its legacy Pi adapter belongs to
+`packages/runtime-legacy`. The plugin is absent unless an application passes
+it to the core worker composition.
 
 Each call is stateless and starts a fresh RustPython interpreter. The Python
 surface has no rrbox workspace bridge or request API in this version.

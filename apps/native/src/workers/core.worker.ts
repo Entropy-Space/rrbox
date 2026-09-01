@@ -29,15 +29,17 @@ import {
   parseNativeCoreWorkerInitializeMessage,
   type NativeLlmWorkerInitializeMessage,
 } from "../lib/types.ts";
-import { createPythonAgentPlugin } from "@researchbox/python-plugin";
 import {
   NativePythonRpcClient,
 } from "@researchbox/python-plugin/native";
 import { DshrboxPython } from "@researchbox/python-plugin/dsh";
 import {
   DEFAULT_WEB_SEARCH_SUMMARY_GRACE_MS,
-  createWebSearchAgentPlugin,
 } from "@researchbox/web-search-plugin";
+import {
+  createPythonAgentPlugin,
+  createWebSearchAgentPlugin,
+} from "@researchbox/runtime-legacy";
 import {
   DshrboxWebResearch,
 } from "@researchbox/web-search-plugin/dsh";

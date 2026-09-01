@@ -115,6 +115,10 @@ test("shares browser app runtime composition between web and native", async () =
     "workspace:*",
   );
   assert.equal(
+    webManifest.dependencies["@researchbox/runtime-legacy"],
+    "workspace:*",
+  );
+  assert.equal(
     nativeManifest.dependencies["@researchbox/app-runtime-browser"],
     "workspace:*",
   );
@@ -132,6 +136,10 @@ test("shares browser app runtime composition between web and native", async () =
   );
   assert.equal(
     nativeManifest.dependencies["@dshrbox/session-persistence-native"],
+    "workspace:*",
+  );
+  assert.equal(
+    nativeManifest.dependencies["@researchbox/runtime-legacy"],
     "workspace:*",
   );
   assert.equal(

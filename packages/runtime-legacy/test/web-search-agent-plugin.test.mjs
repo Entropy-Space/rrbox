@@ -3,8 +3,10 @@ import test from "node:test";
 import {
   WebSearchAggregateError,
   WebSearchProviderError,
-} from "../src/routing-executor.ts";
-import { createWebSearchAgentPlugin } from "../src/web-search-plugin.ts";
+} from "@researchbox/web-search-plugin/executor";
+import {
+  createWebSearchAgentPlugin,
+} from "../src/web-search-agent-plugin.ts";
 
 test("searches multiple angles and summarizes with the active model", async () => {
   const calls = [];

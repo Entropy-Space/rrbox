@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createPythonAgentPlugin,
-  formatPythonExecution,
-} from "../src/python-plugin.ts";
+} from "../src/python-agent-plugin.ts";
+import { formatPythonExecution } from "@researchbox/python-plugin/executor";
 
 test("exposes a stateless run_python tool only when composed", async () => {
   const calls = [];

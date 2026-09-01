@@ -21,7 +21,7 @@ import {
   type ManagementDialogResult,
   type ManagementDialogState,
 } from "./ManagementDialog.tsx";
-import { navigationFocusTrapTarget } from "./navigation-state.ts";
+import { modalFocusTrapTarget } from "./navigation-state.ts";
 import {
   buildSidebarProjectNodes,
   isProjectDraftVisible,
@@ -234,7 +234,7 @@ export function WorkspaceSidebar({
       const last = focusable.at(-1);
       if (!first || !last) return;
       const activeElement = document.activeElement;
-      const focusTarget = navigationFocusTrapTarget({
+      const focusTarget = modalFocusTrapTarget({
         isFocusInside: sidebar.contains(activeElement),
         isFocusFirst: activeElement === first,
         isFocusLast: activeElement === last,

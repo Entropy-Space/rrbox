@@ -359,7 +359,7 @@ test("workspace transfer status supports cancellation and restores focus", async
   );
   assert.match(
     viewer,
-    /if \(!coreState\.is_ready \|\| consumeImportFocusSuppression\(\)\) return;/,
+    /!coreState\.is_ready \|\|\s+isMobileViewport \|\|\s+consumeImportFocusSuppression\(\)/,
   );
   assert.match(
     transfer,

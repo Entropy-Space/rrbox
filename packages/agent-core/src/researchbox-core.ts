@@ -653,7 +653,14 @@ export class ResearchBoxCore {
         return;
       }
       const registeredModel = this.requireActiveModel();
-      if (this.runtime && !this.runtime.usesModel(registeredModel)) {
+      if (
+        this.runtime &&
+        (
+          !this.runtime.usesModel(registeredModel) ||
+          this.runtime.project_id !== command.payload.project_id ||
+          this.runtime.session_id !== command.payload.session_id
+        )
+      ) {
         await this.activateSelection();
       }
 
@@ -718,6 +725,82 @@ export class ResearchBoxCore {
               staged.run_id,
               command.request_id,
             );
+        return;
+      }
+
+      const sourceDocument = this.requireDocument(command.payload.session_id);
+      const migrationInitializer =
+        this.sessionRuntimeProvider?.initializeMigrationDocument;
+      if (
+        isLegacySessionDocument(sourceDocument) &&
+        migrationInitializer !== undefined
+      ) {
+        const sourceSession = this.requireSession(command.payload.session_id);
+        const created = createSessionRecord(
+          command.payload.project_id,
+          sourceSession.title,
+          sourceSession.title_is_custom,
+          sourceSession.selected_model,
+          sourceSession.reasoning_effort,
+        );
+        let migratedDocument: SessionDocument;
+        try {
+          migratedDocument = migrationInitializer.call(
+            this.sessionRuntimeProvider,
+            sourceDocument,
+            created.session.session_id,
+          );
+          await this.commitMutation(
+            (draft) => {
+              const persistedSource = findDocument(
+                draft,
+                sourceDocument.session_id,
+              );
+              if (!isLegacySessionDocument(persistedSource)) {
+                throw new Error("The migration source is no longer legacy.");
+              }
+              persistedSource.input_draft = "";
+              draft.sessions.push(created.session);
+              draft.documents.push(migratedDocument);
+              const project = findProject(
+                draft,
+                command.payload.project_id,
+              );
+              project.last_session_id = created.session.session_id;
+              project.updated_at = created.session.updated_at;
+              draft.active_project_id = command.payload.project_id;
+              draft.active_session_id = created.session.session_id;
+              return draft;
+            },
+            {
+              project_id: command.payload.project_id,
+              session_id: created.session.session_id,
+            },
+          );
+          await this.activateSelection();
+        } catch (error) {
+          this.emitError(
+            "session_migration_failed",
+            toErrorMessage(
+              error,
+              "The legacy chat could not be continued in DSH.",
+            ),
+            command.request_id,
+            command.payload.project_id,
+            created.session.session_id,
+          );
+          return;
+        }
+        await this.emitStateSnapshot(command.request_id);
+        this.submittedDraft = {
+          project_id: command.payload.project_id,
+          session_id: created.session.session_id,
+          input_draft: migratedDocument.input_draft,
+        };
+        runPromise = this.requireRuntime().startPrompt(
+          promptText,
+          command.request_id,
+        );
         return;
       }
 
@@ -1549,6 +1632,17 @@ export class ResearchBoxCore {
     const runtimeProvider = document !== null && isRuntimeSessionDocument(document)
       ? this.requireSessionRuntimeProvider(document.runtime_id)
       : undefined;
+    const migrationSourceDocument = document !== null &&
+        isRuntimeSessionDocument(document) &&
+        document.migration_source_session_id !== undefined
+      ? this.requireDocument(document.migration_source_session_id)
+      : undefined;
+    if (
+      migrationSourceDocument !== undefined &&
+      !isLegacySessionDocument(migrationSourceDocument)
+    ) {
+      throw new Error("Runtime migration source is not a legacy session.");
+    }
     const runtimeOptions: SessionRuntimeOptions | null =
       sessionId === null || document === null
       ? null
@@ -1556,6 +1650,9 @@ export class ResearchBoxCore {
           project_id: projectId,
           session_id: sessionId,
           document,
+          ...(migrationSourceDocument === undefined
+            ? {}
+            : { migration_source_document: migrationSourceDocument }),
           workspace,
           model_transport: this.modelTransport,
           model: this.requireActiveModel(),
@@ -1582,6 +1679,36 @@ export class ResearchBoxCore {
       ? null
       : await (runtimeProvider ?? this.legacySessionRuntimeProvider)
         .create(runtimeOptions);
+    if (
+      nextRuntime !== null &&
+      document !== null &&
+      isRuntimeSessionDocument(document) &&
+      document.migration_source_session_id !== undefined
+    ) {
+      try {
+        await this.commitMutation(
+          (draft) => {
+            const initialized = findDocument(draft, document.session_id);
+            if (
+              !isRuntimeSessionDocument(initialized) ||
+              initialized.migration_source_session_id !==
+                document.migration_source_session_id
+            ) {
+              throw new Error("Runtime migration intent changed during setup.");
+            }
+            delete initialized.migration_source_session_id;
+            return draft;
+          },
+          { project_id: projectId, session_id: sessionId },
+        );
+        nextRuntime.bindDocument(
+          this.requireDocument(nextRuntime.session_id),
+        );
+      } catch (error) {
+        await nextRuntime.dispose();
+        throw error;
+      }
+    }
     await this.runtime?.dispose();
     this.workspace = workspace;
     this.runtime = nextRuntime;

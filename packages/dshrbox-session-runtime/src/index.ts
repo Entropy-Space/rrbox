@@ -31,6 +31,7 @@ import type {
 } from "@researchbox/agent-core";
 import {
   RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION,
+  sessionDocumentMessageCount,
   type LegacySessionDocument,
   type RuntimeSessionDocument,
   type SessionDocument,
@@ -41,6 +42,9 @@ import type {
   SummaryReviewResolution,
 } from "@researchbox/protocol";
 import { createDshrboxWorkspaceRecoveryBackend } from "./workspace-recovery.ts";
+import { legacyTimelineToDshSeed } from "./legacy-seed.ts";
+
+export { legacyTimelineToDshSeed } from "./legacy-seed.ts";
 
 export type DshrboxSessionRuntimeProviderConfig = {
   session_backend:
@@ -77,6 +81,27 @@ export class DshrboxSessionRuntimeProvider implements SessionRuntimeProvider {
       input_draft: document.input_draft,
       runtime_id: DSHRBOX_RUNTIME_ID,
       message_count: 0,
+    };
+  }
+
+  initializeMigrationDocument(
+    source: LegacySessionDocument,
+    targetSessionId: string,
+  ): RuntimeSessionDocument {
+    if (source.session_id === targetSessionId) {
+      throw new Error("A DSH migration must create a distinct child session.");
+    }
+    // Validate the complete seed before the host commits durable migration
+    // intent. Runtime creation repeats this pure conversion after the commit.
+    legacyTimelineToDshSeed(source);
+    return {
+      format_version: RUNTIME_SESSION_DOCUMENT_FORMAT_VERSION,
+      session_id: targetSessionId,
+      project_id: source.project_id,
+      input_draft: source.input_draft,
+      runtime_id: DSHRBOX_RUNTIME_ID,
+      message_count: sessionDocumentMessageCount(source),
+      migration_source_session_id: source.session_id,
     };
   }
 
@@ -135,6 +160,24 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
     const persistedRevision = await configuredSessionBackend.readStoredRevision(
       SessionId(options.session_id),
     );
+    const migrationSource = options.migration_source_document;
+    const document = requireDshDocument(options.document);
+    if (
+      document.migration_source_session_id !== undefined &&
+      migrationSource === undefined
+    ) {
+      throw new Error("The DSH migration source document is unavailable.");
+    }
+    if (
+      migrationSource !== undefined &&
+      document.migration_source_session_id !== migrationSource.session_id
+    ) {
+      throw new Error("The DSH migration source does not match its intent.");
+    }
+    const migrationSeed = persistedRevision === undefined &&
+        migrationSource !== undefined
+      ? legacyTimelineToDshSeed(migrationSource)
+      : undefined;
     const sessionBackend = persistedRevision === undefined
       ? configuredSessionBackend
       : createDshrboxWorkspaceRecoveryBackend(
@@ -164,6 +207,10 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
       provider: options.model.provider,
       session_id: options.session_id,
       resume: persistedRevision !== undefined,
+      ...(migrationSeed === undefined ? {} : { seed: migrationSeed }),
+      ...(migrationSource === undefined
+        ? {}
+        : { parent_session_id: migrationSource.session_id }),
       persona: options.system_prompt,
       ...(config.max_parallel_tool_calls === undefined
         ? {}
@@ -217,9 +264,17 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
         { plugin: checkpointPolicy },
       ],
     });
-    runtime = new DshrboxSessionRuntime(core, options);
-    runtime.reconcileProjection();
-    return runtime;
+    try {
+      if (migrationSource !== undefined) {
+        await core.context.sessions.flush(core.runtime.agent.session);
+      }
+      runtime = new DshrboxSessionRuntime(core, options);
+      runtime.reconcileProjection();
+      return runtime;
+    } catch (error) {
+      await core.dispose();
+      throw error;
+    }
   }
 
   get is_running(): boolean {

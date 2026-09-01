@@ -492,6 +492,10 @@ export class DshrboxEventProjector {
         (block) => block.type === "tool_call",
       ) ? "tool_use" : "stop";
     }
+    applyImportedAssistantMetadata(
+      assistant.entry,
+      event.data.message.source.replayState,
+    );
     this.updateEntry(
       assistant.entry,
       event,
@@ -955,6 +959,103 @@ function applyFinishReason(
     default:
       throw unsupportedKind("finish reason", reason);
   }
+}
+
+function applyImportedAssistantMetadata(
+  entry: AssistantMessageEntry,
+  replayState: unknown,
+): void {
+  if (!isRecord(replayState)) return;
+  const imported = replayState.dshrbox_import;
+  if (
+    !isRecord(imported) ||
+    imported.kind !== "researchbox_timeline_v5" ||
+    typeof imported.api !== "string" ||
+    !isAssistantStatus(imported.status)
+  ) {
+    return;
+  }
+  entry.api = imported.api;
+  entry.status = imported.status;
+  setOptionalString(entry, "response_model", imported.response_model);
+  setOptionalString(entry, "response_id", imported.response_id);
+  setOptionalString(entry, "error_message", imported.error_message);
+  if (isAssistantStopReason(imported.stop_reason)) {
+    entry.stop_reason = imported.stop_reason;
+  } else {
+    delete entry.stop_reason;
+  }
+  const usage = imported.usage;
+  if (isAssistantUsage(usage)) entry.usage = structuredClone(usage);
+  if (Array.isArray(imported.blocks)) {
+    for (const [index, raw] of imported.blocks.entries()) {
+      const block = entry.blocks[index];
+      if (!block || !isRecord(raw)) continue;
+      if (block.type === "assistant_text" && raw.type === "assistant_text") {
+        copyOptionalString(block, "text_signature", raw.text_signature);
+      } else if (block.type === "reasoning" && raw.type === "reasoning") {
+        copyOptionalString(block, "thinking_signature", raw.thinking_signature);
+        if (typeof raw.redacted === "boolean") block.redacted = raw.redacted;
+      } else if (block.type === "tool_call" && raw.type === "tool_call") {
+        copyOptionalString(block, "thought_signature", raw.thought_signature);
+        copyOptionalString(block, "label", raw.label);
+        copyOptionalString(block, "progress_summary", raw.progress_summary);
+      }
+    }
+  }
+}
+
+function isAssistantStatus(
+  value: unknown,
+): value is AssistantMessageEntry["status"] {
+  return value === "complete" || value === "aborted" || value === "error";
+}
+
+function isAssistantStopReason(
+  value: unknown,
+): value is NonNullable<AssistantMessageEntry["stop_reason"]> {
+  return value === "stop" || value === "length" || value === "tool_use" ||
+    value === "error" || value === "aborted";
+}
+
+function isAssistantUsage(value: unknown): value is AssistantUsage {
+  if (!isRecord(value) || !isRecord(value.cost)) return false;
+  return [
+    value.input,
+    value.output,
+    value.cache_read,
+    value.cache_write,
+    value.total_tokens,
+    value.cost.input,
+    value.cost.output,
+    value.cost.cache_read,
+    value.cost.cache_write,
+    value.cost.total,
+  ].every((candidate) =>
+    typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0
+  );
+}
+
+function setOptionalString<
+  TKey extends "response_model" | "response_id" | "error_message",
+>(
+  entry: AssistantMessageEntry,
+  key: TKey,
+  value: unknown,
+): void {
+  if (typeof value === "string") {
+    entry[key] = value;
+  } else {
+    delete entry[key];
+  }
+}
+
+function copyOptionalString<T extends object, TKey extends keyof T>(
+  target: T,
+  key: TKey,
+  value: unknown,
+): void {
+  if (typeof value === "string") target[key] = value as T[TKey];
 }
 
 function applyTurnEndReason(

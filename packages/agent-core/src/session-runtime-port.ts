@@ -20,6 +20,8 @@ export type SessionRuntimeOptions = {
   project_id: string;
   session_id: string;
   document: SessionDocument;
+  /** Present only while a copy-on-write runtime seed is being materialized. */
+  migration_source_document?: LegacySessionDocument;
   workspace: WorkspaceController;
   model_transport: ModelTransport;
   model: RuntimeModel;
@@ -86,6 +88,11 @@ export interface LegacySessionRuntimeProvider {
 export interface SessionRuntimeProvider {
   readonly runtime_id: string;
   initializeDocument(document: LegacySessionDocument): SessionDocument;
+  /** Create a new runtime reference whose initial history is copied from source. */
+  initializeMigrationDocument?(
+    source: LegacySessionDocument,
+    targetSessionId: string,
+  ): SessionDocument;
   create(options: SessionRuntimeOptions):
     | SessionRuntimePort
     | Promise<SessionRuntimePort>;

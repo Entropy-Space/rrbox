@@ -79,6 +79,11 @@ export type RuntimeSessionDocument = {
   runtime_id: string;
   /** Cached read-model count; the runtime event log remains authoritative. */
   message_count: number;
+  /**
+   * Durable copy-on-write intent. The runtime clears this only after the
+   * source timeline has been materialized in its own canonical persistence.
+   */
+  migration_source_session_id?: string;
 };
 
 export type SessionDocument =
@@ -248,6 +253,18 @@ export function assertProjectStoreInvariants(state: ProjectStoreState): void {
       document.message_count < 0
     ) {
       throw new Error("Runtime session document metadata is invalid.");
+    } else if (document.migration_source_session_id !== undefined) {
+      const source = documents.get(document.migration_source_session_id);
+      if (
+        source === undefined ||
+        !isLegacySessionDocument(source) ||
+        source.session_id === document.session_id ||
+        source.project_id !== document.project_id
+      ) {
+        throw new Error(
+          "Runtime session migration source must be a legacy session in the same project.",
+        );
+      }
     }
   }
 
@@ -372,6 +389,14 @@ function parseSessionDocument(
         input_draft: inputDraft,
         runtime_id: requireString(value, "runtime_id"),
         message_count: requireNonNegativeInteger(value, "message_count"),
+        ...(optionalString(value, "migration_source_session_id") === undefined
+          ? {}
+          : {
+              migration_source_session_id: requireString(
+                value,
+                "migration_source_session_id",
+              ),
+            }),
       },
       was_migrated: false,
     };

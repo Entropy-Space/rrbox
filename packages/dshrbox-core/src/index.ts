@@ -26,6 +26,10 @@ export type DshrboxRuntimeConfig = {
   provider: string;
   session_id: string;
   resume?: boolean;
+  /** Balanced imported history for a newly-created runtime session. */
+  seed?: readonly SessionEvent[];
+  /** Durable lineage for an imported or forked session. */
+  parent_session_id?: string;
 };
 
 export type DshrboxSessionEventListener = (event: SessionEvent) => void;
@@ -55,6 +59,9 @@ export class DshrboxRuntime extends Service {
       model: config.model,
       provider: config.provider,
     };
+    if (config.resume === true && config.seed !== undefined) {
+      throw new Error("A resumed dshrbox session cannot also supply a seed.");
+    }
     const handlePromise = config.resume === true
       ? ctx.agents.resume({
           resumeSessionId: SessionId(config.session_id),
@@ -63,6 +70,24 @@ export class DshrboxRuntime extends Service {
       : ctx.agents.create({
           sessionId: SessionId(config.session_id),
           agentOptions,
+          ...(config.seed === undefined ? {} : { seed: config.seed }),
+          ...(config.parent_session_id === undefined &&
+              config.seed === undefined
+            ? {}
+            : {
+                meta: {
+                  ...(config.parent_session_id === undefined
+                    ? {}
+                    : {
+                        parentSession: SessionId(
+                          config.parent_session_id,
+                        ),
+                      }),
+                  ...(config.seed === undefined
+                    ? {}
+                    : { seedLength: config.seed.length }),
+                },
+              }),
         });
     this.agentPromise = handlePromise.then((handle) => {
       this.liveAgent = handle.agent;

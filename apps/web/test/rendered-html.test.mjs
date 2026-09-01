@@ -135,7 +135,7 @@ test("keeps package boundaries explicit", async () => {
       ),
       readFile(
         new URL(
-          "../../../packages/agent-core/src/session-runtime.ts",
+          "../../../packages/runtime-legacy/src/session-runtime.ts",
           import.meta.url,
         ),
         "utf8",

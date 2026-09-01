@@ -1,10 +1,11 @@
 # rrbox
 
-rrbox is a browser-native workspace for Pi agents. Its viewer, protocol,
-agent runtime, model transport, and virtual filesystem are independent
-workspace packages. The browser remains a first-class runtime, and the same
-viewer and browser runtime now run in a Tauri 2 WebView composition targeting
-macOS, iOS, and Android.
+rrbox is a browser-native agent workspace. Its viewer, protocol, session
+runtimes, model transport, and virtual filesystem are independent workspace
+packages. New sessions run on DSH; a separate Pi-backed compatibility package
+keeps existing timeline sessions usable. The browser remains a first-class
+runtime, and the same viewer and browser runtime run in a Tauri 2 WebView
+composition targeting macOS, iOS, and Android.
 
 ## Current vertical slice
 
@@ -13,14 +14,14 @@ macOS, iOS, and Android.
 - Persistent projects, submitted chats, and project/session input drafts
 - One virtual new-chat state per project; a session is created on first send
 - Keyboard-accessible search across saved chats in every project
-- Real `@earendil-works/pi-agent-core` loop inside a Web Worker
+- DSH agent loop for new sessions, with Pi isolated to old-session compatibility
 - Dedicated LLM Web Worker for multiplexed model requests and cancellation
 - Chat-scoped provider/model picker with a built-in mock and dynamic
   OpenAI-compatible discovery at `localhost:4141` in both browser and Tauri
 - Versioned, runtime-validated JSON commands and events
 - Streaming mock-model service with a real tool-result continuation loop
-- One canonical, ordered timeline that preserves reasoning, assistant text,
-  tool calls, tool results, and multi-turn continuations exactly as they stream
+- Canonical DSH session events projected into the existing ordered viewer
+  timeline; legacy Pi sessions retain their persisted timeline documents
 - Project-isolated IndexedDB virtual filesystems with `list_files`, bounded
   literal `search_files`, `read_file`, `write_file`, exact-match
   `replace_text`, and reversible `remove_file` tools
@@ -35,8 +36,8 @@ macOS, iOS, and Android.
   reload recovery when a mutation commits before its transcript checkpoint
 - Exact before/after change review with a bounded unified diff and a confirmed,
   conflict-safe one-time revert
-- Versioned timeline checkpoints that restore the supported text and tool
-  surface back into Pi messages after reload
+- Versioned legacy timeline checkpoints that restore the supported text and
+  tool surface back into Pi messages after reload
 - Interactive workspace browser and text-file preview
 - Deterministic, content-only workspace archive import and export for browser
   projects
@@ -51,7 +52,9 @@ apps/
 packages/
   client/              Platform-neutral viewer/core transport contract
   protocol/            Serialized viewer/core contract and validators
-  agent-core/          Pi agent orchestration and tools
+  agent-core/          Runtime-neutral project and session coordination
+  runtime-legacy/      Pi-backed compatibility runtime for existing sessions
+  dshrbox-*/           DSH runtime, persistence, projection, and native plugins
   viewer/              React conversation and workspace UI
   model-transport/     Model request/stream contract and HTTP adapter
   app-runtime-browser/ Shared browser/WebView core composition and locking

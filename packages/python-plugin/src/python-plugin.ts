@@ -1,6 +1,6 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
-import type { AgentPlugin } from "@researchbox/agent-core";
+import type { AgentPlugin } from "@researchbox/runtime-legacy";
 import {
   formatPythonExecution,
   type PythonExecutor,

@@ -9,9 +9,9 @@ import { MemoryDshrboxSessionBackend } from "@dshrbox/session-persistence";
 import { DshrboxSessionRuntimeProvider } from "@dshrbox/session-runtime";
 import { DshrboxPython } from "@researchbox/python-plugin/dsh";
 import {
-  PiSessionRuntimeProvider,
   ResearchBoxCore,
 } from "@researchbox/agent-core";
+import { PiSessionRuntimeProvider } from "@researchbox/runtime-legacy";
 import { MemoryProjectStore } from "@researchbox/project-store";
 import {
   createCommand,

@@ -20,6 +20,7 @@ test("keeps the proposed workspace surfaces present", async () => {
     "packages/project-store",
     "packages/python-plugin",
     "packages/runtime-browser",
+    "packages/runtime-legacy",
     "packages/storage-browser",
     "packages/storage-native",
     "packages/dshrbox-session-persistence-native",
@@ -92,6 +93,10 @@ test("shares browser app runtime composition between web and native", async () =
     runtimeManifest.dependencies["@researchbox/runtime-browser"],
     "workspace:*",
   );
+  assert.equal(
+    runtimeManifest.dependencies["@researchbox/runtime-legacy"],
+    "workspace:*",
+  );
   assert.equal(runtimeManifest.dependencies["@dshrbox/session-runtime"], undefined);
   assert.equal(
     webManifest.dependencies["@researchbox/app-runtime-browser"],
@@ -145,6 +150,7 @@ test("keeps framework dependencies out of portable packages", async () => {
     "protocol",
     "model-transport",
     "runtime-browser",
+    "runtime-legacy",
     "project-store",
     "storage-native",
     "vfs",

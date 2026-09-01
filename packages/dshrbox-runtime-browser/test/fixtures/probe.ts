@@ -5,9 +5,9 @@ import { MemoryDshrboxSessionBackend } from "@dshrbox/session-persistence";
 import { DshrboxSessionRuntimeProvider } from "@dshrbox/session-runtime";
 import DshrboxWorkspace from "@dshrbox/workspace";
 import {
-  PiSessionRuntimeProvider,
   ResearchBoxCore,
 } from "@researchbox/agent-core";
+import { PiSessionRuntimeProvider } from "@researchbox/runtime-legacy";
 import { MemoryProjectStore } from "@researchbox/project-store";
 import { createCommand } from "@researchbox/protocol";
 import {

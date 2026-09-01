@@ -120,6 +120,23 @@ export type AssistantUsage = {
   };
 };
 
+export function emptyAssistantUsage(): AssistantUsage {
+  return {
+    input: 0,
+    output: 0,
+    cache_read: 0,
+    cache_write: 0,
+    total_tokens: 0,
+    cost: {
+      input: 0,
+      output: 0,
+      cache_read: 0,
+      cache_write: 0,
+      total: 0,
+    },
+  };
+}
+
 export type AssistantTextBlock = {
   type: "assistant_text";
   block_id: string;

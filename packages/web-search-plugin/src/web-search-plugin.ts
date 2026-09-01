@@ -3,7 +3,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type {
   AgentPlugin,
   AgentPluginContext,
-} from "@researchbox/agent-core";
+} from "@researchbox/runtime-legacy";
 import {
   createWebResearchEngine,
   MAX_WEB_SEARCH_DOMAIN_FILTERS,

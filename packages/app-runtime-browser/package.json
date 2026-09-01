@@ -17,6 +17,7 @@
     "@researchbox/project-store": "workspace:*",
     "@researchbox/provider-settings": "workspace:*",
     "@researchbox/protocol": "workspace:*",
+    "@researchbox/runtime-legacy": "workspace:*",
     "@researchbox/runtime-browser": "workspace:*",
     "@researchbox/storage-browser": "workspace:*",
     "@researchbox/vfs": "workspace:*",

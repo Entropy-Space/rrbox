@@ -21,8 +21,8 @@
     "@dshrbox/summary-review": "workspace:*",
     "@earendil-works/pi-agent-core": "0.79.0",
     "@earendil-works/pi-ai": "0.79.0",
-    "@researchbox/agent-core": "workspace:*",
-    "@researchbox/protocol": "workspace:*"
+    "@researchbox/protocol": "workspace:*",
+    "@researchbox/runtime-legacy": "workspace:*"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-system-prompt": "0.1.1-rc.2"

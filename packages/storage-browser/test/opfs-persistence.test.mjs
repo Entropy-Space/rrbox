@@ -4,7 +4,6 @@ import { IDBFactory } from "fake-indexeddb";
 import {
   ResearchBoxCore,
 } from "@researchbox/agent-core";
-import { PiSessionRuntimeProvider } from "@researchbox/runtime-legacy";
 import { SESSION_DOCUMENT_FORMAT_VERSION } from "@researchbox/project-store";
 import { createCommand } from "@researchbox/protocol";
 import {
@@ -2042,10 +2041,23 @@ function createTestCore(projectStore, workspaceBackend, events) {
     },
     model: testModel,
     systemPrompt: "You are a test agent.",
-    legacySessionRuntimeProvider: new PiSessionRuntimeProvider(),
+    sessionRuntimeProvider: passiveSessionRuntimeProvider,
     eventSink: (event) => events.push(event),
   });
 }
+
+const passiveSessionRuntimeProvider = {
+  runtime_id: "storage-test",
+  initializeDocument() {
+    throw new Error("Storage bootstrap tests do not create sessions.");
+  },
+  initializeMigrationDocument() {
+    throw new Error("Storage bootstrap tests do not migrate sessions.");
+  },
+  create() {
+    throw new Error("Storage bootstrap tests keep legacy sessions passive.");
+  },
+};
 
 function latestCoreState(events) {
   const event = [...events].reverse().find(

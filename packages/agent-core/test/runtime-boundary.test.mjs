@@ -4,6 +4,7 @@ import test from "node:test";
 
 const piPackageImport = /@earendil-works\/pi-(?:agent-core|ai)/;
 const legacyRuntimeImport = /@researchbox\/runtime-legacy/;
+const legacyRuntimeApi = /LegacySessionRuntimeProvider|continueStagedPrompt/;
 
 async function readTypeScriptSources(directoryPath) {
   const directory = directoryPath instanceof URL
@@ -20,7 +21,7 @@ async function readTypeScriptSources(directoryPath) {
   return sources.flat();
 }
 
-test("keeps feature and DSH runtimes independent of Pi packages", async () => {
+test("keeps the workspace independent of legacy Pi packages", async () => {
   const neutralSources = await Promise.all([
     "../src/model.ts",
     "../src/provider-catalog-service.ts",
@@ -28,34 +29,11 @@ test("keeps feature and DSH runtimes independent of Pi packages", async () => {
     "../src/session-runtime-port.ts",
     "../../dshrbox-session-runtime/src/index.ts",
   ].map((path) => readFile(new URL(path, import.meta.url), "utf8")));
-  const dshManifest = JSON.parse(await readFile(
-    new URL("../../dshrbox-session-runtime/package.json", import.meta.url),
+  const workspaceManifests = await readWorkspaceManifests();
+  const workspaceLock = await readFile(
+    new URL("../../../pnpm-lock.yaml", import.meta.url),
     "utf8",
-  ));
-  const agentCoreManifest = JSON.parse(await readFile(
-    new URL("../package.json", import.meta.url),
-    "utf8",
-  ));
-  const pythonManifest = JSON.parse(await readFile(
-    new URL("../../python-plugin/package.json", import.meta.url),
-    "utf8",
-  ));
-  const webSearchManifest = JSON.parse(await readFile(
-    new URL("../../web-search-plugin/package.json", import.meta.url),
-    "utf8",
-  ));
-  const legacyManifest = JSON.parse(await readFile(
-    new URL("../../runtime-legacy/package.json", import.meta.url),
-    "utf8",
-  ));
-  const shippedManifests = await Promise.all([
-    "../../app-runtime-browser/package.json",
-    "../../../apps/web/package.json",
-    "../../../apps/native/package.json",
-  ].map(async (path) => JSON.parse(await readFile(
-    new URL(path, import.meta.url),
-    "utf8",
-  ))));
+  );
   const shippedWorkerSources = await Promise.all([
     "../../app-runtime-browser/src/researchbox-core-worker.ts",
     "../../../apps/web/browser/core.worker.ts",
@@ -65,13 +43,10 @@ test("keeps feature and DSH runtimes independent of Pi packages", async () => {
     readTypeScriptSources("../../python-plugin/src/"),
     readTypeScriptSources("../../web-search-plugin/src/"),
   ])).flat();
-  const legacyRuntime = await readFile(
-    new URL("../../runtime-legacy/src/session-runtime.ts", import.meta.url),
-    "utf8",
-  );
 
   for (const source of neutralSources) {
     assert.doesNotMatch(source, piPackageImport);
+    assert.doesNotMatch(source, legacyRuntimeApi);
   }
   for (const source of featureSources) {
     assert.doesNotMatch(source, piPackageImport);
@@ -81,29 +56,7 @@ test("keeps feature and DSH runtimes independent of Pi packages", async () => {
     assert.doesNotMatch(source, piPackageImport);
     assert.doesNotMatch(source, legacyRuntimeImport);
   }
-  for (const manifest of shippedManifests) {
-    assert.equal(
-      manifest.dependencies?.["@researchbox/runtime-legacy"],
-      undefined,
-    );
-  }
-  assert.equal(
-    dshManifest.dependencies["@earendil-works/pi-ai"],
-    undefined,
-  );
-  assert.equal(
-    dshManifest.dependencies["@researchbox/runtime-legacy"],
-    undefined,
-  );
-  assert.equal(
-    agentCoreManifest.dependencies["@earendil-works/pi-ai"],
-    undefined,
-  );
-  assert.equal(
-    agentCoreManifest.dependencies["@earendil-works/pi-agent-core"],
-    undefined,
-  );
-  for (const manifest of [pythonManifest, webSearchManifest]) {
+  for (const manifest of workspaceManifests) {
     const dependencies = {
       ...manifest.dependencies,
       ...manifest.devDependencies,
@@ -123,25 +76,35 @@ test("keeps feature and DSH runtimes independent of Pi packages", async () => {
       undefined,
     );
   }
-  assert.equal(
-    legacyManifest.dependencies["@researchbox/agent-core"],
-    "workspace:*",
+  assert.doesNotMatch(workspaceLock, piPackageImport);
+  assert.doesNotMatch(workspaceLock, legacyRuntimeImport);
+  await assert.rejects(
+    readFile(
+      new URL("../../runtime-legacy/package.json", import.meta.url),
+      "utf8",
+    ),
+    (error) => error?.code === "ENOENT",
   );
-  assert.equal(
-    legacyManifest.dependencies["@earendil-works/pi-ai"],
-    "0.79.0",
-  );
-  assert.equal(
-    legacyManifest.dependencies["@earendil-works/pi-agent-core"],
-    "0.79.0",
-  );
-  assert.equal(
-    legacyManifest.dependencies["@researchbox/python-plugin"],
-    "workspace:*",
-  );
-  assert.equal(
-    legacyManifest.dependencies["@researchbox/web-search-plugin"],
-    "workspace:*",
-  );
-  assert.match(legacyRuntime, piPackageImport);
 });
+
+async function readWorkspaceManifests() {
+  const packageDirectory = new URL("../../", import.meta.url);
+  const appDirectory = new URL("../../../apps/", import.meta.url);
+  const manifestUrls = [];
+  for (const directory of [packageDirectory, appDirectory]) {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      manifestUrls.push(new URL(`${entry.name}/package.json`, directory));
+    }
+  }
+  const manifests = await Promise.all(manifestUrls.map(async (url) => {
+    try {
+      return JSON.parse(await readFile(url, "utf8"));
+    } catch (error) {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    }
+  }));
+  return manifests.filter((manifest) => manifest !== null);
+}

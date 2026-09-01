@@ -16,13 +16,12 @@ agent. A model selected in the summary-review UI overrides that identity for
 the requested regeneration. Review state is live and non-durable; the owning
 dshrbox session runtime emits the existing viewer `CoreEvent`s.
 
-## Copy-on-write boundary
+## Runtime boundary
 
 `web-research-engine.ts` contains runtime-neutral research behavior. The
-package root and DSH entry do not import or translate Pi tool objects, schemas,
-events, or model adapters. The legacy Pi wrapper lives in
-`@researchbox/runtime-legacy` and consumes the engine through the explicit
-`@researchbox/web-search-plugin/engine` subpath.
+package root and DSH entry do not import or translate compatibility tool
+objects, schemas, events, or model adapters. The engine remains exported for
+focused tests and application-owned executor composition.
 
 DSH currently has no native per-tool progress stream, so the DSH tool result is
 published when it settles. The summary-review service continues to provide

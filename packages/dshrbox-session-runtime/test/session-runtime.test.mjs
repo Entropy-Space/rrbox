@@ -14,8 +14,11 @@ import { DshrboxPython } from "@researchbox/python-plugin/dsh";
 import {
   ResearchBoxCore,
 } from "@researchbox/agent-core";
-import { PiSessionRuntimeProvider } from "@researchbox/runtime-legacy";
-import { MemoryProjectStore } from "@researchbox/project-store";
+import {
+  createSessionHistory,
+  MemoryProjectStore,
+  SESSION_DOCUMENT_FORMAT_VERSION,
+} from "@researchbox/project-store";
 import {
   createCommand,
   parseCoreEvent,
@@ -375,29 +378,14 @@ test("runs and restores a DSH session behind the existing rrbox core", async () 
   const workspace = createWorkspaceBackend();
   const transport = new ResumableWorkspaceTransport();
   const sessionBackend = new MemoryDshrboxSessionBackend();
-  let legacyStageCount = 0;
-  let legacyCreateCount = 0;
-  const forbiddenLegacySessionRuntimeProvider = {
-    stagePrompt() {
-      legacyStageCount += 1;
-      throw new Error("A new DSH session entered the legacy staging lane.");
-    },
-    create() {
-      legacyCreateCount += 1;
-      throw new Error("A DSH document entered the legacy runtime lane.");
-    },
-  };
   const firstEvents = [];
   const first = createCore(
     store,
     workspace,
     transport,
     firstEvents,
-    true,
     sessionBackend,
     [],
-    [],
-    forbiddenLegacySessionRuntimeProvider,
   );
   await first.handle(createCommand("bootstrap", {}));
   const initial = latestState(firstEvents);
@@ -436,8 +424,6 @@ test("runs and restores a DSH session behind the existing rrbox core", async () 
   assert.equal(firstDocument.runtime_id, "dsh");
   assert.equal(firstDocument.timeline, undefined);
   assert.equal(firstDocument.history, undefined);
-  assert.equal(legacyStageCount, 0);
-  assert.equal(legacyCreateCount, 0);
   assert.ok(
     (await sessionBackend.loadStored(SessionId(firstDocument.session_id)))
       .events.length > 0,
@@ -459,19 +445,14 @@ test("runs and restores a DSH session behind the existing rrbox core", async () 
     workspace,
     transport,
     secondEvents,
-    true,
     sessionBackend,
     [],
-    [],
-    forbiddenLegacySessionRuntimeProvider,
   );
   await second.handle(createCommand("bootstrap", {
     active_project_id: firstState.active_project_id,
     active_session_id: firstState.active_session_id,
   }));
   const restored = latestState(secondEvents);
-  assert.equal(legacyStageCount, 0);
-  assert.equal(legacyCreateCount, 0);
   assert.deepEqual(restored.timeline, firstState.timeline);
 
   await second.handle(createCommand("prompt", {
@@ -493,10 +474,9 @@ test("runs and restores a DSH session behind the existing rrbox core", async () 
   await second.dispose();
 });
 
-test("composes native DSH plugins without binding legacy plugins", async () => {
+test("composes native DSH plugins", async () => {
   const calls = [];
   const events = [];
-  let legacyPluginBindings = 0;
   const executor = {
     async execute(code, signal) {
       calls.push({ code, signal });
@@ -514,16 +494,8 @@ test("composes native DSH plugins without binding legacy plugins", async () => {
     createWorkspaceBackend(),
     new NativePythonTransport(),
     events,
-    true,
     new MemoryDshrboxSessionBackend(),
     [{ plugin: DshrboxPython, config: { executor } }],
-    [{
-      id: "legacy-probe",
-      createTools() {
-        legacyPluginBindings += 1;
-        return [];
-      },
-    }],
   );
   await core.handle(createCommand("bootstrap", {}));
   const initial = latestState(events);
@@ -534,7 +506,6 @@ test("composes native DSH plugins without binding legacy plugins", async () => {
   }));
 
   assert.equal(calls.length, 1);
-  assert.equal(legacyPluginBindings, 0);
   assert.equal(calls[0].code, "print(6 * 7)");
   assert.ok(calls[0].signal instanceof AbortSignal);
   const state = latestState(events);
@@ -558,7 +529,6 @@ test("journals native DSH workspace mutations for the existing viewer", async ()
     workspaceBackend,
     new NativeWorkspaceMutationTransport(),
     events,
-    true,
     new MemoryDshrboxSessionBackend(),
   );
   await core.handle(createCommand("bootstrap", {}));
@@ -738,7 +708,6 @@ test("recovers a committed workspace mutation after a DSH result crash", async (
     workspaceBackend,
     transport,
     firstEvents,
-    true,
     completeBackend,
   );
   await first.handle(createCommand("bootstrap", {}));
@@ -776,7 +745,6 @@ test("recovers a committed workspace mutation after a DSH result crash", async (
     unprovenWorkspaceBackend,
     transport,
     unprovenEvents,
-    true,
     unprovenBackend,
   );
   await unproven.handle(createCommand("bootstrap", {
@@ -815,7 +783,6 @@ test("recovers a committed workspace mutation after a DSH result crash", async (
     workspaceBackend,
     transport,
     secondEvents,
-    true,
     crashedBackend,
   );
   await second.handle(createCommand("bootstrap", {
@@ -910,7 +877,6 @@ test("routes summary-review commands into a native DSH interaction", async () =>
     createWorkspaceBackend(),
     transport,
     events,
-    true,
     new MemoryDshrboxSessionBackend(),
     [{ plugin: SummaryReviewTestPlugin }],
   );
@@ -979,7 +945,6 @@ test("routes the existing abort command into DSH and checkpoints partial output"
     workspace,
     transport,
     events,
-    true,
     sessionBackend,
   );
   await core.handle(createCommand("bootstrap", {}));
@@ -1034,7 +999,6 @@ test("forwards the existing reasoning-effort selection through DSH", async () =>
     workspace,
     transport,
     events,
-    true,
     sessionBackend,
   );
   await core.handle(createCommand("bootstrap", {}));
@@ -1064,7 +1028,6 @@ test("durably checkpoints a failed DSH turn", async () => {
     workspace,
     new FailingTransport(),
     events,
-    true,
     sessionBackend,
   );
   await core.handle(createCommand("bootstrap", {}));
@@ -1104,7 +1067,6 @@ test("deletes DSH persistence after deleting its host session", async () => {
     createWorkspaceBackend(),
     new ReasoningEffortTransport(),
     events,
-    true,
     (projectId) => {
       resolvedProjectIds.push(projectId);
       return sessionBackend;
@@ -1152,7 +1114,6 @@ test("deletes every DSH session owned by a deleted project", async () => {
     createWorkspaceBackend(),
     new ReasoningEffortTransport(),
     events,
-    true,
     sessionBackend,
   );
   await core.handle(createCommand("bootstrap", {}));
@@ -1192,7 +1153,6 @@ test("keeps host deletion committed when DSH cleanup fails", async () => {
     createWorkspaceBackend(),
     new ReasoningEffortTransport(),
     events,
-    true,
     new FailingDeleteSessionBackend(),
   );
   await core.handle(createCommand("bootstrap", {}));
@@ -1224,44 +1184,31 @@ test("copies an unmarked legacy session into DSH on its first write", async () =
   const store = new MemoryProjectStore();
   const workspace = createWorkspaceBackend();
   const transport = new LegacyFallbackTransport();
-  const legacyEvents = [];
-  const legacy = createCore(
+  const legacyState = await persistLegacySession(
     store,
     workspace,
     transport,
-    legacyEvents,
-    false,
+    legacyTextTimeline(
+      "Create a legacy session.",
+      "Legacy runtime response.",
+    ),
   );
-  await legacy.handle(createCommand("bootstrap", {}));
-  const initial = latestState(legacyEvents);
-  await legacy.handle(createCommand("prompt", {
-    project_id: initial.active_project_id,
-    session_id: null,
-    text: "Create a legacy session.",
-  }));
-  const legacyState = latestState(legacyEvents);
   const legacyStored = await store.load();
-  const legacyDocument = structuredClone(legacyStored.documents[0]);
-  await legacy.dispose();
+  const legacyDocument = structuredClone(
+    legacyStored.documents.find(
+      (document) => document.session_id === legacyState.active_session_id,
+    ),
+  );
 
   const dshConfiguredEvents = [];
   const sessionBackend = new MemoryDshrboxSessionBackend();
-  let legacyPluginBindings = 0;
   const dshConfigured = createCore(
     store,
     workspace,
     transport,
     dshConfiguredEvents,
-    true,
     sessionBackend,
     [],
-    [{
-      id: "legacy-probe",
-      createTools() {
-        legacyPluginBindings += 1;
-        return [];
-      },
-    }],
   );
   await dshConfigured.handle(createCommand("bootstrap", {
     active_project_id: legacyState.active_project_id,
@@ -1269,7 +1216,6 @@ test("copies an unmarked legacy session into DSH on its first write", async () =
   }));
   const passiveState = latestState(dshConfiguredEvents);
   assert.deepEqual(passiveState.timeline, legacyState.timeline);
-  assert.equal(legacyPluginBindings, 0);
   await dshConfigured.handle(createCommand("prompt", {
     project_id: legacyState.active_project_id,
     session_id: legacyState.active_session_id,
@@ -1314,7 +1260,6 @@ test("copies an unmarked legacy session into DSH on its first write", async () =
         ),
     ),
   );
-  assert.equal(legacyPluginBindings, 0);
   assert.ok(transport.toolNames.at(-1).includes("write_file"));
   await dshConfigured.dispose();
 });
@@ -1323,22 +1268,12 @@ test("migrates legacy tool-call history as balanced DSH steps", async () => {
   const store = new MemoryProjectStore();
   const workspace = createWorkspaceBackend();
   const transport = new ResumableWorkspaceTransport();
-  const legacyEvents = [];
-  const legacy = createCore(
+  const legacyState = await persistLegacySession(
     store,
     workspace,
     transport,
-    legacyEvents,
-    false,
+    legacyWorkspaceToolTimeline(),
   );
-  await legacy.handle(createCommand("bootstrap", {}));
-  const initial = latestState(legacyEvents);
-  await legacy.handle(createCommand("prompt", {
-    project_id: initial.active_project_id,
-    session_id: null,
-    text: "Read the workspace note.",
-  }));
-  const legacyState = latestState(legacyEvents);
   assert.deepEqual(
     legacyState.timeline.map((entry) => entry.type),
     [
@@ -1348,7 +1283,7 @@ test("migrates legacy tool-call history as balanced DSH steps", async () => {
       "assistant_message",
     ],
   );
-  await legacy.dispose();
+  transport.requestCount = 2;
 
   const migratedEvents = [];
   const migrated = createCore(
@@ -1356,7 +1291,6 @@ test("migrates legacy tool-call history as balanced DSH steps", async () => {
     workspace,
     transport,
     migratedEvents,
-    true,
   );
   await migrated.handle(createCommand("bootstrap", {
     active_project_id: legacyState.active_project_id,
@@ -1452,23 +1386,15 @@ test("resumes a materialized DSH migration after host finalization fails", async
   const store = new MigrationFinalizeFailingStore();
   const workspace = createWorkspaceBackend();
   const transport = new LegacyFallbackTransport();
-  const legacyEvents = [];
-  const legacy = createCore(
+  const legacyState = await persistLegacySession(
     store,
     workspace,
     transport,
-    legacyEvents,
-    false,
+    legacyTextTimeline(
+      "Create durable legacy history.",
+      "Legacy runtime response.",
+    ),
   );
-  await legacy.handle(createCommand("bootstrap", {}));
-  const initial = latestState(legacyEvents);
-  await legacy.handle(createCommand("prompt", {
-    project_id: initial.active_project_id,
-    session_id: null,
-    text: "Create durable legacy history.",
-  }));
-  const legacyState = latestState(legacyEvents);
-  await legacy.dispose();
 
   const sessionBackend = new MemoryDshrboxSessionBackend();
   const failedEvents = [];
@@ -1478,7 +1404,6 @@ test("resumes a materialized DSH migration after host finalization fails", async
     workspace,
     transport,
     failedEvents,
-    true,
     sessionBackend,
   );
   await failed.handle(createCommand("bootstrap", {
@@ -1500,7 +1425,7 @@ test("resumes a materialized DSH migration after host finalization fails", async
     await sessionBackend.loadStored(SessionId(pending.session_id)),
     "The DSH seed should be durable before host finalization.",
   );
-  assert.equal(transport.requests.length, 1);
+  assert.equal(transport.requests.length, 0);
   assert.match(
     failedEvents.findLast((event) => event.type === "error").payload.message,
     /migration finalization failed/,
@@ -1514,7 +1439,6 @@ test("resumes a materialized DSH migration after host finalization fails", async
     workspace,
     transport,
     resumedEvents,
-    true,
     sessionBackend,
   );
   await resumed.handle(createCommand("bootstrap", {
@@ -1549,13 +1473,8 @@ function createCore(
   workspace,
   transport,
   events,
-  useDsh = true,
   sessionBackend = new MemoryDshrboxSessionBackend(),
   dshPlugins = [],
-  legacyPlugins = [],
-  legacySessionRuntimeProvider = new PiSessionRuntimeProvider({
-    plugins: legacyPlugins,
-  }),
 ) {
   return new ResearchBoxCore({
     projectStore: store,
@@ -1564,19 +1483,157 @@ function createCore(
     model,
     systemPrompt: "You are a DSH session-runtime test agent.",
     eventSink: (event) => events.push(event),
-    legacySessionRuntimeProvider,
-    ...(useDsh
-      ? {
-          sessionRuntimeProvider: new DshrboxSessionRuntimeProvider({
-            session_backend: sessionBackend,
-            plugins: dshPlugins,
-            // Force the terminal batch through executeRun's explicit flush so
-            // the final checkpoint overlaps a ProjectStore refresh.
-            write_batch_max_delay_ms: 10_000,
-          }),
-        }
-      : {}),
+    sessionRuntimeProvider: new DshrboxSessionRuntimeProvider({
+      session_backend: sessionBackend,
+      plugins: dshPlugins,
+      // Force the terminal batch through executeRun's explicit flush so
+      // the final checkpoint overlaps a ProjectStore refresh.
+      write_batch_max_delay_ms: 10_000,
+    }),
   });
+}
+
+async function persistLegacySession(
+  store,
+  workspace,
+  transport,
+  timeline,
+) {
+  const bootstrapEvents = [];
+  const bootstrapCore = createCore(
+    store,
+    workspace,
+    transport,
+    bootstrapEvents,
+  );
+  await bootstrapCore.handle(createCommand("bootstrap", {}));
+  const initial = latestState(bootstrapEvents);
+  await bootstrapCore.dispose();
+
+  const sessionId = crypto.randomUUID();
+  const timestamp = "2026-08-01T00:00:00.000Z";
+  await store.mutate((draft) => {
+    const project = draft.projects.find(
+      (candidate) => candidate.project_id === initial.active_project_id,
+    );
+    assert.ok(project);
+    draft.sessions.push({
+      session_id: sessionId,
+      project_id: project.project_id,
+      title: "Legacy session",
+      title_is_custom: false,
+      created_at: timestamp,
+      updated_at: timestamp,
+      selected_model: {
+        provider_id: model.provider,
+        model_id: model.id,
+      },
+      reasoning_effort: "default",
+    });
+    draft.documents.push({
+      format_version: SESSION_DOCUMENT_FORMAT_VERSION,
+      session_id: sessionId,
+      project_id: project.project_id,
+      input_draft: "",
+      timeline: structuredClone(timeline),
+      history: createSessionHistory(timeline),
+    });
+    project.last_session_id = sessionId;
+    project.updated_at = timestamp;
+    draft.active_session_id = sessionId;
+    return draft;
+  });
+
+  return {
+    active_project_id: initial.active_project_id,
+    active_session_id: sessionId,
+    timeline: structuredClone(timeline),
+  };
+}
+
+function legacyTextTimeline(prompt, response) {
+  const timestamp = "2026-08-01T00:00:00.000Z";
+  const runId = crypto.randomUUID();
+  return [
+    legacyUserEntry(runId, timestamp, prompt),
+    legacyAssistantEntry(runId, timestamp, "stop", [{
+      type: "assistant_text",
+      block_id: crypto.randomUUID(),
+      text: response,
+    }]),
+  ];
+}
+
+function legacyWorkspaceToolTimeline() {
+  const timestamp = "2026-08-01T00:00:00.000Z";
+  const runId = crypto.randomUUID();
+  const toolCallBlockId = crypto.randomUUID();
+  return [
+    legacyUserEntry(runId, timestamp, "Read the workspace note."),
+    legacyAssistantEntry(runId, timestamp, "tool_use", [{
+      type: "tool_call",
+      block_id: toolCallBlockId,
+      tool_call_id: "read-note",
+      tool_name: "read_file",
+      arguments: { path: "/note.txt" },
+    }]),
+    {
+      type: "tool_result",
+      entry_id: crypto.randomUUID(),
+      run_id: runId,
+      created_at: timestamp,
+      tool_call_block_id: toolCallBlockId,
+      tool_call_id: "read-note",
+      tool_name: "read_file",
+      content: "Persisted workspace content.",
+      is_error: false,
+      summary: "Read /note.txt",
+    },
+    legacyAssistantEntry(runId, timestamp, "stop", [{
+      type: "assistant_text",
+      block_id: crypto.randomUUID(),
+      text: "The note was read through DSH.",
+    }]),
+  ];
+}
+
+function legacyUserEntry(runId, timestamp, content) {
+  return {
+    type: "user_message",
+    entry_id: crypto.randomUUID(),
+    run_id: runId,
+    created_at: timestamp,
+    content,
+  };
+}
+
+function legacyAssistantEntry(runId, timestamp, stopReason, blocks) {
+  return {
+    type: "assistant_message",
+    entry_id: crypto.randomUUID(),
+    run_id: runId,
+    created_at: timestamp,
+    status: "complete",
+    api: "openai-completions",
+    provider: "legacy-provider",
+    model: "legacy-model",
+    usage: {
+      input: 1,
+      output: 1,
+      cache_read: 0,
+      cache_write: 0,
+      total_tokens: 2,
+      cost: {
+        input: 0,
+        output: 0,
+        cache_read: 0,
+        cache_write: 0,
+        total: 0,
+      },
+    },
+    stop_reason: stopReason,
+    blocks,
+  };
 }
 
 function createWorkspaceBackend() {

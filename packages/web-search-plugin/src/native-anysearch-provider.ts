@@ -13,7 +13,7 @@ import {
 import type {
   WebSearchRequest,
   WebSearchResponse,
-} from "./web-search-plugin.ts";
+} from "./web-research-engine.ts";
 
 type PendingRequest = {
   request: NativeWebSearchRequest;

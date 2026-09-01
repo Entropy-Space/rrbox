@@ -6,7 +6,7 @@ import type {
   WebSearchResolvedProviderId,
   WebSearchResponse,
   WebSearchSource,
-} from "./web-search-plugin.ts";
+} from "./web-research-engine.ts";
 
 export type WebSearchProviderErrorKind =
   | "transient"

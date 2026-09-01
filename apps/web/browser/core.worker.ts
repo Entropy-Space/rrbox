@@ -24,12 +24,14 @@ import {
 import {
   BrowserPythonExecutor,
 } from "@researchbox/python-plugin/browser";
-import { createPythonAgentPlugin } from "@researchbox/python-plugin";
 import { DshrboxPython } from "@researchbox/python-plugin/dsh";
 import {
   DEFAULT_WEB_SEARCH_SUMMARY_GRACE_MS,
-  createWebSearchAgentPlugin,
 } from "@researchbox/web-search-plugin";
+import {
+  createPythonAgentPlugin,
+  createWebSearchAgentPlugin,
+} from "@researchbox/runtime-legacy";
 import {
   DshrboxWebResearch,
 } from "@researchbox/web-search-plugin/dsh";

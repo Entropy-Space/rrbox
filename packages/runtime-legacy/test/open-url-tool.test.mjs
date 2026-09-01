@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createWebSearchAgentPlugin } from "../src/web-search-plugin.ts";
+import {
+  createWebSearchAgentPlugin,
+} from "../src/web-search-agent-plugin.ts";
 
 test("registers an open_url tool with HTML, Markdown, and summary formats", async () => {
   const completionPrompts = [];

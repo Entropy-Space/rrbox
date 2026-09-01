@@ -73,6 +73,9 @@ importers:
       '@researchbox/runtime-browser':
         specifier: workspace:*
         version: link:../../packages/runtime-browser
+      '@researchbox/runtime-legacy':
+        specifier: workspace:*
+        version: link:../../packages/runtime-legacy
       '@researchbox/storage-native':
         specifier: workspace:*
         version: link:../../packages/storage-native
@@ -143,6 +146,9 @@ importers:
       '@researchbox/runtime-browser':
         specifier: workspace:*
         version: link:../../packages/runtime-browser
+      '@researchbox/runtime-legacy':
+        specifier: workspace:*
+        version: link:../../packages/runtime-legacy
       '@researchbox/storage-browser':
         specifier: workspace:*
         version: link:../../packages/storage-browser
@@ -590,15 +596,6 @@ importers:
       '@deepseek-ai/dsh-tools':
         specifier: 0.1.1-rc.2
         version: 0.1.1-rc.2(patch_hash=e63c3dfb3d33e5240ca917ce4c7b37673140e0046584f85ac1a97c2ca54f1a83)(377e6630de67af9bf949220e45ad117e)
-      '@earendil-works/pi-agent-core':
-        specifier: 0.79.0
-        version: 0.79.0(ws@8.21.0)(zod@4.4.3)
-      '@earendil-works/pi-ai':
-        specifier: 0.79.0
-        version: 0.79.0(ws@8.21.0)(zod@4.4.3)
-      '@researchbox/runtime-legacy':
-        specifier: workspace:*
-        version: link:../runtime-legacy
     devDependencies:
       '@deepseek-ai/dsh-llm':
         specifier: 0.1.1-rc.2
@@ -639,9 +636,15 @@ importers:
       '@researchbox/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@researchbox/python-plugin':
+        specifier: workspace:*
+        version: link:../python-plugin
       '@researchbox/vfs':
         specifier: workspace:*
         version: link:../vfs
+      '@researchbox/web-search-plugin':
+        specifier: workspace:*
+        version: link:../web-search-plugin
       '@researchbox/workspace-search':
         specifier: workspace:*
         version: link:../workspace-search
@@ -736,18 +739,9 @@ importers:
       '@dshrbox/summary-review':
         specifier: workspace:*
         version: link:../dshrbox-summary-review
-      '@earendil-works/pi-agent-core':
-        specifier: 0.79.0
-        version: 0.79.0(ws@8.21.0)(zod@4.4.3)
-      '@earendil-works/pi-ai':
-        specifier: 0.79.0
-        version: 0.79.0(ws@8.21.0)(zod@4.4.3)
       '@researchbox/protocol':
         specifier: workspace:*
         version: link:../protocol
-      '@researchbox/runtime-legacy':
-        specifier: workspace:*
-        version: link:../runtime-legacy
     devDependencies:
       '@deepseek-ai/dsh-system-prompt':
         specifier: 0.1.1-rc.2

@@ -1,4 +1,4 @@
-import type { WebSearchResponse } from "./web-search-plugin.ts";
+import type { WebSearchResponse } from "./web-research-engine.ts";
 
 export const NATIVE_WEB_SEARCH_PROTOCOL_VERSION = 1 as const;
 const MAX_NATIVE_WEB_SEARCH_QUERY_BYTES = 16 * 1024;

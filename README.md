@@ -53,7 +53,7 @@ packages/
   client/              Platform-neutral viewer/core transport contract
   protocol/            Serialized viewer/core contract and validators
   agent-core/          Runtime-neutral project and session coordination
-  runtime-legacy/      Pi-backed compatibility runtime for existing sessions
+  runtime-legacy/      Pi runtime and tool adapters for existing sessions
   dshrbox-*/           DSH runtime, persistence, projection, and native plugins
   viewer/              React conversation and workspace UI
   model-transport/     Model request/stream contract and HTTP adapter
@@ -68,7 +68,7 @@ packages/
   workspace-archive/   Deterministic workspace ZIP capture and codec
   project-store/       Project/session records and persistence contract
   python-plugin/       Opt-in Python tool, protocol, Rust core, and Wasm
-  web-search-plugin/   Clean, stateless pi-web-access search and URL-reading fork
+  web-search-plugin/   Runtime-neutral web research and native DSH tools
 ```
 
 Applications are composition roots. Reusable packages do not import Next.js,

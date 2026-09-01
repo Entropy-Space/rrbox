@@ -19,9 +19,10 @@ dshrbox session runtime emits the existing viewer `CoreEvent`s.
 ## Copy-on-write boundary
 
 `web-research-engine.ts` contains runtime-neutral research behavior. The
-existing package root keeps the legacy Pi plugin as a thin wrapper until the
-application cutover. The DSH entry does not import or translate Pi tool
-objects, schemas, events, or model adapters.
+package root and DSH entry do not import or translate Pi tool objects, schemas,
+events, or model adapters. The legacy Pi wrapper lives in
+`@researchbox/runtime-legacy` and consumes the engine through the explicit
+`@researchbox/web-search-plugin/engine` subpath.
 
 DSH currently has no native per-tool progress stream, so the DSH tool result is
 published when it settles. The summary-review service continues to provide

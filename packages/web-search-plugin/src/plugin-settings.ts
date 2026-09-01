@@ -2,7 +2,7 @@ import type {
   WebSearchProviderId,
   WebSearchResolvedProviderId,
   WebSearchWorkflow,
-} from "./web-search-plugin.ts";
+} from "./web-research-engine.ts";
 
 export const DEFAULT_WEB_SEARCH_TIMEOUT_MS = 20_000;
 export const MAX_WEB_SEARCH_TIMEOUT_MS = 60_000;

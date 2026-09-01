@@ -1,9 +1,5 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
-import type {
-  AgentPlugin,
-  AgentPluginContext,
-} from "@researchbox/runtime-legacy";
 import {
   createWebResearchEngine,
   MAX_WEB_SEARCH_DOMAIN_FILTERS,
@@ -14,13 +10,16 @@ import {
   type WebSearchExecutor,
   type WebSearchPluginOptions,
   type WebSearchToolDetails,
-} from "./web-research-engine.ts";
-
-export * from "./web-research-engine.ts";
+} from "@researchbox/web-search-plugin/engine";
+import type {
+  AgentPlugin,
+  AgentPluginContext,
+} from "./agent-plugin.ts";
 
 /**
- * Legacy Pi surface retained until the application moves to the native DSH
- * plugin. Research behavior lives in the runtime-neutral engine.
+ * Legacy Pi surface retained for unmarked persisted sessions while new
+ * sessions use the native DSH plugin. Research behavior lives in the
+ * runtime-neutral engine.
  */
 export function createWebSearchAgentPlugin(
   executor: WebSearchExecutor,

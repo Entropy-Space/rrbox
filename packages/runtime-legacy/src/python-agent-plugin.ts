@@ -1,16 +1,13 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
-import type { AgentPlugin } from "@researchbox/runtime-legacy";
 import {
   formatPythonExecution,
   type PythonExecutor,
-} from "./python-executor.ts";
+} from "@researchbox/python-plugin/executor";
 import {
   MAX_PYTHON_CODE_BYTES,
-} from "./protocol.ts";
-
-export { formatPythonExecution } from "./python-executor.ts";
-export type { PythonExecutor } from "./python-executor.ts";
+} from "@researchbox/python-plugin/protocol";
+import type { AgentPlugin } from "./agent-plugin.ts";
 
 type PythonToolDetails = {
   summary: string;

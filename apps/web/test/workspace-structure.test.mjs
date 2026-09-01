@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
+const obsoleteRuntimeDocumentation =
+  /\bPi\b|runtime-legacy|legacy runtime|v1 agent runtime/;
 
 test("keeps the proposed workspace surfaces present", async () => {
   const expectedPaths = [
@@ -46,6 +48,62 @@ test("keeps the proposed workspace surfaces present", async () => {
     ),
   );
   await assert.rejects(access(path.join(root, ".openai", "hosting.json")));
+});
+
+test("documents DSH as the only executable session runtime", async () => {
+  const packageEntries = await readdir(path.join(root, "packages"), {
+    withFileTypes: true,
+  });
+  const documentationPaths = [
+    path.join(root, "README.md"),
+    path.join(root, "ARCHITECTURE.md"),
+    ...packageEntries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(root, "packages", entry.name, "README.md")),
+  ];
+  const documents = (await Promise.all(
+    documentationPaths.map(async (filePath) => {
+      try {
+        return {
+          file_path: filePath,
+          source: await readFile(filePath, "utf8"),
+        };
+      } catch (error) {
+        if (error?.code === "ENOENT") return null;
+        throw error;
+      }
+    }),
+  )).filter((document) => document !== null);
+
+  for (const document of documents) {
+    assert.doesNotMatch(
+      document.source,
+      obsoleteRuntimeDocumentation,
+      `${path.relative(root, document.file_path)} describes a deleted runtime`,
+    );
+  }
+
+  const rootReadme = documents.find(
+    (document) => document.file_path === path.join(root, "README.md"),
+  )?.source;
+  const architecture = documents.find(
+    (document) => document.file_path === path.join(root, "ARCHITECTURE.md"),
+  )?.source;
+  assert.ok(rootReadme);
+  assert.ok(architecture);
+  assert.match(rootReadme, /DSH is the only executable session runtime/);
+  assert.match(
+    rootReadme,
+    /migrate into a new DSH\s+child on their first write/,
+  );
+  assert.match(
+    architecture,
+    /`packages\/dshrbox-session-runtime` is the only executable session provider/,
+  );
+  assert.match(
+    architecture,
+    /Unmarked timeline documents remain passive until a write creates and seeds a\s+distinct DSH child session/,
+  );
 });
 
 test("shares browser app runtime composition between web and native", async () => {

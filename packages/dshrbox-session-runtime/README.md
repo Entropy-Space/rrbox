@@ -11,8 +11,9 @@ through its neutral port and imports no runtime implementation. Canonical header
 configured DSH persistence backend. The rrbox timeline is rebuilt as an
 in-memory viewer projection and is never written beside the DSH log.
 
-The runtime receives the application's own model contract. It does
-not depend on Pi provider or transcript types.
+The runtime receives the application's own model contract. The one-way legacy
+seed converter recognizes the persisted timeline shape, but every executable
+session uses DSH provider, transcript, and plugin contracts.
 
 The runtime composes the DSH model adapter, native workspace tools,
 canonical session persistence, live summary-review interaction service, and

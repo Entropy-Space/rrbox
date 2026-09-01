@@ -50,6 +50,7 @@ import { ComposerModelControl } from "./ComposerModelControl.tsx";
 import { ConversationHistory } from "./ConversationHistory.tsx";
 import {
   isModalNavigationOpen,
+  modalFocusTrapTarget,
   MOBILE_NAVIGATION_QUERY,
 } from "./navigation-state.ts";
 import { MarkdownContent } from "./MarkdownContent.tsx";
@@ -205,7 +206,11 @@ export function ResearchBoxViewer({
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const [conversationHistorySession, setConversationHistorySession] =
     useState<string | null>(null);
-  const [isMobileViewport, setMobileViewport] = useState(false);
+  const [isMobileViewport, setMobileViewport] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      window.matchMedia(MOBILE_NAVIGATION_QUERY).matches,
+  );
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const focusComposerAfterSearchRef = useRef(false);
@@ -313,6 +318,7 @@ export function ResearchBoxViewer({
       return;
     }
     setWorkspaceOpen(true);
+    requestAnimationFrame(() => workspaceHeadingRef.current?.focus());
   }, [closeWorkspace, workspaceOpen]);
   const openWorkspaceChangeReview = useCallback(
     (change: WorkspaceChangeSummary, trigger: HTMLButtonElement) => {
@@ -441,13 +447,20 @@ export function ResearchBoxViewer({
     workspaceChangeRevertDisabledReason !== null;
 
   useEffect(() => {
-    if (!coreState.is_ready || consumeImportFocusSuppression()) return;
+    if (
+      !coreState.is_ready ||
+      isMobileViewport ||
+      consumeImportFocusSuppression()
+    ) {
+      return;
+    }
     composerRef.current?.focus();
   }, [
     consumeImportFocusSuppression,
     coreState.active_project_id,
     coreState.active_session_id,
     coreState.is_ready,
+    isMobileViewport,
   ]);
 
   useEffect(() => {
@@ -510,6 +523,12 @@ export function ResearchBoxViewer({
   const modalNavigationOpen = isModalNavigationOpen(
     sidebarOpen,
     isMobileViewport,
+  );
+  const activeProject = coreState.projects.find(
+    (project) => project.project_id === coreState.active_project_id,
+  );
+  const activeSession = coreState.sessions.find(
+    (session) => session.session_id === coreState.active_session_id,
   );
 
   return (
@@ -624,6 +643,10 @@ export function ResearchBoxViewer({
             >
               <Menu size={20} />
             </button>
+            <div className="mobile-conversation-context">
+              <strong>{activeSession?.title ?? "New chat"}</strong>
+              <span>{activeProject?.name ?? "rrbox"}</span>
+            </div>
           </div>
           <div className="topbar-actions">
             <ConversationHistory
@@ -802,7 +825,7 @@ export function ResearchBoxViewer({
                   <div className="composer-controls">
                     <div className="composer-tools">
                       <button
-                        className="composer-icon-button"
+                        className="composer-icon-button composer-secondary-action"
                         type="button"
                         aria-label="Add tools or attachments"
                       >
@@ -831,7 +854,7 @@ export function ResearchBoxViewer({
                           </span>
                         )}
                       <button
-                        className="composer-icon-button"
+                        className="composer-icon-button composer-secondary-action"
                         type="button"
                         aria-label="Voice input"
                       >
@@ -871,6 +894,7 @@ export function ResearchBoxViewer({
 
           <WorkspacePanel
             isOpen={workspaceOpen}
+            isModal={isMobileViewport}
             currentPath={coreState.current_path}
             files={coreState.files}
             selectedFile={coreState.selected_file}
@@ -1291,6 +1315,7 @@ function formatToolName(toolName: string): string {
 
 function WorkspacePanel({
   isOpen,
+  isModal,
   currentPath,
   files,
   selectedFile,
@@ -1308,6 +1333,7 @@ function WorkspacePanel({
   onNavigateBack,
 }: {
   isOpen: boolean;
+  isModal: boolean;
   currentPath: string;
   files: FileEntry[];
   selectedFile: { path: string; content: string } | null;
@@ -1324,11 +1350,13 @@ function WorkspacePanel({
   onEntryClick: (entry: FileEntry) => void;
   onNavigateBack: () => void;
 }) {
+  const panelRef = useRef<HTMLElement | null>(null);
   const reviewShellRef = useRef<HTMLDivElement | null>(null);
   const revertButtonRef = useRef<HTMLButtonElement | null>(null);
   const confirmationCancelRef = useRef<HTMLButtonElement | null>(null);
   const confirmationHeadingId = useId();
   const confirmationDescriptionId = useId();
+  const workspaceHeadingId = useId();
   const isReviewMode = changeReview.phase !== "idle";
   const reviewChangeId = isReviewMode
     ? changeReview.selection.change_id
@@ -1338,6 +1366,68 @@ function WorkspacePanel({
     if (!isOpen || reviewChangeId === null) return;
     requestAnimationFrame(() => headingRef.current?.focus());
   }, [headingRef, isOpen, reviewChangeId]);
+
+  useEffect(() => {
+    if (!isOpen || !isModal) return;
+    const previousFocus = document.activeElement;
+    const focusHeadingFrame = requestAnimationFrame(() =>
+      headingRef.current?.focus({ preventScroll: true }),
+    );
+    return () => {
+      cancelAnimationFrame(focusHeadingFrame);
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) {
+        previousFocus.focus({ preventScroll: true });
+      }
+    };
+  }, [headingRef, isModal, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || !isModal) return;
+    const trapFocus = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Tab" || document.querySelector("dialog[open]")) {
+        return;
+      }
+      const panel = panelRef.current;
+      if (!panel) return;
+      const focusable = Array.from(
+        panel.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), [href], input:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => element.getClientRects().length > 0);
+      const first = focusable.at(0);
+      const last = focusable.at(-1);
+      if (!first || !last) return;
+      const activeElement = document.activeElement;
+      const focusTarget = modalFocusTrapTarget({
+        isFocusInside: panel.contains(activeElement),
+        isFocusFirst: activeElement === first,
+        isFocusLast: activeElement === last,
+        shiftKey: event.shiftKey,
+      });
+      if (!focusTarget) return;
+      event.preventDefault();
+      (focusTarget === "first" ? first : last).focus();
+    };
+    document.addEventListener("keydown", trapFocus);
+    return () => document.removeEventListener("keydown", trapFocus);
+  }, [isModal, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || !isModal) return;
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (
+        event.key !== "Escape" ||
+        event.defaultPrevented ||
+        document.querySelector("dialog[open]")
+      ) {
+        return;
+      }
+      event.preventDefault();
+      onClose();
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [isModal, isOpen, onClose]);
 
   useEffect(() => {
     if (
@@ -1362,19 +1452,23 @@ function WorkspacePanel({
 
   return (
     <aside
+      ref={panelRef}
       id="researchbox-workspace"
       className={`workspace-panel ${isOpen ? "workspace-open" : ""} ${
         isReviewMode ? "workspace-review-open" : ""
       }`}
       inert={isOpen ? undefined : true}
       aria-hidden={!isOpen}
+      role={isModal ? "dialog" : undefined}
+      aria-modal={isModal ? true : undefined}
+      aria-labelledby={isModal ? workspaceHeadingId : undefined}
     >
       <div className="workspace-header">
         <div>
           <span className="eyebrow">
             {isReviewMode ? "Agent workspace edit" : "Virtual filesystem"}
           </span>
-          <h2 ref={headingRef} tabIndex={-1}>
+          <h2 id={workspaceHeadingId} ref={headingRef} tabIndex={-1}>
             {isReviewMode ? "Review change" : "Workspace"}
           </h2>
         </div>

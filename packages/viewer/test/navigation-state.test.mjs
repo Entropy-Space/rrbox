@@ -2,8 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   isModalNavigationOpen,
-  navigationFocusTrapTarget,
+  modalFocusTrapTarget,
+  MOBILE_NAVIGATION_QUERY,
 } from "../src/navigation-state.ts";
+
+test("mobile navigation covers portrait and short coarse-pointer landscapes", () => {
+  assert.match(MOBILE_NAVIGATION_QUERY, /max-width: 768px/u);
+  assert.match(MOBILE_NAVIGATION_QUERY, /max-height: 500px/u);
+  assert.match(MOBILE_NAVIGATION_QUERY, /pointer: coarse/u);
+});
 
 test("navigation is modal only while open in the mobile viewport", () => {
   assert.equal(isModalNavigationOpen(false, true), false);
@@ -13,7 +20,7 @@ test("navigation is modal only while open in the mobile viewport", () => {
 
 test("navigation focus wraps at both edges and recovers from outside focus", () => {
   assert.equal(
-    navigationFocusTrapTarget({
+    modalFocusTrapTarget({
       isFocusInside: true,
       isFocusFirst: false,
       isFocusLast: true,
@@ -22,7 +29,7 @@ test("navigation focus wraps at both edges and recovers from outside focus", () 
     "first",
   );
   assert.equal(
-    navigationFocusTrapTarget({
+    modalFocusTrapTarget({
       isFocusInside: true,
       isFocusFirst: true,
       isFocusLast: false,
@@ -31,7 +38,7 @@ test("navigation focus wraps at both edges and recovers from outside focus", () 
     "last",
   );
   assert.equal(
-    navigationFocusTrapTarget({
+    modalFocusTrapTarget({
       isFocusInside: false,
       isFocusFirst: false,
       isFocusLast: false,
@@ -40,7 +47,7 @@ test("navigation focus wraps at both edges and recovers from outside focus", () 
     "first",
   );
   assert.equal(
-    navigationFocusTrapTarget({
+    modalFocusTrapTarget({
       isFocusInside: false,
       isFocusFirst: false,
       isFocusLast: false,
@@ -49,7 +56,7 @@ test("navigation focus wraps at both edges and recovers from outside focus", () 
     "last",
   );
   assert.equal(
-    navigationFocusTrapTarget({
+    modalFocusTrapTarget({
       isFocusInside: true,
       isFocusFirst: false,
       isFocusLast: false,

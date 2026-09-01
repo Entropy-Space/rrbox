@@ -1,4 +1,5 @@
-export const MOBILE_NAVIGATION_QUERY = "(max-width: 768px)";
+export const MOBILE_NAVIGATION_QUERY =
+  "(max-width: 768px), (max-height: 500px) and (hover: none) and (pointer: coarse)";
 
 export function isModalNavigationOpen(
   sidebarOpen: boolean,
@@ -7,7 +8,7 @@ export function isModalNavigationOpen(
   return sidebarOpen && isMobileViewport;
 }
 
-export function navigationFocusTrapTarget({
+export function modalFocusTrapTarget({
   isFocusInside,
   isFocusFirst,
   isFocusLast,

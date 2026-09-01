@@ -7,10 +7,8 @@ import {
   MemoryFileSystem,
   MemoryWorkspaceBackend,
 } from "@researchbox/vfs";
-import {
-  PiSessionRuntimeProvider,
-  ResearchBoxCore,
-} from "../src/index.ts";
+import { ResearchBoxCore } from "@researchbox/agent-core";
+import { PiSessionRuntimeProvider } from "../src/index.ts";
 
 const model = {
   id: "test-model",

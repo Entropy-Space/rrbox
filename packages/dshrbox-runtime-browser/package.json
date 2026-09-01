@@ -26,6 +26,7 @@
     "@researchbox/agent-core": "workspace:*",
     "@researchbox/project-store": "workspace:*",
     "@researchbox/protocol": "workspace:*",
+    "@researchbox/runtime-legacy": "workspace:*",
     "@researchbox/vfs": "workspace:*",
     "vite": "8.0.13"
   }

@@ -19,6 +19,7 @@ import {
   type SessionRecord,
 } from "@researchbox/project-store";
 import {
+  emptyAssistantUsage,
   PROTOCOL_VERSION,
   type CoreEvent,
   type CoreStateSnapshot,
@@ -58,7 +59,6 @@ import {
   type SessionRuntimeProvider,
   type SessionRuntimeView,
 } from "./session-runtime-port.ts";
-import { emptyAssistantUsage } from "./session-codec.ts";
 import {
   ProviderCatalogService,
   type ModelProviderDefinition,

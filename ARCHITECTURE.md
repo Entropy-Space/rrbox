@@ -13,6 +13,7 @@ apps/web
   │         └─ packages/app-runtime-browser
   │              ├─ packages/runtime-browser
   │              ├─ packages/storage-browser
+  │              ├─ packages/runtime-legacy
   │              ├─ packages/agent-core
   │              │    ├─ packages/protocol
   │              │    ├─ packages/model-transport
@@ -40,6 +41,7 @@ apps/native (Tauri 2)
   │    └─ workers/core.worker.ts
   │         ├─ packages/app-runtime-browser
   │         │    ├─ packages/agent-core
+  │         │    ├─ packages/runtime-legacy
   │         │    └─ WorkerModelTransport → workers/llm.worker.ts
   │         │         ├─ in-process packages/mock-provider handler
   │         │         └─ packages/provider-native OpenAI transport
@@ -133,30 +135,34 @@ against same-origin code. Server-held credentials must remain on the server.
    command locking, seed data, provider definitions, and a replaceable storage
    service factory. Its default factory uses browser storage. It imports no
    application root or framework.
-7. `packages/agent-core` contains a project/session manager above an optional
-   active Pi session runtime and depends only on abstract model, project-store,
-   and VFS contracts.
-8. `packages/runtime-browser` hosts compatible core and LLM handlers plus the
+7. `packages/agent-core` contains the runtime-neutral project/session manager
+   and session-runtime ports. It depends only on abstract model, project-store,
+   and VFS contracts and imports neither Pi nor DSH implementations.
+8. `packages/runtime-legacy` implements the explicit compatibility provider for
+   unmarked timeline documents. It alone owns the Pi agent loop, Pi stream and
+   transcript codecs, repair logic, and legacy agent-plugin contract.
+9. `packages/runtime-browser` hosts compatible core and LLM handlers plus the
    Web Worker transport; it does not construct rrbox, select providers,
    or import Pi.
-9. `packages/storage-browser` owns concrete IndexedDB and OPFS adapters.
+10. `packages/storage-browser` owns concrete IndexedDB and OPFS adapters.
    `packages/storage-native` owns the typed native storage RPC client plus
    `ProjectStore` and `WorkspaceBackend` façades.
    `packages/provider-native` owns the typed native provider RPC client and
    constrained fetch adapter. None is imported by the portable core.
-10. The native application owns Tauri `invoke` and the WebView-side
+11. The native application owns Tauri `invoke` and the WebView-side
     `MessagePort` broker. The shared native storage package has no Tauri
     dependency.
-11. `packages/model-transport`, `packages/protocol`, `packages/project-store`,
+12. `packages/model-transport`, `packages/protocol`, `packages/project-store`,
     `packages/vfs`, and `packages/workspace-archive` have no application or
     framework dependencies. The archive codec depends on VFS reader and seed
     types, not on a concrete backend.
-12. Applications compose packages; shared packages never import an application
+13. Applications compose packages; shared packages never import an application
     or platform host.
-13. Optional agent plugins are injected into `packages/agent-core`. The core
-    owns their session-bound tool definitions, while application composition
-    owns executor resources and teardown.
-14. Model transport accepts strictly named, JSON-schema-defined tools from the
+14. Optional legacy agent plugins are injected into
+    `packages/runtime-legacy`. Native DSH plugins are registered directly on
+    the DSH runtime provider. Application composition owns executor resources
+    and teardown in both cases.
+15. Model transport accepts strictly named, JSON-schema-defined tools from the
     active agent registry. It does not keep a separate fixed allowlist that
     could silently remove application-composed plugin tools.
 
@@ -328,10 +334,12 @@ use format 4 to persist the existing-session input draft and one versioned,
 ordered timeline. Format-3 timelines are upgraded once by deriving a legacy
 file-change tool identity only from their enclosing mutation result.
 Assistant entries own ordered text, reasoning, and tool-call blocks; tool
-results are separate entries linked by internal block identifiers. That timeline
-is the viewer state and maps back into the currently supported text-only user
-and tool-result Pi surface. Projects persist their virtual new-chat draft and
-model selection; durable sessions persist their own model selection.
+results are separate entries linked by internal block identifiers. For legacy
+documents, that timeline is canonical and maps back into the supported Pi
+surface. Runtime-reference documents keep DSH events canonical and rebuild the
+same viewer timeline as an in-memory projection. Projects persist their virtual
+new-chat draft and model selection; durable sessions persist their own model
+selection.
 
 Native persistence implements the same `ProjectStore` snapshot and workspace
 contracts across one catalog and one database per project. The catalog owns the
@@ -410,8 +418,10 @@ A project owns one virtual filesystem and zero or more durable sessions.
 Switching a project restores its last selected session or its virtual new chat.
 Selecting New chat is idempotent and creates no session record. On first send,
 the core atomically stores the new session, cleared project draft, selected
-model, and staged user timeline entry before starting model transport. The
-streaming assistant entry is appended only when Pi starts it. Deleting a
+model, and staged user timeline entry before starting model transport. In the
+legacy runtime, the streaming assistant entry is appended only when Pi starts
+it; DSH sessions append their canonical events and project the viewer entry.
+Deleting a
 project's final session returns it to virtual new-chat state. Deleting the final
 project creates a deterministic empty replacement so the viewer always has an
 active project, but an active session is intentionally optional.

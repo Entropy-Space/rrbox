@@ -9,6 +9,7 @@ import type {
 } from "@researchbox/protocol";
 import {
   assertTimelineInvariants,
+  emptyAssistantUsage,
   parseReasoningEffort,
   parseTimeline,
 } from "@researchbox/protocol";
@@ -1043,23 +1044,6 @@ function decodeLegacyAssistantUsage(
       cache_read: requireNonNegativeNumber(cost, "cache_read"),
       cache_write: requireNonNegativeNumber(cost, "cache_write"),
       total: requireNonNegativeNumber(cost, "total"),
-    },
-  };
-}
-
-function emptyAssistantUsage(): AssistantMessageEntry["usage"] {
-  return {
-    input: 0,
-    output: 0,
-    cache_read: 0,
-    cache_write: 0,
-    total_tokens: 0,
-    cost: {
-      input: 0,
-      output: 0,
-      cache_read: 0,
-      cache_write: 0,
-      total: 0,
     },
   };
 }

@@ -11,6 +11,7 @@ import type {
 } from "@deepseek-ai/dsh-session";
 import { dshrboxToolCallBlockId } from "@dshrbox/core/identity";
 import {
+  emptyAssistantUsage,
   parseWorkspaceChangeSummary,
   PROTOCOL_VERSION,
   type AssistantBlock,
@@ -1006,23 +1007,6 @@ function toAssistantUsage(usage: TokenUsage): AssistantUsage {
     cache_read: cacheRead,
     cache_write: cacheWrite,
     total_tokens: input + output + cacheRead + cacheWrite,
-    cost: {
-      input: 0,
-      output: 0,
-      cache_read: 0,
-      cache_write: 0,
-      total: 0,
-    },
-  };
-}
-
-function emptyAssistantUsage(): AssistantUsage {
-  return {
-    input: 0,
-    output: 0,
-    cache_read: 0,
-    cache_write: 0,
-    total_tokens: 0,
     cost: {
       input: 0,
       output: 0,

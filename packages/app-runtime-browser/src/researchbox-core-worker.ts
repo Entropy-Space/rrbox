@@ -1,11 +1,13 @@
 import {
-  PiSessionRuntimeProvider,
   ProviderCatalogService,
   ResearchBoxCore,
-  type AgentPlugin,
   type ModelProviderDefinition,
   type SessionRuntimeProvider,
 } from "@researchbox/agent-core";
+import {
+  PiSessionRuntimeProvider,
+  type AgentPlugin,
+} from "@researchbox/runtime-legacy";
 import {
   attachCoreWorkerLifecycle,
   WorkerModelTransport,

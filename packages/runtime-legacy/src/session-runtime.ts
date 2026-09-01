@@ -10,6 +10,14 @@ import {
   type ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import type { ModelTransport } from "@researchbox/model-transport";
+import type {
+  CoreEventSink,
+  LegacySessionRuntimeProvider,
+  SessionRuntimeOptions,
+  SessionRuntimePort,
+  SessionRuntimeView,
+  WorkspaceController,
+} from "@researchbox/agent-core";
 import {
   isLegacySessionDocument,
   synchronizeSessionHistory,
@@ -47,14 +55,6 @@ import {
   timelineToAgentMessages,
 } from "./session-codec.ts";
 import { repairUnansweredToolCalls } from "./tool-transcript.ts";
-import type {
-  CoreEventSink,
-  LegacySessionRuntimeProvider,
-  SessionRuntimeOptions,
-  SessionRuntimePort,
-  SessionRuntimeView,
-} from "./session-runtime-port.ts";
-import { WorkspaceController } from "./workspace-controller.ts";
 
 type PiSessionRuntimeOptions = SessionRuntimeOptions & {
   plugins?: readonly AgentPlugin[];

@@ -25,6 +25,7 @@
     "@researchbox/vfs": "workspace:*"
   },
   "devDependencies": {
-    "@researchbox/python-plugin": "workspace:*"
+    "@researchbox/python-plugin": "workspace:*",
+    "@researchbox/runtime-legacy": "workspace:*"
   }
 }

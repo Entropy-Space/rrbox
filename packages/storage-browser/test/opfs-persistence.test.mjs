@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { IDBFactory } from "fake-indexeddb";
 import {
-  PiSessionRuntimeProvider,
   ResearchBoxCore,
 } from "@researchbox/agent-core";
+import { PiSessionRuntimeProvider } from "@researchbox/runtime-legacy";
 import { SESSION_DOCUMENT_FORMAT_VERSION } from "@researchbox/project-store";
 import { createCommand } from "@researchbox/protocol";
 import {

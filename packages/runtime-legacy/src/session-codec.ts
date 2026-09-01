@@ -12,6 +12,7 @@ import type {
   TimelineEntry,
   ToolResultEntry,
 } from "@researchbox/protocol";
+import { emptyAssistantUsage } from "@researchbox/protocol";
 
 export function timelineToAgentMessages(
   timeline: readonly TimelineEntry[],
@@ -158,23 +159,6 @@ export function createToolResultEntry(
     is_error: message.isError,
     ...(summary === undefined ? {} : { summary }),
     ...(fileChange === undefined ? {} : { file_change: fileChange }),
-  };
-}
-
-export function emptyAssistantUsage(): AssistantUsage {
-  return {
-    input: 0,
-    output: 0,
-    cache_read: 0,
-    cache_write: 0,
-    total_tokens: 0,
-    cost: {
-      input: 0,
-      output: 0,
-      cache_read: 0,
-      cache_write: 0,
-      total: 0,
-    },
   };
 }
 

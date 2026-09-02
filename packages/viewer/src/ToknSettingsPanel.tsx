@@ -1,6 +1,7 @@
 "use client";
 
 import { useId, useRef, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import type { ProviderSettingsSnapshot, ToknSettingsAdapter, ToknSettingsSnapshot } from "@researchbox/provider-settings";
 import { ToknAdvancedFields } from "./ToknAdvancedFields.tsx";
 import { createToknDraft, isToknDraftDirty, toToknSettingsInput } from "./tokn-settings-draft.ts";
@@ -70,14 +71,17 @@ export function ToknSettingsPanel({ snapshot, adapter, saveBlockedReason, onSave
         <fieldset className="provider-editor-fields" disabled={busy !== null}>
           <label className="provider-field provider-field-wide">
             <span>Provider</span>
-            <select value={providerId} onChange={(event) => chooseProvider(event.target.value)} required>
-              <option value="" disabled>Select a provider</option>
-              {snapshot.setup_providers.map((provider) => (
-                <option key={provider.provider_id} value={provider.provider_id} disabled={provider.model_count === 0}>
-                  {provider.display_name}
-                </option>
-              ))}
-            </select>
+            <span className="tokn-provider-select">
+              <select value={providerId} onChange={(event) => chooseProvider(event.target.value)} required>
+                <option value="" disabled>Select a provider</option>
+                {snapshot.setup_providers.map((provider) => (
+                  <option key={provider.provider_id} value={provider.provider_id} disabled={provider.model_count === 0}>
+                    {provider.display_name}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown size={16} aria-hidden="true" />
+            </span>
           </label>
           <label className="provider-field provider-field-wide">
             <span>{managedAccount ? "New API key" : "API key"}</span>

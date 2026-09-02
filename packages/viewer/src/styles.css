@@ -1599,6 +1599,25 @@
   min-height: 44px;
 }
 
+.tokn-provider-select {
+  position: relative;
+}
+
+.tokn-connect-form .provider-field select {
+  /* iOS native select appearance ignores the intended control height. */
+  appearance: none;
+  padding-right: 36px;
+}
+
+.tokn-provider-select > svg {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--muted);
+}
+
 .tokn-setup-hint,
 .tokn-advanced-content > p,
 .tokn-settings > .tokn-storage-note {

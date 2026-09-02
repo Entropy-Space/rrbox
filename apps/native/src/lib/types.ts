@@ -40,6 +40,7 @@ import {
 } from "@researchbox/provider-settings";
 
 export const NATIVE_CORE_WORKER_PROTOCOL_VERSION = 10 as const;
+export type { ToknSettingsInput, ToknSettingsSnapshot } from "@researchbox/provider-settings";
 export const NATIVE_LLM_WORKER_PROTOCOL_VERSION = 2 as const;
 
 export type NativeCoreWorkerInitializeMessage = {

@@ -1514,6 +1514,8 @@
 }
 
 .provider-card-actions button[aria-disabled="true"],
+.provider-card-actions button:disabled,
+.provider-editor-footer button:disabled,
 .provider-editor-footer button[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.5;
@@ -1524,6 +1526,11 @@
   gap: 20px;
   padding: 24px;
   border-color: var(--line-strong);
+}
+
+.provider-editor > p {
+  margin: 0;
+  line-height: 1.5;
 }
 
 .provider-editor-heading {
@@ -1557,6 +1564,13 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 15px;
+  min-width: 0;
+}
+
+fieldset.provider-editor-fields {
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
 
 .provider-field {
@@ -5034,6 +5048,13 @@
 
   .provider-field-wide {
     grid-column: auto;
+  }
+
+  .provider-field input,
+  .provider-field select,
+  .provider-field textarea {
+    /* Keep iOS from zooming the page when a provider field receives focus. */
+    font-size: 16px;
   }
 
   .model-selector {

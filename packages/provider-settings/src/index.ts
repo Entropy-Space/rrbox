@@ -1,4 +1,6 @@
 import type { ModelReasoningEffort } from "@researchbox/model-transport";
+import { EMBEDDED_TOKN_PROVIDER_ID, parseToknSettingsSnapshot, type ToknSettingsAdapter, type ToknSettingsSnapshot } from "./tokn.ts";
+export * from "./tokn.ts";
 
 export const PROVIDER_SETTINGS_FORMAT_VERSION = 1 as const;
 export const PROVIDER_SECRETS_FORMAT_VERSION = 1 as const;
@@ -99,6 +101,7 @@ export type ProviderModelConfiguration = {
 };
 
 export type ProviderStoredConfiguration = {
+  backend?: "openai_compatible" | "tokn";
   provider_id: string;
   display_name: string;
   preset_id: ProviderPresetId;
@@ -131,6 +134,7 @@ export type ProviderSecretsDocument = {
 
 export type ProviderSettingsSnapshot = {
   providers: ProviderPublicConfiguration[];
+  embedded_tokn?: ToknSettingsSnapshot;
 };
 
 export type ProviderConfigurationInput =
@@ -144,6 +148,7 @@ export type ProviderTestResult = {
 };
 
 export type ProviderSettingsAdapter = {
+  tokn?: ToknSettingsAdapter;
   load(): Promise<ProviderSettingsSnapshot>;
   save(
     input: ProviderConfigurationInput,
@@ -222,6 +227,9 @@ export function parseProviderConfigurationInput(
 ): ProviderConfigurationInput {
   const record = requireRecord(value, "Provider configuration input");
   const stored = parseProviderStoredConfiguration(record);
+  if (stored.backend === "tokn" || stored.provider_id === EMBEDDED_TOKN_PROVIDER_ID) {
+    throw new Error("Use embedded tokn settings for the built-in provider.");
+  }
   const apiKey = optionalString(record, "api_key");
   const removeApiKey = optionalBoolean(record, "remove_api_key") ?? false;
   if (apiKey !== undefined && removeApiKey) {
@@ -237,6 +245,8 @@ export function parseProviderConfigurationInput(
 export function parseProviderRuntimeConfiguration(
   value: unknown,
 ): ProviderRuntimeConfiguration {
+  const record = requireRecord(value, "Provider runtime configuration");
+  if (record.backend === "tokn") return parseProviderStoredConfiguration(record);
   const input = parseProviderConfigurationInput(value);
   if (input.remove_api_key) {
     throw new Error(
@@ -275,7 +285,12 @@ export function parseProviderSettingsSnapshot(
     };
   });
   assertUniqueProviderIds(providers);
-  return { providers };
+  return {
+    providers,
+    ...(record.embedded_tokn === undefined ? {} : {
+      embedded_tokn: parseToknSettingsSnapshot(record.embedded_tokn),
+    }),
+  };
 }
 
 export function parseProviderTestResult(
@@ -313,6 +328,7 @@ export function publicProviderRuntimeConfiguration(
   provider: ProviderPublicConfiguration,
 ): ProviderRuntimeConfiguration {
   return {
+    ...(provider.backend === undefined ? {} : { backend: provider.backend }),
     provider_id: provider.provider_id,
     display_name: provider.display_name,
     preset_id: provider.preset_id,
@@ -443,6 +459,13 @@ function parseProviderStoredConfiguration(
   value: unknown,
 ): ProviderStoredConfiguration {
   const record = requireRecord(value, "Provider configuration");
+  if (record.backend !== undefined && record.backend !== "openai_compatible" && record.backend !== "tokn") {
+    throw new Error("Unknown provider backend.");
+  }
+  const isTokn = record.backend === "tokn";
+  if (isTokn && (record.provider_id !== EMBEDDED_TOKN_PROVIDER_ID || record.base_url !== "")) {
+    throw new Error("Invalid embedded tokn provider.");
+  }
   const presetId = requirePresetId(record.preset_id);
   const displayName = requireString(record, "display_name").trim();
   if (displayName.length === 0 || displayName.length > 80) {
@@ -457,10 +480,11 @@ function parseProviderStoredConfiguration(
     throw new Error("Provider manual model IDs must be unique.");
   }
   return {
-    provider_id: requireProviderId(record.provider_id),
+    provider_id: isTokn ? EMBEDDED_TOKN_PROVIDER_ID : requireProviderId(record.provider_id),
+    ...(record.backend === undefined ? {} : { backend: record.backend }),
     display_name: displayName,
     preset_id: presetId,
-    base_url: normalizeProviderBaseUrl(requireString(record, "base_url")),
+    base_url: isTokn ? "" : normalizeProviderBaseUrl(requireString(record, "base_url")),
     enabled: requireBoolean(record, "enabled"),
     manual_models: manualModels,
     send_reasoning_content: requireBoolean(

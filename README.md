@@ -17,8 +17,8 @@ macOS, iOS, and Android.
 - Keyboard-accessible search across saved chats in every project
 - DSH agent loop for every new or continued session
 - Dedicated LLM Web Worker for multiplexed model requests and cancellation
-- Chat-scoped provider/model picker with a built-in mock and dynamic
-  OpenAI-compatible discovery at `localhost:4141` in both browser and Tauri
+- Chat-scoped provider/model picker with a built-in mock, AI SDK-compatible
+  endpoints, and in-process tokn on desktop and iOS
 - Versioned, runtime-validated JSON commands and events
 - Streaming mock-model service with a real tool-result continuation loop
 - Canonical DSH session events projected into the existing ordered viewer
@@ -101,9 +101,9 @@ The OpenAI-compatible provider expects `GET /v1/models` and streaming
 exposes only those two calls through same-origin routes because the browser
 cannot assume the gateway enables CORS. The mock provider remains available
 when the local gateway is stopped. Set `RESEARCHBOX_LOCAL_OPENAI_BASE_URL` to
-override the web proxy's local base URL during development. The native bridge
-remains fixed to loopback until configurable endpoint and credential policy is
-defined.
+override the web proxy's local base URL during development. Native apps also
+support saved custom endpoints and embedded tokn; neither requires the Mac's
+loopback gateway on an iPhone.
 
 Python is composed explicitly by each application rather than built into the
 core. Every `run_python` call starts a fresh interpreter, so globals do not
@@ -177,9 +177,13 @@ global project-state save replayable before its new revision becomes visible.
 Existing experimental IndexedDB/OPFS data from an older native build is left
 untouched but is not migrated automatically yet. It also remains separate from
 the browser app at `http://localhost:3000`. The native model picker offers the
-in-process mock and the fixed OpenAI-compatible endpoint at
-`http://127.0.0.1:4141/v1`; Rust owns its bounded HTTP streaming and
-cancellation.
+in-process mock, configurable OpenAI-compatible endpoints, and embedded tokn.
+AI SDK handles compatible requests in both web and native runtimes; Rust owns
+native networking, credentials, bounded streaming, and cancellation. Embedded
+tokn runs in the same process on desktop and iOS, without a gateway or localhost
+connection. Configure it in **Providers → Tokn** using routing TOML, account
+credentials in `auth.yaml` format, and explicit model selectors. See
+[native provider setup](apps/native/README.md#providers).
 
 The generated iOS project is checked in at
 `apps/native/src-tauri/gen/apple`; its build products, Rust library, and

@@ -42,3 +42,9 @@ test("phone layout presents chat context and Workspace as a modal surface", () =
   assert.match(viewerStyles, /\.composer-secondary-action/u);
   assert.match(viewerStyles, /font-size: 16px/u);
 });
+
+test("phone provider inputs prevent iOS focus zoom without disabling page zoom", () => {
+  const phoneStyles = viewerStyles.slice(viewerStyles.indexOf("@media (max-width: 768px)"));
+  assert.match(phoneStyles, /\.provider-field input,\s*\.provider-field select,\s*\.provider-field textarea\s*\{[^}]*font-size: 16px/u);
+  assert.doesNotMatch(indexSource, /user-scalable=no|maximum-scale=1/u);
+});

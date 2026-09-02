@@ -58,6 +58,15 @@ export function ResearchBoxPage() {
   );
   const providerSettingsAdapter = useMemo<ProviderSettingsAdapter>(
     () => ({
+      tokn: {
+        validate: (input) => nativeProviderSettingsAdapter.tokn!.validate(input),
+        async save(input) {
+          return synchronizeProviders(await nativeProviderSettingsAdapter.tokn!.save(input));
+        },
+        async reload() {
+          return synchronizeProviders(await nativeProviderSettingsAdapter.tokn!.reload());
+        },
+      },
       load: nativeProviderSettingsAdapter.load,
       test: nativeProviderSettingsAdapter.test,
       async save(input) {

@@ -130,6 +130,18 @@ export async function invokeNativeProviderSettingsRemove(
   );
 }
 
+export async function invokeNativeToknSettingsSave(input: import("./types.ts").ToknSettingsInput): Promise<ProviderSettingsSnapshot> {
+  return parseProviderSettingsSnapshot(await invoke<unknown>("native_tokn_settings_save", { input }));
+}
+
+export async function invokeNativeToknSettingsValidate(input: import("./types.ts").ToknSettingsInput): Promise<void> {
+  await invoke("native_tokn_settings_validate", { input });
+}
+
+export async function invokeNativeToknReload(): Promise<ProviderSettingsSnapshot> {
+  return parseProviderSettingsSnapshot(await invoke<unknown>("native_tokn_reload"));
+}
+
 export async function invokeNativeProviderSettingsTest(
   input: ProviderConfigurationInput,
 ): Promise<ProviderTestResult> {

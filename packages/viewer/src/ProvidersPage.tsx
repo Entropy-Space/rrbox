@@ -21,6 +21,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useId, useMemo, useState } from "react";
+import { ToknSettingsPanel } from "./ToknSettingsPanel.tsx";
 
 type ProviderDraft = ProviderConfigurationInput & {
   api_key: string;
@@ -66,7 +67,7 @@ export function ProvidersPage({
     };
   }, [adapter]);
 
-  const providers = snapshot?.providers ?? [];
+  const providers = (snapshot?.providers ?? []).filter((provider) => provider.backend !== "tokn");
   const editingProvider = providers.find(
     (provider) => provider.provider_id === editingProviderId,
   );
@@ -82,7 +83,7 @@ export function ProvidersPage({
           <span className="providers-page-eyebrow">Model connections</span>
           <h1 id="providers-page-title">Providers</h1>
           <p>
-            Connect OpenAI-compatible Chat Completions APIs. Credentials are
+            Connect model providers. Credentials are
             stored unencrypted on this device and never shown again.
           </p>
         </div>
@@ -97,6 +98,10 @@ export function ProvidersPage({
       </header>
 
       <div className="provider-content">
+        {snapshot?.embedded_tokn && adapter.tokn && <ToknSettingsPanel
+          snapshot={snapshot.embedded_tokn} adapter={adapter.tokn}
+          saveBlockedReason={saveBlockedReason} onSaved={acceptSnapshot}
+        />}
         <div className="provider-toolbar">
           <div>
             <strong>Configured providers</strong>

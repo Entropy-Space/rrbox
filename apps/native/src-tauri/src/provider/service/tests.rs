@@ -19,6 +19,109 @@ use crate::provider::protocol::{
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 static TEST_SERVER_LOCK: Mutex<()> = Mutex::new(());
 
+fn embedded_service(base_url: &str) -> (tempfile::TempDir, ProviderService) {
+  let root = tempfile::tempdir().unwrap();
+  let service = ProviderService::new(root.path().into()).unwrap();
+  tauri::async_runtime::block_on(async {
+    service
+      .tokn()
+      .unwrap()
+      .save(crate::provider::embedded_tokn::ToknSettingsInput {
+        enabled: true,
+        config_toml: "[defaults]\nmode = \"exact\"\n".into(),
+        model_ids: vec!["llama-cpp/mock-model".into()],
+        credentials_yaml: Some(format!(
+          "version: 1\naccounts:\n  - id: mock\n    provider: llama-cpp\n    base_url: {base_url}\n"
+        )),
+      })
+      .unwrap();
+  });
+  (root, service)
+}
+
+#[test]
+fn embedded_tokn_lists_configured_selectors_without_a_gateway() {
+  let (_root, service) = embedded_service("http://127.0.0.1:1");
+  let snapshot = service.settings_snapshot().unwrap();
+  assert!(
+    snapshot
+      .providers
+      .iter()
+      .any(|provider| provider.provider_id == "local-openai")
+  );
+  assert!(
+    snapshot
+      .providers
+      .iter()
+      .any(|provider| provider.provider_id == "builtin:tokn")
+  );
+  let (sender, receiver) = mpsc::channel();
+  service
+    .start_fetch(
+      fetch_request(
+        "builtin:tokn",
+        NativeProviderEndpoint::Models,
+        NativeProviderMethod::Get,
+        None,
+      ),
+      move |event| sender.send(event).map_err(|_| ()),
+    )
+    .unwrap();
+  let events = collect_events(&receiver);
+  assert_complete(&events);
+  let bytes = events
+    .iter()
+    .filter_map(|event| match &event.payload {
+      NativeProviderBodyEventPayload::BodyChunk { chunk_base64 } => {
+        Some(BASE64_STANDARD.decode(chunk_base64).unwrap())
+      }
+      _ => None,
+    })
+    .flatten()
+    .collect::<Vec<_>>();
+  let models: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+  assert_eq!(models["data"][0]["id"], "llama-cpp/mock-model");
+  wait_for_cleanup(&service);
+}
+
+#[test]
+fn embedded_tokn_streams_and_cancels_through_the_native_bridge() {
+  let (release_sender, release_receiver) = mpsc::channel();
+  let server = TestServer::spawn(move |mut stream| {
+    stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nset-cookie: secret\r\ntransfer-encoding: chunked\r\n\r\n").unwrap();
+    stream.flush().unwrap();
+    release_receiver.recv_timeout(TEST_TIMEOUT).unwrap();
+  });
+  let (_root, service) = embedded_service(&server.base_url);
+  let (sender, receiver) = mpsc::channel();
+  service.start_fetch(fetch_request("builtin:tokn", NativeProviderEndpoint::ChatCompletions, NativeProviderMethod::Post,
+    Some(serde_json::json!({"model": "llama-cpp/mock-model", "messages": [{"role": "user", "content": "hello"}], "stream": true}).to_string())),
+    move |event| sender.send(event).map_err(|_| ())).unwrap();
+  let started = receiver.recv_timeout(TEST_TIMEOUT).unwrap();
+  match started.payload {
+    NativeProviderBodyEventPayload::ResponseStarted {
+      status, headers, ..
+    } => {
+      assert_eq!(status, 200);
+      assert!(!headers.contains_key("set-cookie"));
+    }
+    other => panic!("unexpected embedded response: {other:?}"),
+  }
+  assert!(
+    server
+      .request()
+      .request_line
+      .starts_with("POST /v1/chat/completions ")
+  );
+  assert!(service.cancel(&cancel_request()).unwrap());
+  release_sender.send(()).unwrap();
+  assert_terminal_status(
+    &collect_events(&receiver),
+    NativeProviderBodyStatus::Aborted,
+  );
+  wait_for_cleanup(&service);
+}
+
 #[test]
 fn rejects_routes_methods_providers_and_oversized_bodies_before_networking() {
   let service = test_service("http://127.0.0.1:1/v1");
@@ -214,7 +317,8 @@ fn does_not_follow_provider_redirects() {
 
 #[test]
 fn rejects_a_duplicate_operation_without_replacing_the_active_request() {
-  let server = TestServer::spawn(|mut stream| {
+  let (release_sender, release_receiver) = mpsc::channel();
+  let server = TestServer::spawn(move |mut stream| {
     write!(
       stream,
       "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
@@ -222,7 +326,9 @@ fn rejects_a_duplicate_operation_without_replacing_the_active_request() {
     )
     .expect("write response headers");
     stream.flush().expect("flush response headers");
-    thread::sleep(Duration::from_millis(300));
+    release_receiver
+      .recv_timeout(TEST_TIMEOUT)
+      .expect("wait for cancellation");
   });
   let service = test_service(&server.base_url);
   let (sender, receiver) = mpsc::channel();
@@ -236,6 +342,13 @@ fn rejects_a_duplicate_operation_without_replacing_the_active_request() {
   service
     .start_fetch(request, move |event| sender.send(event).map_err(|_| ()))
     .expect("start first request");
+  let started = receiver
+    .recv_timeout(TEST_TIMEOUT)
+    .expect("receive response metadata");
+  assert!(matches!(
+    started.payload,
+    NativeProviderBodyEventPayload::ResponseStarted { .. }
+  ));
   let duplicate = service
     .start_fetch(
       fetch_request(
@@ -250,6 +363,7 @@ fn rejects_a_duplicate_operation_without_replacing_the_active_request() {
   assert!(matches!(duplicate, ProviderServiceError::InvalidRequest(_)));
 
   assert!(service.cancel(&cancel_request()).expect("cancel operation"));
+  release_sender.send(()).expect("release test server");
   let events = collect_events(&receiver);
   assert_terminal_status(&events, NativeProviderBodyStatus::Aborted);
 }

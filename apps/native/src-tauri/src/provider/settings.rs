@@ -64,6 +64,8 @@ pub struct ProviderConfigurationInput {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProviderPublicConfiguration {
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub backend: Option<String>,
   pub provider_id: String,
   pub display_name: String,
   pub preset_id: String,
@@ -78,6 +80,8 @@ pub struct ProviderPublicConfiguration {
 #[derive(Debug, Clone, Serialize)]
 pub struct ProviderSettingsSnapshot {
   pub providers: Vec<ProviderPublicConfiguration>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub embedded_tokn: Option<super::embedded_tokn::ToknSettingsSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -435,10 +439,12 @@ fn normalize_base_url(value: &str) -> Result<String, ProviderSettingsError> {
 
 fn snapshot(document: &ProviderSettingsDocument) -> ProviderSettingsSnapshot {
   ProviderSettingsSnapshot {
+    embedded_tokn: None,
     providers: document
       .providers
       .iter()
       .map(|provider| ProviderPublicConfiguration {
+        backend: None,
         provider_id: provider.provider_id.clone(),
         display_name: provider.display_name.clone(),
         preset_id: provider.preset_id.clone(),

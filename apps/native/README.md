@@ -38,19 +38,45 @@ not displayed in the viewer yet.
 Existing experimental native IndexedDB/OPFS data remains untouched but is not
 migrated automatically. Browser data at `http://localhost:3000` is separate.
 
-The native model worker exposes both the in-process mock provider and an
-OpenAI-compatible provider at `http://127.0.0.1:4141/v1`. The WebView cannot
-open arbitrary native URLs: a typed `MessagePort` broker permits only
-`GET /models` and `POST /chat/completions`, and Rust owns the HTTP connection,
-timeouts, response limits, streaming, and cancellation. The existing
-TypeScript OpenAI transport remains the only SSE and tool-call parser. If the
-local provider is unavailable, only that catalog entry becomes unavailable;
-the mock provider remains usable.
+## Providers
 
-On macOS, `127.0.0.1` refers to the same Mac running rrbox. On iOS and
-Android it refers to the device or emulator, not the development Mac. A
-configurable, authenticated LAN provider endpoint is intentionally deferred
-until its network and credential policy is designed.
+Desktop and iOS share the same AI SDK model adapter. The mock stays in-process;
+custom OpenAI-compatible endpoints use native HTTP; the built-in **Tokn** backend
+calls the pinned Rust `tokn-sdk` directly, without a separate gateway process.
+The typed `MessagePort` broker still permits only model listing and chat
+completion requests. Rust owns credentials, timeouts, response limits, streaming,
+and cancellation. DSH owns tool execution; no SDK agent loop or extra retry layer
+is introduced. The adapter preserves rrbox's lossless fragmented tool IDs and
+reasoning blocks through AI SDK's raw-chunk extension.
+
+Open **Providers → Tokn** and enter:
+
+- Routing TOML, for example `[defaults]` followed by `mode = "exact"`.
+- Account credentials using tokn's `auth.yaml` format.
+- Model selectors (one per line), such as `openai/<model-id>` or a configured alias.
+
+**Validate** builds an isolated SDK configuration without sending a model request.
+**Save tokn** validates and atomically replaces the saved settings and live engine;
+existing requests retain their old engine until completion. **Reload** rebuilds
+from the saved device-local settings. Model selectors are explicit because the
+SDK does not expose a discovery API; successful validation is not proof that an
+upstream accepts the credentials or model.
+
+Supported routing sections are `defaults`, `profiles`, `pool`, `model_families`,
+and `proxy`. Gateway listeners, databases, and linked desktop-agent imports are
+not loaded. rrbox owns persistence and disables tokn's gateway database logging.
+Each SDK instance receives private app-local config/auth paths. No global tokn
+accounts are automatically imported and no desktop-to-phone sync is performed.
+
+Credentials are currently stored **unencrypted** in private native files, matching
+the existing endpoint storage policy; Keychain integration is not implemented.
+Saved credentials never return to the WebView. Keep credentials out of routing
+TOML. Account setup uses supplied credentials; interactive OAuth login is not
+implemented in this screen.
+
+Existing custom endpoints remain unchanged, including the legacy
+`http://127.0.0.1:4141/v1` entry. On iPhone, localhost means the phone, not the Mac;
+use embedded tokn or a reachable custom endpoint instead.
 
 Run the native app during development from the repository root:
 

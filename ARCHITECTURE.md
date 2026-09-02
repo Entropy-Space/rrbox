@@ -336,9 +336,14 @@ isolated app-local config/auth directories before an atomic settings replacement
 Existing requests retain their engine across reloads. Native snapshots never
 return saved credentials. Storage currently uses private plaintext files, not
 Keychain, and neither gateway databases nor linked desktop-agent accounts are
-imported. Model selectors are entered explicitly because the SDK has no public
-catalogue API. The built-in provider is initially disabled and unconfigured;
-legacy endpoint settings and selections are preserved.
+imported. Guided setup uses an async native command to generate an API-key account
+and add text/tool model selectors from `tokn-catalogue`, without upstream requests.
+Only guided-owned account keys are replaced on reconnect; explicit Advanced
+credential replacement clears that ownership. Existing accounts, routing, and
+manual selectors are preserved. Public snapshots expose provider presets and
+account summaries only, never saved keys. The built-in provider starts disabled
+and unconfigured; Connect enables it. Advanced retains raw configuration controls.
+Legacy endpoint settings and selections are preserved.
 
 ## Project and session persistence
 

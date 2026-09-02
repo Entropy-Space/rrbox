@@ -16,7 +16,8 @@ use commands::native_storage_request;
 use provider::{
   ProviderService, native_provider_cancel, native_provider_fetch, native_provider_settings_list,
   native_provider_settings_remove, native_provider_settings_save, native_provider_settings_test,
-  native_tokn_reload, native_tokn_settings_save, native_tokn_settings_validate,
+  native_tokn_connect, native_tokn_reload, native_tokn_settings_save,
+  native_tokn_settings_validate,
 };
 use python::{PythonService, native_python_cancel, native_python_execute};
 use storage::StorageService;
@@ -44,6 +45,7 @@ pub fn run() {
       native_provider_settings_save,
       native_provider_settings_remove,
       native_provider_settings_test,
+      native_tokn_connect,
       native_tokn_settings_save,
       native_tokn_settings_validate,
       native_tokn_reload,

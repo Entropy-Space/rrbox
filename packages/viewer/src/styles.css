@@ -1586,6 +1586,113 @@
   gap: 16px;
 }
 
+.tokn-connect-form,
+.tokn-advanced-content {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+
+.tokn-connect-form .provider-field select,
+.tokn-connect-form .provider-field input,
+.tokn-connect-form .provider-editor-footer button {
+  min-height: 44px;
+}
+
+.tokn-provider-select {
+  position: relative;
+}
+
+.tokn-connect-form .provider-field select {
+  /* iOS native select appearance ignores the intended control height. */
+  appearance: none;
+  padding-right: 36px;
+}
+
+.tokn-provider-select > svg {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--muted);
+}
+
+.tokn-setup-hint,
+.tokn-advanced-content > p,
+.tokn-settings > .tokn-storage-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.tokn-settings > .provider-editor-notice:empty {
+  display: none;
+}
+
+.tokn-accounts h3 {
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+
+.tokn-accounts ul {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tokn-accounts li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.tokn-accounts li > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.tokn-accounts span,
+.tokn-accounts code {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.tokn-accounts button {
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: white;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tokn-advanced {
+  border-top: 1px solid var(--line);
+}
+
+.tokn-advanced summary {
+  padding: 16px 0;
+  min-height: 44px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 620;
+}
+
 .provider-editor-heading > div {
   display: grid;
   gap: 4px;

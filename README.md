@@ -181,8 +181,9 @@ in-process mock, configurable OpenAI-compatible endpoints, and embedded tokn.
 AI SDK handles compatible requests in both web and native runtimes; Rust owns
 native networking, credentials, bounded streaming, and cancellation. Embedded
 tokn runs in the same process on desktop and iOS, without a gateway or localhost
-connection. Configure it in **Providers → Tokn** using routing TOML, account
-credentials in `auth.yaml` format, and explicit model selectors. See
+connection. In **Providers → Tokn**, select a provider, paste an API key, and click
+**Connect**. Account config and catalogue model choices are generated automatically;
+raw routing and credential editors remain under **Advanced**. See
 [native provider setup](apps/native/README.md#providers).
 
 The generated iOS project is checked in at

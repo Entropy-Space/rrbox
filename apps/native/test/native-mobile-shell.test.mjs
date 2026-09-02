@@ -47,4 +47,6 @@ test("phone provider inputs prevent iOS focus zoom without disabling page zoom",
   const phoneStyles = viewerStyles.slice(viewerStyles.indexOf("@media (max-width: 768px)"));
   assert.match(phoneStyles, /\.provider-field input,\s*\.provider-field select,\s*\.provider-field textarea\s*\{[^}]*font-size: 16px/u);
   assert.doesNotMatch(indexSource, /user-scalable=no|maximum-scale=1/u);
+  assert.match(viewerStyles, /\.tokn-connect-form \.provider-field select,\s*\.tokn-connect-form \.provider-field input,\s*\.tokn-connect-form \.provider-editor-footer button\s*\{\s*min-height: 44px/u);
+  assert.match(viewerStyles, /\.tokn-connect-form \.provider-field select\s*\{[^}]*appearance: none/u);
 });

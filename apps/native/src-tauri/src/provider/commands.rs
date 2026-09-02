@@ -1,7 +1,7 @@
 use tauri::{State, ipc::Channel};
 
 use super::{
-  embedded_tokn::ToknSettingsInput,
+  embedded_tokn::{ToknConnectInput, ToknSettingsInput},
   protocol::{
     NativeProviderBodyEvent, NativeProviderCancelRequest, NativeProviderFetchRequest,
     NativeProviderResponse,
@@ -9,6 +9,22 @@ use super::{
   service::ProviderService,
   settings::{ProviderConfigurationInput, ProviderSettingsSnapshot, ProviderTestResult},
 };
+
+#[tauri::command]
+pub async fn native_tokn_connect(
+  provider: State<'_, ProviderService>,
+  input: ToknConnectInput,
+) -> Result<ProviderSettingsSnapshot, String> {
+  let service = provider.inner().clone();
+  tauri::async_runtime::spawn_blocking(move || {
+    service.tokn()?.connect(input)?;
+    service
+      .settings_snapshot()
+      .map_err(|error| error.to_string())
+  })
+  .await
+  .map_err(|_| "Tokn setup worker failed.")?
+}
 
 #[tauri::command]
 pub async fn native_tokn_settings_save(
@@ -56,9 +72,14 @@ pub async fn native_tokn_reload(
 pub async fn native_provider_settings_list(
   provider: State<'_, ProviderService>,
 ) -> Result<ProviderSettingsSnapshot, String> {
-  provider
-    .settings_snapshot()
-    .map_err(|error| error.to_string())
+  let service = provider.inner().clone();
+  tauri::async_runtime::spawn_blocking(move || {
+    service
+      .settings_snapshot()
+      .map_err(|error| error.to_string())
+  })
+  .await
+  .map_err(|_| "Provider settings worker failed.")?
 }
 
 #[tauri::command]

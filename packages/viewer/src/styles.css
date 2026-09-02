@@ -1337,6 +1337,52 @@
   gap: 18px;
 }
 
+.provider-tabs {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--soft);
+}
+
+.provider-tabs button {
+  min-height: 44px;
+  flex: 1;
+  padding: 10px 18px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted-strong);
+  font-size: 13px;
+  font-weight: 620;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.provider-tabs button:hover {
+  color: var(--ink);
+}
+
+.provider-tabs button[aria-selected="true"] {
+  border-color: var(--line-strong);
+  background: var(--canvas);
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.provider-settings-panel {
+  display: grid;
+  min-width: 0;
+  gap: 18px;
+}
+
+.provider-settings-panel[hidden] {
+  display: none;
+}
+
 .provider-toolbar,
 .provider-card,
 .provider-editor,
@@ -4992,6 +5038,14 @@ fieldset.provider-editor-fields {
 
   .providers-page {
     padding: 20px 14px 24px;
+  }
+
+  .provider-tabs {
+    width: 100%;
+  }
+
+  .provider-tabs button {
+    padding: 10px 12px;
   }
 
   .plugins-page-header {

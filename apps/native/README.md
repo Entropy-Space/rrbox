@@ -49,7 +49,13 @@ and cancellation. DSH owns tool execution; no SDK agent loop or extra retry laye
 is introduced. The adapter preserves rrbox's lossless fragmented tool IDs and
 reasoning blocks through AI SDK's raw-chunk extension.
 
-Open **Providers → Tokn** and enter:
+Providers has separate **Tokn** and **OpenAI-compatible** tabs. Tokn opens by
+default in the native app. Switching tabs preserves unsaved edits and only
+changes the settings view; it does not enable or disable providers. Keyboard
+users can switch tabs with Left/Right, Home, and End. The browser app, where the
+embedded SDK is unavailable, keeps its endpoint-only settings view.
+
+Open the **Tokn** tab and enter:
 
 - Routing TOML, for example `[defaults]` followed by `mode = "exact"`.
 - Account credentials using tokn's `auth.yaml` format.

@@ -4,6 +4,7 @@ import {
   parseProviderConfigurationInput, parseProviderRuntimeConfiguration,
   parseProviderSettingsSnapshot, publicProviderRuntimeConfiguration,
 } from "../src/index.ts";
+import { parseToknSettingsSnapshot } from "../src/tokn.ts";
 
 const provider = {
   backend: "tokn", provider_id: "builtin:tokn", display_name: "Tokn · embedded",
@@ -37,4 +38,36 @@ test("built-in namespace does not reserve previously valid custom IDs", () => {
     ...provider, backend: "openai_compatible", provider_id: "builtin-tokn", base_url: "http://127.0.0.1:4141/v1",
   });
   assert.equal(existing.provider_id, "builtin-tokn");
+});
+
+const tokn = {
+  enabled: true, config_toml: "", model_ids: ["deepseek/deepseek-chat"], has_credentials: true, status: "ready",
+  setup_providers: [{ provider_id: "deepseek", display_name: "DeepSeek", model_count: 2 }],
+  accounts: [{ account_id: "owned", provider_id: "deepseek", display_name: "DeepSeek", enabled: true, has_api_key: true, managed: true }],
+};
+
+test("Tokn setup snapshots project only public fields and drop nested secrets", () => {
+  const parsed = parseToknSettingsSnapshot({ ...tokn, credentials_yaml: "private",
+    setup_providers: [{ ...tokn.setup_providers[0], api_key: "private" }],
+    accounts: [{ ...tokn.accounts[0], api_key: "private", access_token: "private", extra: { secret: "private" } }],
+  });
+  assert.deepEqual(parsed, tokn);
+  assert.equal(JSON.stringify(parsed).includes("private"), false);
+});
+
+test("Tokn setup rejects malformed account metadata and model counts", () => {
+  for (const model_count of [-1, 1.5, Infinity, "2"]) {
+    assert.throws(() => parseToknSettingsSnapshot({ ...tokn, setup_providers: [{ ...tokn.setup_providers[0], model_count }] }));
+  }
+  for (const change of [{ enabled: "true" }, { managed: null }, { has_api_key: 1 }, { account_id: "" }, { provider_id: 12 }]) {
+    assert.throws(() => parseToknSettingsSnapshot({ ...tokn, accounts: [{ ...tokn.accounts[0], ...change }] }));
+  }
+  assert.throws(() => parseToknSettingsSnapshot({ ...tokn, accounts: {} }));
+});
+
+test("legacy Tokn snapshots retain Advanced settings without setup metadata", () => {
+  const legacy = { ...tokn };
+  delete legacy.accounts;
+  delete legacy.setup_providers;
+  assert.deepEqual(parseToknSettingsSnapshot(legacy), { ...legacy, accounts: [], setup_providers: [] });
 });

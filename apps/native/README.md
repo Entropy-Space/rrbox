@@ -55,18 +55,30 @@ changes the settings view; it does not enable or disable providers. Keyboard
 users can switch tabs with Left/Right, Home, and End. The browser app, where the
 embedded SDK is unavailable, keeps its endpoint-only settings view.
 
-Open the **Tokn** tab and enter:
+In **Tokn**, select a provider, paste its API key, and click **Connect**. Guided
+setup supports OpenAI, DeepSeek, Z.ai, Z.ai Coding Plan, Zhipu BigModel, and Zhipu
+BigModel Coding Plan. Rust generates the account credentials, adds text/tool model
+selectors from Tokn's catalogue, enables Tokn, and replaces the live engine. No
+gateway URL, YAML, manual model entry, or restart is needed. Known Responses-only
+OpenAI families are omitted because rrbox currently uses Chat Completions.
 
-- Routing TOML, for example `[defaults]` followed by `mode = "exact"`.
-- Account credentials using tokn's `auth.yaml` format.
-- Model selectors (one per line), such as `openai/<model-id>` or a configured alias.
+**Replace key** / **Update key** updates only the account created by guided setup
+for that provider. Existing imported accounts, routing, and model selectors are
+preserved. Keys are write-only and cleared from the form after success. Switching
+providers clears the draft key; switching configuration tabs preserves drafts.
 
-**Validate** builds an isolated SDK configuration without sending a model request.
-**Save tokn** validates and atomically replaces the saved settings and live engine;
-existing requests retain their old engine until completion. **Reload** rebuilds
-from the saved device-local settings. Model selectors are explicit because the
-SDK does not expose a discovery API; successful validation is not proof that an
-upstream accepts the credentials or model.
+**Advanced** retains routing TOML, `auth.yaml` replacement, model selectors,
+enable/disable, validation, and reload controls. Save or discard Advanced drafts
+before using Connect. Explicitly replacing credentials replaces all accounts and
+transfers their editing to Advanced, so guided setup never overwrites them later.
+**Validate** checks an isolated SDK configuration; **Save advanced** atomically
+replaces settings and the live engine. Existing requests retain their old engine
+until completion. **Reload** rebuilds from saved device-local settings.
+
+Connect uses catalogue defaults, not authenticated model discovery. It does not
+test the key or send a model request; a configured account is not proof that the
+upstream accepts its credentials or every listed model. OAuth setup is not yet
+part of the guided flow.
 
 Supported routing sections are `defaults`, `profiles`, `pool`, `model_families`,
 and `proxy`. Gateway listeners, databases, and linked desktop-agent imports are

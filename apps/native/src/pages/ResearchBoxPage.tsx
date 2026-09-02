@@ -59,6 +59,9 @@ export function ResearchBoxPage() {
   const providerSettingsAdapter = useMemo<ProviderSettingsAdapter>(
     () => ({
       tokn: {
+        async connect(input) {
+          return synchronizeProviders(await nativeProviderSettingsAdapter.tokn!.connect(input));
+        },
         validate: (input) => nativeProviderSettingsAdapter.tokn!.validate(input),
         async save(input) {
           return synchronizeProviders(await nativeProviderSettingsAdapter.tokn!.save(input));

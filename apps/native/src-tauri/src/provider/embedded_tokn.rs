@@ -1,4 +1,5 @@
 use std::{
+  collections::BTreeMap,
   fs,
   io::Write,
   path::PathBuf,
@@ -10,6 +11,10 @@ use tempfile::TempDir;
 use tokn_sdk::Client;
 
 use super::settings::{ProviderConfiguration, ProviderPublicConfiguration};
+
+#[path = "tokn_setup.rs"]
+mod setup;
+pub use setup::{ToknAccountSummary, ToknConnectInput, ToknSetupProvider};
 
 pub const PROVIDER_ID: &str = "builtin:tokn";
 const MAX_CONFIG_BYTES: usize = 256 * 1024;
@@ -23,6 +28,9 @@ struct Document {
   config_toml: String,
   credentials_yaml: String,
   model_ids: Vec<String>,
+  /// Only accounts created by guided setup can have their key replaced there.
+  #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+  setup_accounts: BTreeMap<String, String>,
 }
 
 impl Default for Document {
@@ -33,6 +41,7 @@ impl Default for Document {
       config_toml: DEFAULT_CONFIG.into(),
       credentials_yaml: String::new(),
       model_ids: Vec::new(),
+      setup_accounts: BTreeMap::new(),
     }
   }
 }
@@ -53,6 +62,8 @@ pub struct ToknSettingsSnapshot {
   pub model_ids: Vec<String>,
   pub has_credentials: bool,
   pub status: &'static str,
+  pub setup_providers: Vec<ToknSetupProvider>,
+  pub accounts: Vec<ToknAccountSummary>,
 }
 
 pub struct EmbeddedClient {
@@ -105,6 +116,8 @@ impl EmbeddedTokn {
       config_toml: doc.config_toml.clone(),
       model_ids: doc.model_ids.clone(),
       has_credentials: !doc.credentials_yaml.trim().is_empty(),
+      setup_providers: setup::providers(),
+      accounts: setup::account_summaries(doc),
       status: if doc.credentials_yaml.trim().is_empty() {
         "unconfigured"
       } else if !doc.enabled {
@@ -156,6 +169,19 @@ impl EmbeddedTokn {
       .lock()
       .map_err(|_| "Embedded tokn settings are unavailable.")?;
     let document = normalize_input(input, &state.document)?;
+    self.persist(&mut state, document)
+  }
+
+  pub fn connect(&self, input: ToknConnectInput) -> Result<(), String> {
+    let mut state = self
+      .state
+      .lock()
+      .map_err(|_| "Embedded tokn settings are unavailable.")?;
+    let document = setup::connect(input, &state.document)?;
+    self.persist(&mut state, document)
+  }
+
+  fn persist(&self, state: &mut State, document: Document) -> Result<(), String> {
     let client = if document.credentials_yaml.trim().is_empty() && !document.enabled {
       None
     } else {
@@ -262,6 +288,13 @@ fn normalize_input(input: ToknSettingsInput, existing: &Document) -> Result<Docu
     return Err("Tokn configuration is too large.".into());
   }
   parse_routing_config(&input.config_toml)?;
+  // Explicit advanced credential replacement relinquishes guided ownership.
+  // Never overwrite a manually edited/imported account on a later Connect.
+  let setup_accounts = if input.credentials_yaml.is_some() {
+    BTreeMap::new()
+  } else {
+    existing.setup_accounts.clone()
+  };
   let credentials_yaml = input
     .credentials_yaml
     .unwrap_or_else(|| existing.credentials_yaml.clone());
@@ -294,6 +327,7 @@ fn normalize_input(input: ToknSettingsInput, existing: &Document) -> Result<Docu
     config_toml: input.config_toml,
     credentials_yaml,
     model_ids,
+    setup_accounts,
   })
 }
 

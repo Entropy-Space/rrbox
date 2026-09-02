@@ -939,6 +939,23 @@ function createTransport(fetchRequest, options = {}) {
   });
 }
 
+test("AI SDK bridge preserves multiline SSE data frames", async () => {
+  const transport = createTransport(async () => sseResponse([
+    'data: {"choices": [\ndata: {"index":0,"delta":{"content":"multiline"},"finish_reason":"stop"}\ndata: ]}\n\n',
+    "data: [DONE]\n\n",
+  ]));
+  const events = await collect(transport);
+  assert.equal(events.find((event) => event.type === "text_delta").text_delta, "multiline");
+  assert.equal(events.at(-1).type, "done");
+});
+
+test("AI SDK bridge rejects EOF even after a finish reason", async () => {
+  const transport = createTransport(async () => sseResponse([
+    'data: {"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":"stop"}]}\n\n',
+  ]));
+  await assert.rejects(collect(transport), /ended before \[DONE\]/);
+});
+
 function sseResponse(chunks) {
   const encoder = new TextEncoder();
   return new Response(

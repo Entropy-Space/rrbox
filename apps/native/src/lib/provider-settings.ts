@@ -8,9 +8,11 @@ import {
   invokeNativeProviderSettingsRemove,
   invokeNativeProviderSettingsSave,
   invokeNativeProviderSettingsTest,
+  invokeNativeToknSettingsSave, invokeNativeToknSettingsValidate, invokeNativeToknReload,
 } from "./tauri.ts";
 
 export const nativeProviderSettingsAdapter: ProviderSettingsAdapter = {
+  tokn: { save: invokeNativeToknSettingsSave, validate: invokeNativeToknSettingsValidate, reload: invokeNativeToknReload },
   load: invokeNativeProviderSettingsList,
   save: invokeNativeProviderSettingsSave,
   remove: invokeNativeProviderSettingsRemove,

@@ -5,6 +5,7 @@ use std::{
   time::Duration,
 };
 
+use super::embedded_tokn::{self, EmbeddedTokn};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use futures_util::StreamExt;
 use reqwest::{
@@ -45,6 +46,7 @@ pub struct ProviderService {
 struct ProviderServiceInner {
   client: Client,
   settings: ProviderSettingsStore,
+  embedded_tokn: Option<Arc<EmbeddedTokn>>,
   active_operations: Mutex<HashMap<String, CancellationToken>>,
   models_timeout: Duration,
   chat_completions_timeout: Duration,
@@ -94,14 +96,21 @@ impl ProviderServiceError {
 
 impl ProviderService {
   pub fn new(root: PathBuf) -> Result<Self, ProviderServiceError> {
-    let settings = ProviderSettingsStore::load(root)?;
-    Self::with_configuration(settings, MODELS_TIMEOUT, CHAT_COMPLETIONS_TIMEOUT)
+    let settings = ProviderSettingsStore::load(root.clone())?;
+    let embedded = EmbeddedTokn::new(root).map_err(ProviderServiceError::Internal)?;
+    Self::with_configuration(
+      settings,
+      MODELS_TIMEOUT,
+      CHAT_COMPLETIONS_TIMEOUT,
+      Some(Arc::new(embedded)),
+    )
   }
 
   fn with_configuration(
     settings: ProviderSettingsStore,
     models_timeout: Duration,
     chat_completions_timeout: Duration,
+    embedded_tokn: Option<Arc<EmbeddedTokn>>,
   ) -> Result<Self, ProviderServiceError> {
     let client = Client::builder()
       .redirect(Policy::none())
@@ -113,6 +122,7 @@ impl ProviderService {
       inner: Arc::new(ProviderServiceInner {
         client,
         settings,
+        embedded_tokn,
         active_operations: Mutex::new(HashMap::new()),
         models_timeout,
         chat_completions_timeout,
@@ -148,21 +158,50 @@ impl ProviderService {
   }
 
   pub fn settings_snapshot(&self) -> Result<ProviderSettingsSnapshot, ProviderServiceError> {
-    self.inner.settings.snapshot().map_err(Into::into)
+    let mut snapshot = self.inner.settings.snapshot()?;
+    if let Some(tokn) = &self.inner.embedded_tokn {
+      snapshot.providers.push(
+        tokn
+          .public_provider()
+          .map_err(ProviderServiceError::Internal)?,
+      );
+      snapshot.embedded_tokn = Some(tokn.snapshot().map_err(ProviderServiceError::Internal)?);
+    }
+    Ok(snapshot)
+  }
+
+  pub(super) fn tokn(&self) -> Result<Arc<EmbeddedTokn>, String> {
+    self
+      .inner
+      .embedded_tokn
+      .clone()
+      .ok_or_else(|| "Embedded tokn is unavailable.".into())
   }
 
   pub fn save_settings(
     &self,
     input: ProviderConfigurationInput,
   ) -> Result<ProviderSettingsSnapshot, ProviderServiceError> {
-    self.inner.settings.save(input).map_err(Into::into)
+    if input.provider_id == embedded_tokn::PROVIDER_ID {
+      return Err(ProviderServiceError::InvalidRequest(
+        "Use embedded tokn settings for this provider.".into(),
+      ));
+    }
+    self.inner.settings.save(input)?;
+    self.settings_snapshot()
   }
 
   pub fn remove_settings(
     &self,
     provider_id: &str,
   ) -> Result<ProviderSettingsSnapshot, ProviderServiceError> {
-    self.inner.settings.remove(provider_id).map_err(Into::into)
+    if provider_id == embedded_tokn::PROVIDER_ID {
+      return Err(ProviderServiceError::InvalidRequest(
+        "Disable embedded tokn in its settings instead.".into(),
+      ));
+    }
+    self.inner.settings.remove(provider_id)?;
+    self.settings_snapshot()
   }
 
   pub async fn test_settings(
@@ -254,17 +293,30 @@ impl ProviderService {
   ) -> Result<PreparedFetch, ProviderServiceError> {
     validate_protocol_and_identifier(request.protocol_version, &request.request_id, "request_id")?;
     validate_identifier(&request.operation_id, "operation_id")?;
-    let provider = self
-      .inner
-      .settings
-      .resolve(&request.provider_id)?
-      .ok_or_else(|| {
-        ProviderServiceError::ProviderUnavailable(format!(
-          "Provider {} is not configured or is disabled.",
-          request.provider_id
-        ))
-      })?;
+    let provider = if request.provider_id == embedded_tokn::PROVIDER_ID {
+      self
+        .tokn()
+        .map_err(ProviderServiceError::ProviderUnavailable)?
+        .provider()
+        .map_err(ProviderServiceError::ProviderUnavailable)?
+    } else {
+      self
+        .inner
+        .settings
+        .resolve(&request.provider_id)?
+        .ok_or_else(|| {
+          ProviderServiceError::ProviderUnavailable(format!(
+            "Provider {} is not configured or is disabled.",
+            request.provider_id
+          ))
+        })?
+    };
 
+    if !provider.enabled {
+      return Err(ProviderServiceError::ProviderUnavailable(
+        "This provider is disabled.".into(),
+      ));
+    }
     let timeout = match (request.endpoint, request.method, request.body.as_ref()) {
       (NativeProviderEndpoint::Models, NativeProviderMethod::Get, None) => {
         self.inner.models_timeout
@@ -335,6 +387,17 @@ impl ProviderService {
     cancellation: &CancellationToken,
     emitter: &mut EventEmitter,
   ) -> RunOutcome {
+    if prepared.provider.provider_id == embedded_tokn::PROVIDER_ID {
+      return match tokio::time::timeout(
+        prepared.timeout,
+        self.run_tokn_fetch(prepared, cancellation, emitter),
+      )
+      .await
+      {
+        Ok(outcome) => outcome,
+        Err(_) => RunOutcome::Error("Embedded tokn request timed out.".into()),
+      };
+    }
     let url = format!("{}{}", prepared.provider.base_url, prepared.endpoint.path());
     let mut request = match prepared.endpoint {
       NativeProviderEndpoint::Models => self
@@ -377,6 +440,119 @@ impl ProviderService {
     };
 
     self.stream_response(response, cancellation, emitter).await
+  }
+
+  async fn run_tokn_fetch(
+    &self,
+    prepared: &PreparedFetch,
+    cancellation: &CancellationToken,
+    emitter: &mut EventEmitter,
+  ) -> RunOutcome {
+    let engine = match self.tokn() {
+      Ok(engine) => engine,
+      Err(message) => return RunOutcome::Error(message),
+    };
+    if cancellation.is_cancelled() {
+      return RunOutcome::Aborted;
+    }
+    if prepared.endpoint == NativeProviderEndpoint::Models {
+      let models = match engine.models() {
+        Ok(models) => models,
+        Err(message) => return RunOutcome::Error(message),
+      };
+      if !emitter.response_started(
+        StatusCode::OK,
+        BTreeMap::from([("content-type".into(), "application/json".into())]),
+      ) {
+        return RunOutcome::ChannelClosed;
+      }
+      for part in models
+        .to_string()
+        .as_bytes()
+        .chunks(MAX_CHANNEL_CHUNK_BYTES)
+      {
+        if cancellation.is_cancelled() {
+          return RunOutcome::Aborted;
+        }
+        if !emitter.body_chunk(part) {
+          return RunOutcome::ChannelClosed;
+        }
+      }
+      return RunOutcome::Complete;
+    }
+    let worker = tauri::async_runtime::spawn_blocking(move || engine.client());
+    let runtime = tokio::select! {
+      biased;
+      _ = cancellation.cancelled() => return RunOutcome::Aborted,
+      result = worker => match result {
+        Ok(Ok(runtime)) => runtime,
+        Ok(Err(message)) => return RunOutcome::Error(message),
+        Err(_) => return RunOutcome::Error("Embedded tokn initialization failed.".into()),
+      },
+    };
+    let body: Value = match serde_json::from_str(prepared.body.as_deref().unwrap_or("")) {
+      Ok(body) => body,
+      Err(_) => return RunOutcome::Error("Invalid embedded model request.".into()),
+    };
+    let mut options = tokn_sdk::RequestOptions::default().with_request_id(&prepared.operation_id);
+    if let Some(session) = prepared.session_affinity_headers.get("session_id") {
+      options = options.with_session_id(session);
+    }
+    let response = tokio::select! {
+      biased;
+      _ = cancellation.cancelled() => return RunOutcome::Aborted,
+      result = runtime.client.execute(tokn_sdk::Endpoint::ChatCompletions, body, options) => match result {
+        Ok(response) => response,
+        Err(_) => return RunOutcome::Error("Embedded tokn request failed. Check the model selector, route, and account credentials.".into()),
+      },
+    };
+    let status = match StatusCode::from_u16(response.status) {
+      Ok(status) => status,
+      Err(_) => return RunOutcome::Error("Invalid embedded response status.".into()),
+    };
+    let mut headers = BTreeMap::new();
+    for (name, value) in response.headers.iter() {
+      if matches!(
+        name.as_str(),
+        "content-type" | "retry-after" | "x-request-id"
+      ) {
+        headers.insert(name.as_str().to_owned(), value.as_str().to_owned());
+      }
+    }
+    if !emitter.response_started(status, headers) {
+      return RunOutcome::ChannelClosed;
+    }
+    let mut stream: tokn_sdk::ByteStream = match response.body {
+      tokn_sdk::ResponseBody::Stream(stream) => stream,
+      tokn_sdk::ResponseBody::Buffered(bytes) => {
+        Box::pin(futures_util::stream::once(async move { Ok(bytes) }))
+      }
+    };
+    let mut received = 0_usize;
+    loop {
+      let chunk = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => return RunOutcome::Aborted,
+        chunk = stream.next() => chunk,
+      };
+      let chunk = match chunk {
+        None => return RunOutcome::Complete,
+        Some(Ok(chunk)) => chunk,
+        Some(Err(_)) => return RunOutcome::Error("Embedded tokn response stream failed.".into()),
+      };
+      received = match received.checked_add(chunk.len()) {
+        Some(size) if size <= MAX_RESPONSE_BYTES => size,
+        _ => return RunOutcome::Error("The provider response body is too large.".into()),
+      };
+      for part in chunk.chunks(MAX_CHANNEL_CHUNK_BYTES) {
+        if cancellation.is_cancelled() {
+          return RunOutcome::Aborted;
+        }
+        if !emitter.body_chunk(part) {
+          return RunOutcome::ChannelClosed;
+        }
+      }
+    }
   }
 
   async fn stream_response(
@@ -469,6 +645,7 @@ impl ProviderService {
       ProviderSettingsStore::in_memory(base_url),
       models_timeout,
       chat_completions_timeout,
+      None,
     )
     .expect("create test provider service")
   }

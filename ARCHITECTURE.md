@@ -23,7 +23,7 @@ apps/web
   │                 browser/llm.worker.ts
   │                   ├─ packages/runtime-browser LLM host
   │                   ├─ mock NDJSON transport → /api/mock
-  │                   └─ OpenAI-compatible SSE transport
+  │                   └─ AI SDK compatible model transport
   │                         └─ same-origin bridge → localhost:4141/v1
   │         ├─ packages/storage-browser
   │         ├─ packages/dshrbox-runtime-browser
@@ -65,7 +65,8 @@ apps/native (Tauri 2)
        │    ├─ catalog.sqlite3
        │    └─ projects/<opaque-storage-id>/project.sqlite3
        └─ ProviderService
-            └─ fixed HTTP routes → 127.0.0.1:4141/v1
+            ├─ bounded native HTTP → configured compatible endpoint
+            └─ in-process tokn-sdk → configured upstream providers
 ```
 
 Both application roots mount the same viewer and core composition. The web root
@@ -309,23 +310,35 @@ indices. OpenAI SSE fragments are assembled there before those ordered events
 are returned to the active core. The viewer receives only validated
 provider/model summaries.
 
-Provider URLs are application configuration, never viewer input. For the
-current local web runtime, two narrow same-origin server routes bridge model
+Provider URLs and credentials enter through provider settings, never through
+model requests. For the default local web provider, two narrow same-origin server routes bridge model
 discovery and chat completions to `127.0.0.1:4141`; this avoids relying on CORS
-without turning the route into a general proxy. No provider credentials are
-stored yet. A future fully browser-only composition can replace the bridge with
-a CORS-capable local gateway or an in-browser/Wasm provider adapter without
-changing the core/viewer protocol.
+without turning the route into a general proxy. Provider configuration and
+credential storage belong to the platform adapter; neither changes the
+core/viewer model-request protocol.
 
 The native LLM worker also keeps the deterministic mock handler in-process.
-For `local-openai`, it sends fixed-route fetch operations over a transferred
+For model providers, it sends fixed-operation fetch requests over a transferred
 `MessagePort`; the WebView broker invokes Rust and relays ordered status,
 filtered headers, raw body chunks, and terminal events over a Tauri Channel.
-Rust permits only `GET /models` and `POST /chat/completions` at the fixed
-loopback base, disables redirects and ambient proxies, bounds bodies and
-timeouts, and owns cancellation. The existing TypeScript
-`OpenAiCompatibleModelTransport` remains the sole JSON/SSE/tool-call parser, so
-browser and native provider output normalize identically.
+Rust permits only model listing and chat completions. Custom endpoints use
+native HTTP with redirects and ambient proxies disabled. The `builtin:tokn`
+provider executes through the embedded Rust SDK on both desktop and iOS, with
+no gateway process. Both paths bound bodies and timeouts and own cancellation.
+AI SDK serializes compatible model requests and exposes parsed raw chunks;
+rrbox maps those chunks losslessly to its existing block lifecycle, including
+fragmented tool identifiers and reasoning aliases. A standard SSE parser guards
+the `[DONE]` boundary so truncated streams cannot become successful responses.
+DSH remains the only tool-execution loop; tokn owns routing and retries on its path.
+
+Embedded settings are device-local. Candidate SDK instances are validated in
+isolated app-local config/auth directories before an atomic settings replacement.
+Existing requests retain their engine across reloads. Native snapshots never
+return saved credentials. Storage currently uses private plaintext files, not
+Keychain, and neither gateway databases nor linked desktop-agent accounts are
+imported. Model selectors are entered explicitly because the SDK has no public
+catalogue API. The built-in provider is initially disabled and unconfigured;
+legacy endpoint settings and selections are preserved.
 
 ## Project and session persistence
 

@@ -28,13 +28,17 @@ fs2 = "0.4"
 futures-util = "0.3"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"] }
 researchbox-python-plugin = { path = "../../../packages/python-plugin" }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled", "fallible_uint"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "net", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
+tokn-sdk = { git = "https://github.com/agentic-rs/tokn", rev = "94b8270560574be75b3c85cd00702d494c062918" }
+tokn-config = { package = "tokn-router-config", git = "https://github.com/agentic-rs/tokn", rev = "94b8270560574be75b3c85cd00702d494c062918" }
+toml = "1"
+tempfile = "3"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]

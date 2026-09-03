@@ -18,7 +18,12 @@ const providers = [{
       model_id: "gpt-5.4",
       display_name: "GPT-5.4",
       availability: "ready",
-      reasoning_efforts: ["none", "low", "medium", "high"],
+      reasoning_efforts: [
+        { id: "none", display_name: "Off", description: "Disable reasoning for this model." },
+        { id: "low", display_name: "Low" },
+        { id: "medium", display_name: "Medium" },
+        { id: "high", display_name: "High" },
+      ],
     },
     {
       provider_id: "openai",
@@ -80,9 +85,9 @@ test("quick models and compact effort labels expose only useful choices", () => 
     ["gpt-5.4"],
   );
   assert.equal(formatComposerEffortLabel("default"), "Auto");
-  assert.equal(formatComposerEffortLabel("none"), "Off");
-  assert.equal(formatComposerEffortLabel("minimal"), "Min");
+  assert.equal(formatComposerEffortLabel("none"), "None");
+  assert.equal(formatComposerEffortLabel("minimal"), "Minimal");
   assert.equal(formatComposerEffortLabel("medium"), "Medium");
-  assert.equal(formatComposerEffortLabel("xhigh"), "XHigh");
+  assert.equal(formatComposerEffortLabel("xhigh"), "Xhigh");
   assert.equal(reasoningSliderIndex([], "high"), 0);
 });

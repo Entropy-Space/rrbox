@@ -137,7 +137,7 @@ export function createResearchBoxProviderDefinitions(options: {
           supports_tools: model.supports_tools,
           supports_reasoning_effort:
             model.reasoning_efforts.length > 0,
-          reasoning_efforts: [...model.reasoning_efforts],
+          reasoning_efforts: model.reasoning_efforts.map((option) => ({ ...option })),
           input: ["text"],
           cost: {
             input: 0,

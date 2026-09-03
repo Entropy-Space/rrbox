@@ -1,8 +1,10 @@
 import { streamCompatibleModel } from "./ai-sdk-stream.ts";
 import {
+  parseModelReasoningEfforts,
+  parseModelRequest,
   type ModelCatalogTransport,
   type ModelDescriptor,
-  type ModelReasoningEffort,
+  type ModelReasoningEffortOption,
   type ModelRequest,
   type ModelStreamEvent,
 } from "./model-transport.ts";
@@ -123,6 +125,7 @@ export class OpenAiCompatibleModelTransport
     signal: AbortSignal,
   ): AsyncIterable<ModelStreamEvent> {
     signal.throwIfAborted();
+    request = parseModelRequest(request);
     if (request.provider_id !== this.providerId) {
       throw new Error(
         `Provider ${request.provider_id} cannot be handled by ${this.providerId}.`,
@@ -198,30 +201,16 @@ function parseCatalogEntry(
 function parseRouterReasoningEfforts(
   capabilities: Record<string, unknown> | undefined,
   supportsReasoning: boolean,
-): ModelReasoningEffort[] {
+): ModelReasoningEffortOption[] {
   const configured = capabilities?.reasoning_efforts;
   if (configured !== undefined) {
-    if (!Array.isArray(configured)) {
-      throw new Error("capabilities.reasoning_efforts must be an array.");
-    }
-    const efforts = configured.map((effort) => {
-      if (!isModelReasoningEffort(effort)) {
-        throw new Error("Invalid capabilities.reasoning_efforts value.");
-      }
-      return effort;
-    });
-    if (new Set(efforts).size !== efforts.length) {
-      throw new Error("capabilities.reasoning_efforts contains duplicates.");
-    }
+    const efforts = parseModelReasoningEfforts(configured);
     if (!supportsReasoning && efforts.length > 0) {
       throw new Error(
         "A non-reasoning model cannot advertise reasoning efforts.",
       );
     }
     return efforts;
-  }
-  if (capabilities?.reasoning_effort === true) {
-    return ["minimal", "low", "medium", "high", "xhigh"];
   }
   // Reasoning support alone does not imply adjustable effort levels.
   return [];
@@ -232,18 +221,6 @@ function requireUpstreamProviderId(value: unknown): string {
     throw new Error("Invalid upstream_provider_id.");
   }
   return value;
-}
-
-function isModelReasoningEffort(
-  value: unknown,
-): value is ModelReasoningEffort {
-  return value === "none" ||
-    value === "minimal" ||
-    value === "low" ||
-    value === "medium" ||
-    value === "high" ||
-    value === "xhigh" ||
-    value === "max";
 }
 
 async function createHttpError(

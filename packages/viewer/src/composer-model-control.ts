@@ -6,6 +6,7 @@ import type {
 } from "@researchbox/protocol";
 import {
   buildComposerReasoningSuggestions,
+  formatReasoningEffort,
   type ComposerReasoningSuggestion,
 } from "./composer-commands.ts";
 import { modelProviderGroups, modelSelectionPath, selectedProviderGroup, type ModelProviderGroup } from "./model-provider-groups.ts";
@@ -90,19 +91,10 @@ export function quickModelsForProvider(
 
 export function formatComposerEffortLabel(
   effort: ReasoningEffort,
+  options: readonly ComposerReasoningSuggestion[] = [],
 ): string {
-  switch (effort) {
-    case "default":
-      return "Auto";
-    case "none":
-      return "Off";
-    case "minimal":
-      return "Min";
-    case "xhigh":
-      return "XHigh";
-    default:
-      return `${effort.charAt(0).toUpperCase()}${effort.slice(1)}`;
-  }
+  return options.find((option) => option.suggestionId === effort)?.label
+    ?? formatReasoningEffort(effort);
 }
 
 export function reasoningSliderIndex(

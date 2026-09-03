@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { parseModelReasoningEfforts } from "../src/model-transport.ts";
 import { OpenAiCompatibleModelTransport } from "../src/openai-compatible-model-transport.ts";
 
 const modelRequest = {
@@ -54,14 +55,14 @@ test("Tokn discovery preserves upstream identity and exact effort metadata witho
   ] }));
   const models = await transport.listModels(new AbortController().signal);
   assert.equal(models[0].upstream_provider_id, "deepseek");
-  assert.deepEqual(models[0].reasoning_efforts, ["none", "low", "high", "max"]);
+  assert.deepEqual(models[0].reasoning_efforts, parseModelReasoningEfforts(["none", "low", "high", "max"]));
   assert.deepEqual(models[1].reasoning_efforts, []);
   assert.equal(models[1].supports_reasoning, true);
   assert.equal(models[1].supports_reasoning_effort, false);
 });
 
-test("AI SDK serializes exact effort values, including max, and omits Auto", async () => {
-  for (const reasoning_effort of [undefined, "none", "low", "high", "max"]) {
+test("AI SDK serializes opaque effort IDs verbatim and omits Auto", async () => {
+  for (const reasoning_effort of [undefined, "none", "low", "high", "max", "ultra", "vendor:adaptive-v2"]) {
     let body;
     const transport = createTransport(async (_input, init) => {
       body = JSON.parse(init.body);
@@ -70,6 +71,13 @@ test("AI SDK serializes exact effort values, including max, and omits Auto", asy
     await collect(transport, new AbortController().signal, { ...modelRequest, reasoning_effort });
     assert.equal(body.reasoning_effort, reasoning_effort);
     assert.equal(Object.hasOwn(body, "reasoning_effort"), reasoning_effort !== undefined);
+  }
+});
+
+test("the direct compatible transport cannot send the Auto sentinel or malformed IDs", async () => {
+  const transport = createTransport(async () => assert.fail("Invalid effort must not reach fetch."));
+  for (const reasoning_effort of ["default", "", "ultra\n"]) {
+    await assert.rejects(collect(transport, new AbortController().signal, { ...modelRequest, reasoning_effort }));
   }
 });
 
@@ -117,8 +125,8 @@ test("discovers and normalizes OpenAI-compatible models", async () => {
       max_output_tokens: 32_000,
       supports_tools: true,
       supports_reasoning: true,
-      supports_reasoning_effort: true,
-      reasoning_efforts: ["minimal", "low", "medium", "high", "xhigh"],
+      supports_reasoning_effort: false,
+      reasoning_efforts: [],
     },
     {
       provider_id: "local-openai",

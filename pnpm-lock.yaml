@@ -545,6 +545,8 @@ importers:
         specifier: workspace:*
         version: link:../model-transport
 
+  packages/model-capabilities: {}
+
   packages/model-transport:
     dependencies:
       '@ai-sdk/openai-compatible':
@@ -553,6 +555,9 @@ importers:
       '@ai-sdk/provider':
         specifier: 4.0.10
         version: 4.0.10
+      '@researchbox/model-capabilities':
+        specifier: workspace:*
+        version: link:../model-capabilities
       eventsource-parser:
         specifier: 3.1.1
         version: 3.1.1
@@ -563,7 +568,11 @@ importers:
         specifier: workspace:*
         version: link:../protocol
 
-  packages/protocol: {}
+  packages/protocol:
+    dependencies:
+      '@researchbox/model-capabilities':
+        specifier: workspace:*
+        version: link:../model-capabilities
 
   packages/provider-native:
     dependencies:

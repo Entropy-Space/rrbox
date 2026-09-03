@@ -1,4 +1,7 @@
-import type { ModelDescriptor } from "@researchbox/model-transport";
+import {
+  parseModelReasoningEfforts,
+  type ModelDescriptor,
+} from "@researchbox/model-transport";
 import type {
   ModelSelection,
   ModelSummary,
@@ -434,7 +437,7 @@ function providerSummary(provider: ProviderState): ProviderSummary {
         }),
         display_name: model.name,
         availability,
-        reasoning_efforts: [...model.reasoning_efforts],
+        reasoning_efforts: model.reasoning_efforts.map((option) => ({ ...option })),
         ...(status_message === undefined ? {} : { status_message }),
       }))
       .sort((left, right) => left.display_name.localeCompare(right.display_name)),
@@ -494,7 +497,7 @@ function cloneRegisteredModel(model: RegisteredModel): RegisteredModel {
     ...model,
     model: {
       ...model.model,
-      reasoning_efforts: [...model.model.reasoning_efforts],
+      reasoning_efforts: model.model.reasoning_efforts.map((option) => ({ ...option })),
     },
   };
 }
@@ -502,11 +505,9 @@ function cloneRegisteredModel(model: RegisteredModel): RegisteredModel {
 function modelFromDescriptor(
   descriptor: ModelDescriptor,
 ): ProviderCatalogModel {
-  const reasoningEfforts = descriptor.reasoning_efforts
-    ? [...descriptor.reasoning_efforts]
-    : descriptor.supports_reasoning_effort === true
-      ? (["minimal", "low", "medium", "high", "xhigh"] as const)
-      : [];
+  const reasoningEfforts = parseModelReasoningEfforts(
+    descriptor.reasoning_efforts === undefined ? [] : descriptor.reasoning_efforts,
+  );
   return {
     id: descriptor.model_id,
     ...(descriptor.upstream_provider_id === undefined ? {} : {
@@ -556,11 +557,9 @@ function unavailableModel(selection: ModelSelection): ProviderCatalogModel {
 function toProviderCatalogModel(
   model: ProviderModelInput,
 ): ProviderCatalogModel {
-  const reasoningEfforts = model.reasoning_efforts
-    ? [...model.reasoning_efforts]
-    : model.supports_reasoning_effort === true
-      ? ["minimal", "low", "medium", "high", "xhigh"] as const
-      : [];
+  const reasoningEfforts = parseModelReasoningEfforts(
+    model.reasoning_efforts === undefined ? [] : model.reasoning_efforts,
+  );
   return {
     ...model,
     supports_reasoning_effort: reasoningEfforts.length > 0,

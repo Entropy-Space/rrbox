@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { parseModelReasoningEfforts } from "@researchbox/protocol";
 import { modelProviderGroups, selectedProviderGroup, providerKindLabel } from "../src/model-provider-groups.ts";
 import { buildComposerModelControlSnapshot, quickModelsForProvider, formatComposerEffortLabel } from "../src/composer-model-control.ts";
 import { buildComposerModelSuggestions } from "../src/composer-commands.ts";
 
 const model = (id, upstream, efforts = []) => ({
   provider_id: "builtin:tokn", model_id: id, display_name: id,
-  upstream_provider_id: upstream, availability: "ready", reasoning_efforts: efforts,
+  upstream_provider_id: upstream, availability: "ready", reasoning_efforts: parseModelReasoningEfforts(efforts),
 });
 const provider = {
   provider_id: "builtin:tokn", display_name: "Tokn · embedded", kind: "tokn",

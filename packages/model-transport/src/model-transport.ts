@@ -1,13 +1,12 @@
-export type ModelToolName = string;
+import {
+  parseModelReasoningEffort,
+  parseModelReasoningEfforts,
+  type ModelReasoningEffort,
+  type ModelReasoningEffortOption,
+} from "@researchbox/model-capabilities";
+export * from "@researchbox/model-capabilities";
 
-export type ModelReasoningEffort =
-  | "none"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh"
-  | "max";
+export type ModelToolName = string;
 
 /** Display identity only; requests retain their configured transport ID. */
 export type UpstreamProvider = {
@@ -82,7 +81,7 @@ export type ModelDescriptor = {
   supports_tools: boolean;
   supports_reasoning: boolean;
   supports_reasoning_effort: boolean;
-  reasoning_efforts: ModelReasoningEffort[];
+  reasoning_efforts: ModelReasoningEffortOption[];
 };
 
 export type ModelStreamEvent =
@@ -162,13 +161,12 @@ export function parseModelRequest(value: unknown): ModelRequest {
 export function parseModelDescriptor(value: unknown): ModelDescriptor {
   if (!isRecord(value)) throw new Error("Model descriptor must be an object.");
 
-  const legacySupportsReasoningEffort =
-    value.supports_reasoning_effort === undefined
-      ? false
-      : requireBoolean(value, "supports_reasoning_effort");
-  const reasoningEfforts = parseReasoningEfforts(
-    value.reasoning_efforts,
-    legacySupportsReasoningEffort,
+  if (value.supports_reasoning_effort !== undefined) {
+    requireBoolean(value, "supports_reasoning_effort");
+  }
+  // A capability flag cannot tell us which provider-specific values are valid.
+  const reasoningEfforts = parseModelReasoningEfforts(
+    value.reasoning_efforts === undefined ? [] : value.reasoning_efforts,
   );
 
   return {
@@ -774,41 +772,7 @@ function parseReasoningEffort(
   value: unknown,
 ): ModelRequest["reasoning_effort"] {
   if (value === undefined) return undefined;
-  if (
-    value !== "none" &&
-    value !== "minimal" &&
-    value !== "low" &&
-    value !== "medium" &&
-    value !== "high" &&
-    value !== "xhigh" &&
-    value !== "max"
-  ) {
-    throw new Error("Invalid reasoning_effort.");
-  }
-  return value;
-}
-
-function parseReasoningEfforts(
-  value: unknown,
-  legacySupportsReasoningEffort: boolean,
-): ModelReasoningEffort[] {
-  if (value === undefined) {
-    return legacySupportsReasoningEffort
-      ? ["minimal", "low", "medium", "high", "xhigh"]
-      : [];
-  }
-  if (!Array.isArray(value)) {
-    throw new Error("reasoning_efforts must be an array.");
-  }
-  const efforts = value.map((effort) => {
-    const parsed = parseReasoningEffort(effort);
-    if (parsed === undefined) throw new Error("Invalid reasoning_efforts.");
-    return parsed;
-  });
-  if (new Set(efforts).size !== efforts.length) {
-    throw new Error("reasoning_efforts must not contain duplicates.");
-  }
-  return efforts;
+  return parseModelReasoningEffort(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

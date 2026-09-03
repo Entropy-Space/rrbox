@@ -13,6 +13,16 @@ import {
 const TIMESTAMP = "2026-07-22T00:00:00.000Z";
 const TIMESTAMP_MS = Date.parse(TIMESTAMP);
 
+test("opaque effort selections survive serialized project and session reloads", () => {
+  const draft = createState(1);
+  draft.projects[0].new_chat_reasoning_effort = "ultra";
+  draft.sessions[0].reasoning_effort = "vendor:adaptive-v2";
+  const result = parseProjectStoreStateWithMigration(JSON.parse(JSON.stringify(draft)));
+  assert.equal(result.was_migrated, false);
+  assert.equal(result.state.projects[0].new_chat_reasoning_effort, "ultra");
+  assert.equal(result.state.sessions[0].reasoning_effort, "vendor:adaptive-v2");
+});
+
 test("memory project store clones tree-backed timelines and enforces revisions", async () => {
   const store = new MemoryProjectStore();
   const first = createState(1);

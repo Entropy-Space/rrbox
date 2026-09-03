@@ -1993,7 +1993,12 @@ function localOpenAiProvider() {
         model_id: "gpt-5.4",
         display_name: "GPT-5.4",
         availability: "ready",
-        reasoning_efforts: ["none", "low", "medium", "high"],
+        reasoning_efforts: [
+          { id: "none", display_name: "Off", description: "Disable reasoning for this model." },
+          { id: "low", display_name: "Low" },
+          { id: "medium", display_name: "Medium" },
+          { id: "high", display_name: "High" },
+        ],
       },
     ],
   };

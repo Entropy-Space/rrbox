@@ -36,10 +36,12 @@ import {
   type RuntimeSessionDocument,
   type SessionDocument,
 } from "@researchbox/project-store";
-import type {
-  CoreEvent,
-  ReasoningEffort,
-  SummaryReviewResolution,
+import {
+  parseModelReasoningEfforts,
+  type ModelReasoningEffortOption,
+  type CoreEvent,
+  type ReasoningEffort,
+  type SummaryReviewResolution,
 } from "@researchbox/protocol";
 import { createDshrboxWorkspaceRecoveryBackend } from "./workspace-recovery.ts";
 import { legacyTimelineToDshSeed } from "./legacy-seed.ts";
@@ -423,12 +425,12 @@ class DshrboxSessionRuntime implements SessionRuntimePort {
 
 function createModelCatalog(model: RuntimeModel) {
   const capabilities = model as RuntimeModel & {
-    reasoning_efforts?: ReasoningEffort[];
-    supports_reasoning_effort?: boolean;
+    reasoning_efforts?: ModelReasoningEffortOption[];
     supports_tools?: boolean;
   };
-  const reasoningEfforts = (capabilities.reasoning_efforts ?? [])
-    .filter((effort) => effort !== "default");
+  const reasoningEfforts = parseModelReasoningEfforts(
+    capabilities.reasoning_efforts === undefined ? [] : capabilities.reasoning_efforts,
+  );
   return {
     async listModels(providerId: string) {
       if (providerId !== model.provider) return [];
@@ -441,9 +443,7 @@ function createModelCatalog(model: RuntimeModel) {
         max_output_tokens: model.maxTokens,
         supports_tools: capabilities.supports_tools ?? true,
         supports_reasoning: model.reasoning,
-        supports_reasoning_effort:
-          capabilities.supports_reasoning_effort === true ||
-          reasoningEfforts.length > 0,
+        supports_reasoning_effort: reasoningEfforts.length > 0,
         reasoning_efforts: reasoningEfforts,
       }];
     },

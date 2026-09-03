@@ -1,4 +1,12 @@
-export const PROTOCOL_VERSION = 25 as const;
+import {
+  parseModelReasoningEffort,
+  parseModelReasoningEfforts,
+  type ModelReasoningEffort,
+  type ModelReasoningEffortOption,
+} from "@researchbox/model-capabilities";
+export * from "@researchbox/model-capabilities";
+
+export const PROTOCOL_VERSION = 26 as const;
 
 export const SUMMARY_REVIEW_MAX_SECTIONS = 20;
 export const SUMMARY_REVIEW_MAX_SEARCH_PROVIDERS = 20;
@@ -258,22 +266,14 @@ export type ModelSelection = {
   model_id: string;
 };
 
-export type ModelReasoningEffort =
-  | "none"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh"
-  | "max";
-
+/** "default" is the persisted Auto sentinel; it is omitted from model requests. */
 export type ReasoningEffort = "default" | ModelReasoningEffort;
 
 export type ModelSummary = ModelSelection & {
   upstream_provider_id?: string;
   display_name: string;
   availability: "ready" | "unavailable";
-  reasoning_efforts: ModelReasoningEffort[];
+  reasoning_efforts: ModelReasoningEffortOption[];
   status_message?: string;
 };
 
@@ -1957,38 +1957,7 @@ export function parseModelSelection(value: unknown): ModelSelection {
 }
 
 export function parseReasoningEffort(value: unknown): ReasoningEffort {
-  if (value === "default" || isModelReasoningEffort(value)) return value;
-  throw new Error("Invalid reasoning effort.");
-}
-
-function parseModelReasoningEfforts(
-  value: unknown,
-): ModelReasoningEffort[] {
-  if (!Array.isArray(value)) {
-    throw new Error("reasoning_efforts must be an array.");
-  }
-  const efforts = value.map((effort) => {
-    if (!isModelReasoningEffort(effort)) {
-      throw new Error("Invalid model reasoning effort.");
-    }
-    return effort;
-  });
-  if (new Set(efforts).size !== efforts.length) {
-    throw new Error("Duplicate model reasoning effort.");
-  }
-  return efforts;
-}
-
-function isModelReasoningEffort(
-  value: unknown,
-): value is ModelReasoningEffort {
-  return value === "none" ||
-    value === "minimal" ||
-    value === "low" ||
-    value === "medium" ||
-    value === "high" ||
-    value === "xhigh" ||
-    value === "max";
+  return value === "default" ? value : parseModelReasoningEffort(value);
 }
 
 function parseModelSummary(value: unknown): ModelSummary {

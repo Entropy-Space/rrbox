@@ -58,8 +58,8 @@ export async function* streamCompatibleModel(
         inputSchema: tool.parameters,
       };
     }),
-    // The SDK's generic effort enum omits provider-specific levels such as
-    // DeepSeek's max. Its compatible-provider option preserves the exact value.
+    // Use the compatible-provider string option, not the SDK's generic enum:
+    // the selected model's catalog owns the vocabulary and exact wire ID.
     providerOptions: request.reasoning_effort === undefined ? undefined : {
       rrbox: { reasoningEffort: request.reasoning_effort },
     },

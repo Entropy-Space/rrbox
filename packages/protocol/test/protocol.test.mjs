@@ -9,7 +9,7 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v25 command", () => {
+test("round-trips every protocol-v26 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("bootstrap", {
@@ -1687,7 +1687,12 @@ function createMockProvider() {
         model_id: "researchbox-mock",
         display_name: "rrbox Mock",
         availability: "ready",
-        reasoning_efforts: ["none", "low", "medium", "high"],
+        reasoning_efforts: [
+          { id: "none", display_name: "Off", description: "Disable reasoning for this model." },
+          { id: "low", display_name: "Low" },
+          { id: "medium", display_name: "Medium" },
+          { id: "high", display_name: "High" },
+        ],
       },
     ],
   };

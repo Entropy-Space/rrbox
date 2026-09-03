@@ -19,7 +19,6 @@ import {
   type ModelAssistantContentBlock,
   type ModelConversationMessage,
   type ModelDescriptor,
-  type ModelReasoningEffort,
   type ModelRequest,
   type ModelStreamEvent,
   type ModelTransport,
@@ -491,8 +490,8 @@ function toResolvedModelInfo(
   descriptor: ModelDescriptor,
 ): LlmResolvedModelInfo {
   const efforts = descriptor.reasoning_efforts.map((effort) => ({
-    id: ReasoningEffortId(effort),
-    name: reasoningEffortName(effort),
+    id: ReasoningEffortId(effort.id),
+    name: effort.display_name,
   }));
   return {
     ...toLlmModelInfo(descriptor),
@@ -501,11 +500,6 @@ function toResolvedModelInfo(
       : { context: { contextWindow: descriptor.context_window } }),
     ...(efforts.length === 0 ? {} : { reasoning: { efforts } }),
   };
-}
-
-function reasoningEffortName(effort: ModelReasoningEffort): string {
-  if (effort === "xhigh") return "Extra high";
-  return effort.charAt(0).toUpperCase() + effort.slice(1);
 }
 
 function createAbortError(): DOMException {

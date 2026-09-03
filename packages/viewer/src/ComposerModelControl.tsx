@@ -124,7 +124,7 @@ export function ComposerModelControl({
   const effortProgress = snapshot.effort_options.length <= 1
     ? 0
     : (activeEffortIndex / (snapshot.effort_options.length - 1)) * 100;
-  const triggerEffortLabel = formatComposerEffortLabel(effort);
+  const triggerEffortLabel = formatComposerEffortLabel(effort, snapshot.effort_options);
 
   const closeAndRestoreFocus = useCallback(() => {
     setIsOpen(false);
@@ -410,7 +410,7 @@ export function ComposerModelControl({
                         <option
                           key={option.suggestionId}
                           value={index}
-                          label={formatComposerEffortLabel(option.suggestionId)}
+                          label={option.label}
                         />
                       ))}
                     </datalist>
@@ -430,7 +430,7 @@ export function ComposerModelControl({
                           }
                           key={option.suggestionId}
                         >
-                          {formatComposerEffortLabel(option.suggestionId)}
+                          {option.label}
                         </span>
                       ))}
                     </div>
@@ -678,7 +678,7 @@ export function ComposerModelControl({
                       >
                         <span>
                           <strong>
-                            {formatComposerEffortLabel(option.suggestionId)}
+                            {option.label}
                           </strong>
                           <small>{option.description}</small>
                         </span>

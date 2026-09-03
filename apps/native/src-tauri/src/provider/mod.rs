@@ -1,6 +1,7 @@
 mod commands;
 mod embedded_tokn;
 mod protocol;
+mod reasoning;
 mod service;
 mod settings;
 

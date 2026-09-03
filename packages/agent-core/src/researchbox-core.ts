@@ -648,6 +648,18 @@ export class ResearchBoxCore {
         );
         return;
       }
+      // Recheck saved selections against the current catalog before sending:
+      // a refresh or reopening the app may have removed a formerly valid ID.
+      if (!this.modelSupportsReasoningEffort(activeModel, this.getActiveReasoningEffort())) {
+        this.emitError(
+          "reasoning_effort_unavailable",
+          "The selected reasoning effort is no longer available. Choose Auto or another advertised effort.",
+          command.request_id,
+          command.payload.project_id,
+          command.payload.session_id ?? undefined,
+        );
+        return;
+      }
       const registeredModel = this.requireActiveModel();
       if (
         this.runtime &&
@@ -1587,7 +1599,7 @@ export class ResearchBoxCore {
     if (effort === "default") return true;
     return this.providerCatalog
       .getModel(selection)
-      ?.reasoning_efforts.includes(effort) === true;
+      ?.reasoning_efforts.some((option) => option.id === effort) === true;
   }
 
   private isModelReady(selection: ModelSelection): boolean {

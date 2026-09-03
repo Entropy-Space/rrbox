@@ -192,7 +192,7 @@ test("keeps package boundaries explicit", async () => {
   assert.match(core, /ProjectStore/);
   assert.match(core, /WorkspaceBackend/);
   assert.doesNotMatch(core, /new PiSessionRuntime/);
-  assert.match(protocol, /PROTOCOL_VERSION = 25/);
+  assert.match(protocol, /PROTOCOL_VERSION = 26/);
 
   await assert.rejects(
     access(new URL("../.openai/hosting.json", import.meta.url)),

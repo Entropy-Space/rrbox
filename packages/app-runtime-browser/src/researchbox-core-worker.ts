@@ -122,7 +122,10 @@ export function createResearchBoxProviderDefinitions(options: {
       providers.push({
         provider_id: provider.provider_id,
         display_name: provider.display_name,
-        kind: "openai_compatible",
+        kind: provider.backend === "tokn" ? "tokn" : "openai_compatible",
+        ...(provider.upstream_providers === undefined ? {} : {
+          upstream_providers: provider.upstream_providers,
+        }),
         discover_models: true,
         models: provider.manual_models.map((model) => ({
           id: model.model_id,

@@ -3,6 +3,7 @@ import type {
   ProviderSummary,
   ReasoningEffort,
 } from "@researchbox/protocol";
+import { modelProviderGroups } from "./model-provider-groups.ts";
 
 export type ComposerCommandId = "model" | "reasoning";
 
@@ -77,7 +78,7 @@ export function buildComposerModelSuggestions(
   query: string,
 ): ComposerModelSuggestion[] {
   const normalizedQuery = query.trim().toLocaleLowerCase();
-  return providers.flatMap((provider) => {
+  return modelProviderGroups(providers).flatMap((provider) => {
     if (provider.availability !== "ready") return [];
     return provider.models.flatMap((model) => {
       if (model.availability !== "ready") return [];
@@ -156,7 +157,7 @@ function reasoningSuggestion(
       return {
         suggestionId: effort,
         title: "Disable reasoning",
-        description: "Send an explicit none reasoning effort.",
+        description: "Turn off reasoning for this model.",
       };
     case "minimal":
       return {
@@ -186,7 +187,13 @@ function reasoningSuggestion(
       return {
         suggestionId: effort,
         title: "Extra-high reasoning",
-        description: "Use the model's largest advertised reasoning effort.",
+        description: "Use extra-high reasoning effort.",
+      };
+    case "max":
+      return {
+        suggestionId: effort,
+        title: "Maximum reasoning",
+        description: "Use the model's maximum reasoning effort.",
       };
   }
 }

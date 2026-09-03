@@ -58,7 +58,11 @@ export async function* streamCompatibleModel(
         inputSchema: tool.parameters,
       };
     }),
-    reasoning: request.reasoning_effort,
+    // The SDK's generic effort enum omits provider-specific levels such as
+    // DeepSeek's max. Its compatible-provider option preserves the exact value.
+    providerOptions: request.reasoning_effort === undefined ? undefined : {
+      rrbox: { reasoningEffort: request.reasoning_effort },
+    },
     abortSignal: signal,
     includeRawChunks: true,
   });

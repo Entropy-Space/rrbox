@@ -129,3 +129,14 @@ test("omits disabled provider settings from the agent catalog", () => {
     ["researchbox"],
   );
 });
+
+test("embedded Tokn carries configured upstreams into catalog definitions", () => {
+  const upstream_providers = [{ provider_id: "deepseek", display_name: "DeepSeek" }];
+  const definitions = createResearchBoxProviderDefinitions({ providers: [{
+    backend: "tokn", provider_id: "builtin:tokn", display_name: "Tokn · embedded",
+    preset_id: "custom", base_url: "", enabled: true, manual_models: [],
+    send_reasoning_content: true, send_session_affinity_headers: true, upstream_providers,
+  }] });
+  assert.equal(definitions[1].kind, "tokn");
+  assert.deepEqual(definitions[1].upstream_providers, upstream_providers);
+});

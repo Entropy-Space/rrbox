@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 24 as const;
+export const PROTOCOL_VERSION = 25 as const;
 
 export const SUMMARY_REVIEW_MAX_SECTIONS = 20;
 export const SUMMARY_REVIEW_MAX_SEARCH_PROVIDERS = 20;
@@ -264,11 +264,13 @@ export type ModelReasoningEffort =
   | "low"
   | "medium"
   | "high"
-  | "xhigh";
+  | "xhigh"
+  | "max";
 
 export type ReasoningEffort = "default" | ModelReasoningEffort;
 
 export type ModelSummary = ModelSelection & {
+  upstream_provider_id?: string;
   display_name: string;
   availability: "ready" | "unavailable";
   reasoning_efforts: ModelReasoningEffort[];
@@ -278,7 +280,8 @@ export type ModelSummary = ModelSelection & {
 export type ProviderSummary = {
   provider_id: string;
   display_name: string;
-  kind: "mock" | "openai_compatible";
+  kind: "mock" | "openai_compatible" | "tokn";
+  upstream_providers?: { provider_id: string; display_name: string }[];
   availability: "loading" | "ready" | "unavailable";
   status_message?: string;
   models: ModelSummary[];
@@ -1984,7 +1987,8 @@ function isModelReasoningEffort(
     value === "low" ||
     value === "medium" ||
     value === "high" ||
-    value === "xhigh";
+    value === "xhigh" ||
+    value === "max";
 }
 
 function parseModelSummary(value: unknown): ModelSummary {
@@ -1997,6 +2001,9 @@ function parseModelSummary(value: unknown): ModelSummary {
   const statusMessage = optionalString(value, "status_message", true);
   return {
     ...selection,
+    ...(value.upstream_provider_id === undefined ? {} : {
+      upstream_provider_id: requireString(value, "upstream_provider_id"),
+    }),
     display_name: requireString(value, "display_name"),
     availability,
     reasoning_efforts: parseModelReasoningEfforts(value.reasoning_efforts),
@@ -2008,7 +2015,7 @@ function parseProviderSummary(value: unknown): ProviderSummary {
   if (!isRecord(value)) throw new Error("Provider summary must be an object.");
   const kind = value.kind;
   const availability = value.availability;
-  if (kind !== "mock" && kind !== "openai_compatible") {
+  if (kind !== "mock" && kind !== "openai_compatible" && kind !== "tokn") {
     throw new Error("Invalid provider kind.");
   }
   if (
@@ -2021,6 +2028,17 @@ function parseProviderSummary(value: unknown): ProviderSummary {
   const providerId = requireString(value, "provider_id");
   const statusMessage = optionalString(value, "status_message", true);
   const models = requireArray(value, "models").map(parseModelSummary);
+  const upstreamProviders = value.upstream_providers === undefined ? undefined
+    : requireArray(value, "upstream_providers").map((entry) => {
+      if (!isRecord(entry)) throw new Error("Invalid upstream provider.");
+      return {
+        provider_id: requireString(entry, "provider_id"),
+        display_name: requireString(entry, "display_name"),
+      };
+    });
+  if (upstreamProviders && new Set(upstreamProviders.map((provider) => provider.provider_id)).size !== upstreamProviders.length) {
+    throw new Error("Duplicate upstream provider.");
+  }
   const modelIds = new Set<string>();
   for (const model of models) {
     if (model.provider_id !== providerId) {
@@ -2033,6 +2051,7 @@ function parseProviderSummary(value: unknown): ProviderSummary {
     provider_id: providerId,
     display_name: requireString(value, "display_name"),
     kind,
+    ...(upstreamProviders === undefined ? {} : { upstream_providers: upstreamProviders }),
     availability,
     ...(statusMessage === undefined ? {} : { status_message: statusMessage }),
     models,

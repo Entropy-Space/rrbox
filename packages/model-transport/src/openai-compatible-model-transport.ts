@@ -174,6 +174,9 @@ function parseCatalogEntry(
 
   return {
     provider_id: providerId,
+    ...(metadata?.upstream_provider_id === undefined ? {} : {
+      upstream_provider_id: requireUpstreamProviderId(metadata.upstream_provider_id),
+    }),
     provider_display_name: providerDisplayName,
     model_id: modelId,
     display_name:
@@ -220,7 +223,15 @@ function parseRouterReasoningEfforts(
   if (capabilities?.reasoning_effort === true) {
     return ["minimal", "low", "medium", "high", "xhigh"];
   }
-  return supportsReasoning ? ["none", "low", "medium", "high"] : [];
+  // Reasoning support alone does not imply adjustable effort levels.
+  return [];
+}
+
+function requireUpstreamProviderId(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error("Invalid upstream_provider_id.");
+  }
+  return value;
 }
 
 function isModelReasoningEffort(
@@ -231,7 +242,8 @@ function isModelReasoningEffort(
     value === "low" ||
     value === "medium" ||
     value === "high" ||
-    value === "xhigh";
+    value === "xhigh" ||
+    value === "max";
 }
 
 async function createHttpError(

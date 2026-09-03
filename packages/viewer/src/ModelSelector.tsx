@@ -19,6 +19,7 @@ import {
   useState,
 } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import { modelProviderGroups, modelSelectionPath, providerKindLabel, selectedProviderGroup } from "./model-provider-groups.ts";
 
 export type ModelSelectorProps = {
   providers: ProviderSummary[];
@@ -31,10 +32,6 @@ export type ModelSelectorProps = {
 };
 
 const emptyRefreshingProviderIds = new Set<string>();
-
-function providerKindLabel(provider: ProviderSummary) {
-  return provider.kind === "mock" ? "Built in" : "OpenAI compatible";
-}
 
 function providerStatusLabel(provider: ProviderSummary) {
   if (provider.status_message) return provider.status_message;
@@ -60,9 +57,8 @@ export function ModelSelector({
   const popoverId = useId();
   const headingId = useId();
 
-  const selectedProvider = providers.find(
-    (provider) => provider.provider_id === selection.provider_id,
-  );
+  const providerGroups = useMemo(() => modelProviderGroups(providers), [providers]);
+  const selectedProvider = selectedProviderGroup(providerGroups, selection);
   const selectedModel = selectedProvider?.models.find(
     (model) => model.model_id === selection.model_id,
   );
@@ -114,9 +110,7 @@ export function ModelSelector({
     ? catalogIsLoading
       ? "Discovering models"
       : "Select a model"
-    : `${selectedProvider?.provider_id ?? selection.provider_id}/${
-        selectedModel?.model_id ?? selection.model_id
-      }`;
+    : modelSelectionPath(selectedProvider, selection);
 
   const availableModelKeys = useMemo(
     () =>
@@ -302,7 +296,7 @@ export function ModelSelector({
           </div>
 
           <div className="model-selector-provider-list">
-            {providers.map((provider) => {
+            {providerGroups.map((provider) => {
               const isRefreshPending = refreshingProviderIds.has(
                 provider.provider_id,
               );
@@ -315,7 +309,7 @@ export function ModelSelector({
               return (
                 <section
                   className="model-selector-provider-section"
-                  key={provider.provider_id}
+                  key={provider.group_id}
                   aria-label={provider.display_name}
                 >
                   <div className="model-selector-provider-heading">
@@ -327,7 +321,7 @@ export function ModelSelector({
                       <strong>{provider.display_name}</strong>
                       <small>{providerKindLabel(provider)}</small>
                     </span>
-                    {provider.kind === "openai_compatible" && (
+                    {provider.kind !== "mock" && (
                       <button
                         className="model-selector-refresh"
                         type="button"

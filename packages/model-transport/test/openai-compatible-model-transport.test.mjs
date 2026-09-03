@@ -44,6 +44,35 @@ const modelRequest = {
   ],
 };
 
+test("Tokn discovery preserves upstream identity and exact effort metadata without guessing", async () => {
+  const transport = createTransport(async () => Response.json({ data: [
+    { id: "deepseek/deepseek-v4-flash", x_tokn_router: {
+      name: "DeepSeek V4 Flash", upstream_provider_id: "deepseek",
+      capabilities: { reasoning: true, reasoning_efforts: ["none", "low", "high", "max"] },
+    } },
+    { id: "reasoning-with-unknown-controls", x_tokn_router: { capabilities: { reasoning: true } } },
+  ] }));
+  const models = await transport.listModels(new AbortController().signal);
+  assert.equal(models[0].upstream_provider_id, "deepseek");
+  assert.deepEqual(models[0].reasoning_efforts, ["none", "low", "high", "max"]);
+  assert.deepEqual(models[1].reasoning_efforts, []);
+  assert.equal(models[1].supports_reasoning, true);
+  assert.equal(models[1].supports_reasoning_effort, false);
+});
+
+test("AI SDK serializes exact effort values, including max, and omits Auto", async () => {
+  for (const reasoning_effort of [undefined, "none", "low", "high", "max"]) {
+    let body;
+    const transport = createTransport(async (_input, init) => {
+      body = JSON.parse(init.body);
+      return sseResponse(["data: [DONE]\n\n"]);
+    });
+    await collect(transport, new AbortController().signal, { ...modelRequest, reasoning_effort });
+    assert.equal(body.reasoning_effort, reasoning_effort);
+    assert.equal(Object.hasOwn(body, "reasoning_effort"), reasoning_effort !== undefined);
+  }
+});
+
 test("discovers and normalizes OpenAI-compatible models", async () => {
   let callCount = 0;
   const controller = new AbortController();

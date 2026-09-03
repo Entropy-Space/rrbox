@@ -42,6 +42,7 @@ test("runs new browser sessions through DSH with selected reasoning effort", asy
               name: "DeepSeek V4 Flash",
               capabilities: {
                 reasoning: true,
+                reasoning_efforts: ["none", "low", "high", "max"],
                 toolcall: true,
               },
               limit: {
@@ -136,11 +137,11 @@ test("runs new browser sessions through DSH with selected reasoning effort", asy
     const effortSelect = createCommand("reasoning_effort_select", {
       project_id: initialState.active_project_id,
       session_id: null,
-      reasoning_effort: "high",
+      reasoning_effort: "max",
     });
     coreTransport.send(effortSelect);
     const selectedState = await waitForState(events, effortSelect.request_id);
-    assert.equal(selectedState.active_reasoning_effort, "high");
+    assert.equal(selectedState.active_reasoning_effort, "max");
 
     const prompt = createCommand("prompt", {
       project_id: initialState.active_project_id,
@@ -152,7 +153,7 @@ test("runs new browser sessions through DSH with selected reasoning effort", asy
     const promptedState = await waitForState(events, prompt.request_id);
 
     assert.equal(chatRequests[0].model, "deepseek-v4-flash");
-    assert.equal(chatRequests[0].reasoning_effort, "high");
+    assert.equal(chatRequests[0].reasoning_effort, "max");
 
     const activeSessionId = promptedState.active_session_id;
     assert.ok(activeSessionId);

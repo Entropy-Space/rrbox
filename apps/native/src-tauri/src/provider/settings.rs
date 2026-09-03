@@ -63,9 +63,17 @@ pub struct ProviderConfigurationInput {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct UpstreamProvider {
+  pub provider_id: String,
+  pub display_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ProviderPublicConfiguration {
   #[serde(skip_serializing_if = "Option::is_none")]
   pub backend: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub upstream_providers: Option<Vec<UpstreamProvider>>,
   pub provider_id: String,
   pub display_name: String,
   pub preset_id: String,
@@ -365,7 +373,7 @@ fn validate_model(model: &mut ProviderModelConfiguration) -> Result<(), Provider
   for effort in &model.reasoning_efforts {
     if !matches!(
       effort.as_str(),
-      "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
+      "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
     ) {
       return Err(ProviderSettingsError::Invalid(
         "Invalid provider model reasoning effort.".into(),
@@ -444,6 +452,7 @@ fn snapshot(document: &ProviderSettingsDocument) -> ProviderSettingsSnapshot {
       .providers
       .iter()
       .map(|provider| ProviderPublicConfiguration {
+        upstream_providers: None,
         backend: None,
         provider_id: provider.provider_id.clone(),
         display_name: provider.display_name.clone(),

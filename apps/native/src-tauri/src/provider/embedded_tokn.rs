@@ -10,8 +10,10 @@ use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 use tokn_sdk::Client;
 
-use super::settings::{ProviderConfiguration, ProviderPublicConfiguration};
+use super::settings::{ProviderConfiguration, ProviderPublicConfiguration, UpstreamProvider};
 
+#[path = "tokn_models.rs"]
+mod catalog;
 #[path = "tokn_setup.rs"]
 mod setup;
 pub use setup::{ToknAccountSummary, ToknConnectInput, ToknSetupProvider};
@@ -147,8 +149,22 @@ impl EmbeddedTokn {
 
   pub fn public_provider(&self) -> Result<ProviderPublicConfiguration, String> {
     let provider = self.provider()?;
+    let upstream_providers = self
+      .snapshot()?
+      .accounts
+      .into_iter()
+      .filter(|account| account.enabled)
+      .map(|account| (account.provider_id, account.display_name))
+      .collect::<BTreeMap<_, _>>()
+      .into_iter()
+      .map(|(provider_id, display_name)| UpstreamProvider {
+        provider_id,
+        display_name,
+      })
+      .collect();
     Ok(ProviderPublicConfiguration {
       backend: Some("tokn".into()),
+      upstream_providers: Some(upstream_providers),
       provider_id: provider.provider_id,
       display_name: provider.display_name,
       preset_id: provider.preset_id,
@@ -244,11 +260,7 @@ impl EmbeddedTokn {
     if !snapshot.enabled {
       return Err("Embedded tokn is disabled.".into());
     }
-    Ok(
-      serde_json::json!({"object": "list", "data": snapshot.model_ids.iter().map(|id|
-      serde_json::json!({"id": id, "object": "model"})
-    ).collect::<Vec<_>>()}),
-    )
+    Ok(catalog::models(&snapshot))
   }
 
   fn build_client(&self, document: &Document) -> Result<EmbeddedClient, String> {

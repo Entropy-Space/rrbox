@@ -9,7 +9,7 @@ import {
   parseViewerCommand,
 } from "../src/index.ts";
 
-test("round-trips every protocol-v24 command", () => {
+test("round-trips every protocol-v25 command", () => {
   const commands = [
     createCommand("bootstrap", {}),
     createCommand("bootstrap", {

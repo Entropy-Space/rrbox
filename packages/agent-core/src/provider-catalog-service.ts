@@ -14,6 +14,7 @@ export type ProviderModelCatalog = {
 };
 
 export type ProviderCatalogModel = RuntimeModel & {
+  upstream_provider_id?: string;
   supports_reasoning_effort: boolean;
   reasoning_efforts: ModelSummary["reasoning_efforts"];
 };
@@ -25,6 +26,7 @@ export type ProviderModelInput = RuntimeModel & {
 };
 
 export type ModelProviderDefinition = {
+  upstream_providers?: ProviderSummary["upstream_providers"];
   provider_id: string;
   display_name: string;
   kind: ProviderSummary["kind"];
@@ -51,6 +53,7 @@ type RegisteredModel = {
 };
 
 type ProviderState = {
+  upstream_providers?: ProviderSummary["upstream_providers"];
   provider_id: string;
   display_name: string;
   kind: ProviderSummary["kind"];
@@ -258,6 +261,9 @@ export class ProviderCatalogService {
         provider_id: definition.provider_id,
         display_name: definition.display_name,
         kind: definition.kind,
+        ...(definition.upstream_providers === undefined ? {} : {
+          upstream_providers: definition.upstream_providers.map((provider) => ({ ...provider })),
+        }),
         availability:
           definition.discover_models && configuredModels.size === 0
             ? "loading"
@@ -412,6 +418,9 @@ function providerSummary(provider: ProviderState): ProviderSummary {
     provider_id: provider.provider_id,
     display_name: provider.display_name,
     kind: provider.kind,
+    ...(provider.upstream_providers === undefined ? {} : {
+      upstream_providers: provider.upstream_providers.map((upstream) => ({ ...upstream })),
+    }),
     availability: provider.availability,
     ...(provider.status_message === undefined
       ? {}
@@ -420,6 +429,9 @@ function providerSummary(provider: ProviderState): ProviderSummary {
       .map(({ model, availability, status_message }) => ({
         provider_id: provider.provider_id,
         model_id: model.id,
+        ...(model.upstream_provider_id === undefined ? {} : {
+          upstream_provider_id: model.upstream_provider_id,
+        }),
         display_name: model.name,
         availability,
         reasoning_efforts: [...model.reasoning_efforts],
@@ -497,6 +509,9 @@ function modelFromDescriptor(
       : [];
   return {
     id: descriptor.model_id,
+    ...(descriptor.upstream_provider_id === undefined ? {} : {
+      upstream_provider_id: descriptor.upstream_provider_id,
+    }),
     name: descriptor.display_name,
     api: "openai-completions",
     provider: descriptor.provider_id,

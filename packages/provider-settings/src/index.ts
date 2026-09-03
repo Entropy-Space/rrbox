@@ -1,4 +1,4 @@
-import type { ModelReasoningEffort } from "@researchbox/model-transport";
+import { parseUpstreamProviders, type UpstreamProvider, type ModelReasoningEffort } from "@researchbox/model-transport";
 import { EMBEDDED_TOKN_PROVIDER_ID, parseToknSettingsSnapshot, type ToknSettingsAdapter, type ToknSettingsSnapshot } from "./tokn.ts";
 export * from "./tokn.ts";
 
@@ -102,6 +102,7 @@ export type ProviderModelConfiguration = {
 
 export type ProviderStoredConfiguration = {
   backend?: "openai_compatible" | "tokn";
+  upstream_providers?: UpstreamProvider[];
   provider_id: string;
   display_name: string;
   preset_id: ProviderPresetId;
@@ -329,6 +330,9 @@ export function publicProviderRuntimeConfiguration(
 ): ProviderRuntimeConfiguration {
   return {
     ...(provider.backend === undefined ? {} : { backend: provider.backend }),
+    ...(provider.upstream_providers === undefined ? {} : {
+      upstream_providers: structuredClone(provider.upstream_providers),
+    }),
     provider_id: provider.provider_id,
     display_name: provider.display_name,
     preset_id: provider.preset_id,
@@ -482,6 +486,9 @@ function parseProviderStoredConfiguration(
   return {
     provider_id: isTokn ? EMBEDDED_TOKN_PROVIDER_ID : requireProviderId(record.provider_id),
     ...(record.backend === undefined ? {} : { backend: record.backend }),
+    ...(isTokn && record.upstream_providers !== undefined ? {
+      upstream_providers: parseUpstreamProviders(record.upstream_providers),
+    } : {}),
     display_name: displayName,
     preset_id: presetId,
     base_url: isTokn ? "" : normalizeProviderBaseUrl(requireString(record, "base_url")),
@@ -546,7 +553,8 @@ function parseReasoningEffort(value: unknown): ModelReasoningEffort {
     value !== "low" &&
     value !== "medium" &&
     value !== "high" &&
-    value !== "xhigh"
+    value !== "xhigh" &&
+    value !== "max"
   ) {
     throw new Error("Invalid provider model reasoning effort.");
   }

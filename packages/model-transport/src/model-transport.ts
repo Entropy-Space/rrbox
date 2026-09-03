@@ -6,7 +6,29 @@ export type ModelReasoningEffort =
   | "low"
   | "medium"
   | "high"
-  | "xhigh";
+  | "xhigh"
+  | "max";
+
+/** Display identity only; requests retain their configured transport ID. */
+export type UpstreamProvider = {
+  provider_id: string;
+  display_name: string;
+};
+
+export function parseUpstreamProviders(value: unknown): UpstreamProvider[] {
+  if (!Array.isArray(value)) throw new Error("upstream_providers must be an array.");
+  const providers = value.map((entry) => {
+    if (!isRecord(entry)) throw new Error("Invalid upstream provider.");
+    return {
+      provider_id: requireIdentifier(entry, "provider_id"),
+      display_name: requireString(entry, "display_name"),
+    };
+  });
+  if (new Set(providers.map((provider) => provider.provider_id)).size !== providers.length) {
+    throw new Error("Duplicate upstream provider.");
+  }
+  return providers;
+}
 
 export type ModelToolCall = {
   tool_call_id: string;
@@ -51,6 +73,7 @@ export type ModelConversationMessage =
 
 export type ModelDescriptor = {
   provider_id: string;
+  upstream_provider_id?: string;
   provider_display_name: string;
   model_id: string;
   display_name: string;
@@ -151,6 +174,9 @@ export function parseModelDescriptor(value: unknown): ModelDescriptor {
   return {
     provider_id: requireIdentifier(value, "provider_id"),
     provider_display_name: requireString(value, "provider_display_name"),
+    ...(value.upstream_provider_id === undefined ? {} : {
+      upstream_provider_id: requireIdentifier(value, "upstream_provider_id"),
+    }),
     model_id: requireIdentifier(value, "model_id"),
     display_name: requireString(value, "display_name"),
     context_window: requireNullablePositiveInteger(value, "context_window"),
@@ -754,7 +780,8 @@ function parseReasoningEffort(
     value !== "low" &&
     value !== "medium" &&
     value !== "high" &&
-    value !== "xhigh"
+    value !== "xhigh" &&
+    value !== "max"
   ) {
     throw new Error("Invalid reasoning_effort.");
   }

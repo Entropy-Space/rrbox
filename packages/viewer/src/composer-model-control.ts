@@ -8,6 +8,7 @@ import {
   buildComposerReasoningSuggestions,
   type ComposerReasoningSuggestion,
 } from "./composer-commands.ts";
+import { modelProviderGroups, modelSelectionPath, selectedProviderGroup, type ModelProviderGroup } from "./model-provider-groups.ts";
 
 export type ComposerModelAvailability =
   | "loading"
@@ -19,7 +20,7 @@ export type ComposerModelControlSnapshot = {
   model_path: string;
   model_status: string;
   model_availability: ComposerModelAvailability;
-  selected_provider?: ProviderSummary;
+  selected_provider?: ModelProviderGroup;
   selected_model?: ModelSummary;
   effort_options: ComposerReasoningSuggestion[];
 };
@@ -29,9 +30,7 @@ export function buildComposerModelControlSnapshot(
   selection: ModelSelection,
   effort: ReasoningEffort,
 ): ComposerModelControlSnapshot {
-  const selectedProvider = providers.find(
-    (provider) => provider.provider_id === selection.provider_id,
-  );
+  const selectedProvider = selectedProviderGroup(modelProviderGroups(providers), selection);
   const selectedModel = selectedProvider?.models.find(
     (model) => model.model_id === selection.model_id,
   );
@@ -65,9 +64,7 @@ export function buildComposerModelControlSnapshot(
     ? catalogIsLoading
       ? "Discovering models"
       : "Select a model"
-    : `${selectedProvider?.provider_id ?? selection.provider_id}/${
-        selectedModel?.model_id ?? selection.model_id
-      }`;
+    : modelSelectionPath(selectedProvider, selection);
 
   return {
     model_path: modelPath,

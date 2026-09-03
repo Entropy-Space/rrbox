@@ -22,6 +22,24 @@ test("default settings preserve the legacy local provider", () => {
   assert.equal(settings.providers[0].base_url, "http://127.0.0.1:4141/v1");
 });
 
+test("manual effort options retain provider labels across save and reload and accept legacy IDs", async () => {
+  const storage = memoryStorage();
+  const adapter = createBrowserProviderSettingsAdapter({ storage });
+  await adapter.save(configuration({ manual_models: [{
+    model_id: "fixture-model", display_name: "Fixture model", context_window: null, max_output_tokens: null,
+    supports_tools: true, supports_reasoning: true,
+    reasoning_efforts: [
+      { id: "ultra", display_name: "Think deeply", description: "Provider-defined budget." },
+      "vendor:adaptive-v2",
+    ],
+  }] }));
+  const snapshot = await createBrowserProviderSettingsAdapter({ storage }).load();
+  assert.deepEqual(snapshot.providers.at(-1).manual_models[0].reasoning_efforts, [
+    { id: "ultra", display_name: "Think deeply", description: "Provider-defined budget." },
+    { id: "vendor:adaptive-v2", display_name: "Vendor:adaptive-v2" },
+  ]);
+});
+
 test("browser settings remain safe to import and render without localStorage", async () => {
   const settings = loadBrowserProviderRuntimeConfigurations();
   assert.equal(settings[0].provider_id, LEGACY_LOCAL_PROVIDER_ID);

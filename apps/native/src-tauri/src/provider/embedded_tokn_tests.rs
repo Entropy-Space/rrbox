@@ -25,6 +25,43 @@ fn unconfigured_provider_does_not_read_gateway_accounts() {
   assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
 }
 
+#[test]
+fn model_metadata_uses_configured_accounts_and_keeps_advanced_aliases() {
+  let root = tempfile::tempdir().unwrap();
+  let engine = EmbeddedTokn::new(root.path().into()).unwrap();
+  engine.state.lock().unwrap().document = Document {
+    enabled: true,
+    credentials_yaml: "version: 1\naccounts:\n  - {id: a, provider: deepseek, api_key: private-key}\n  - {id: b, provider: deepseek, api_key: private-key}\n  - {id: c, provider: zai, enabled: false, api_key: private-key}\n".into(),
+    model_ids: vec!["deepseek/deepseek-v4-flash".into(), "deepseek/custom-model".into(), "zai/glm-5".into(), "my-route".into()],
+    ..Document::default()
+  };
+  let public = serde_json::to_value(engine.public_provider().unwrap()).unwrap();
+  assert_eq!(
+    public["upstream_providers"],
+    serde_json::json!([
+      {"provider_id": "deepseek", "display_name": "DeepSeek"}
+    ])
+  );
+  let models = engine.models().unwrap();
+  assert_eq!(models["data"].as_array().unwrap().len(), 3);
+  let metadata = &models["data"][0]["x_tokn_router"];
+  assert_eq!(metadata["name"], "DeepSeek V4 Flash");
+  assert_eq!(metadata["upstream_provider_id"], "deepseek");
+  assert_eq!(metadata["capabilities"]["reasoning"], true);
+  assert!(metadata["limit"]["context"].as_u64().unwrap() > 0);
+  assert_eq!(
+    models["data"][1]["x_tokn_router"]["upstream_provider_id"],
+    "deepseek"
+  );
+  assert!(
+    models["data"][1]["x_tokn_router"]
+      .get("capabilities")
+      .is_none()
+  );
+  assert_eq!(models["data"][2]["id"], "my-route");
+  assert!(!format!("{public}{models}").contains("private-key"));
+}
+
 #[tokio::test]
 async fn saves_validates_reloads_and_keeps_credentials_private() {
   let root = tempfile::tempdir().unwrap();

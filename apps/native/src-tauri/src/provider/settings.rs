@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+use super::reasoning::{ReasoningEffortOption, deserialize_options, validate_options};
+
 const PROVIDER_SETTINGS_FORMAT_VERSION: u32 = 1;
 const MAX_PROVIDER_ID_BYTES: usize = 128;
 const MAX_DISPLAY_NAME_BYTES: usize = 256;
@@ -27,7 +29,8 @@ pub struct ProviderModelConfiguration {
   pub max_output_tokens: Option<u64>,
   pub supports_tools: bool,
   pub supports_reasoning: bool,
-  pub reasoning_efforts: Vec<String>,
+  #[serde(deserialize_with = "deserialize_options")]
+  pub reasoning_efforts: Vec<ReasoningEffortOption>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,9 +66,17 @@ pub struct ProviderConfigurationInput {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct UpstreamProvider {
+  pub provider_id: String,
+  pub display_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ProviderPublicConfiguration {
   #[serde(skip_serializing_if = "Option::is_none")]
   pub backend: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub upstream_providers: Option<Vec<UpstreamProvider>>,
   pub provider_id: String,
   pub display_name: String,
   pub preset_id: String,
@@ -361,22 +372,7 @@ fn validate_model(model: &mut ProviderModelConfiguration) -> Result<(), Provider
       "Model display_name must contain 1 to 256 bytes.".into(),
     ));
   }
-  let mut efforts = HashSet::new();
-  for effort in &model.reasoning_efforts {
-    if !matches!(
-      effort.as_str(),
-      "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
-    ) {
-      return Err(ProviderSettingsError::Invalid(
-        "Invalid provider model reasoning effort.".into(),
-      ));
-    }
-    if !efforts.insert(effort) {
-      return Err(ProviderSettingsError::Invalid(
-        "Provider model reasoning efforts must be unique.".into(),
-      ));
-    }
-  }
+  validate_options(&model.reasoning_efforts).map_err(ProviderSettingsError::Invalid)?;
   if !model.supports_reasoning && !model.reasoning_efforts.is_empty() {
     return Err(ProviderSettingsError::Invalid(
       "A non-reasoning provider model cannot define reasoning efforts.".into(),
@@ -444,6 +440,7 @@ fn snapshot(document: &ProviderSettingsDocument) -> ProviderSettingsSnapshot {
       .providers
       .iter()
       .map(|provider| ProviderPublicConfiguration {
+        upstream_providers: None,
         backend: None,
         provider_id: provider.provider_id.clone(),
         display_name: provider.display_name.clone(),
@@ -527,7 +524,15 @@ mod tests {
         preset_id: "custom".into(),
         base_url: "https://example.com/v1".into(),
         enabled: true,
-        manual_models: Vec::new(),
+        manual_models: serde_json::from_value(serde_json::json!([{
+          "model_id": "fixture-model", "display_name": "Fixture model",
+          "context_window": null, "max_output_tokens": null,
+          "supports_tools": true, "supports_reasoning": true,
+          "reasoning_efforts": [
+            {"id": "ultra", "display_name": "Think deeply", "description": "Provider-defined budget."},
+            "vendor:adaptive-v2"
+          ]
+        }])).expect("legacy and structured effort options"),
         send_reasoning_content: false,
         send_session_affinity_headers: false,
         api_key: Some("secret".into()),
@@ -548,6 +553,15 @@ mod tests {
     let reloaded =
       ProviderSettingsStore::load(directory.path().into()).expect("reload provider settings");
     let snapshot = reloaded.snapshot().expect("public snapshot");
+    let model = &snapshot
+      .providers
+      .iter()
+      .find(|provider| provider.provider_id == "provider-1")
+      .expect("public provider")
+      .manual_models[0];
+    assert_eq!(model.reasoning_efforts[0].id, "ultra");
+    assert_eq!(model.reasoning_efforts[0].display_name, "Think deeply");
+    assert_eq!(model.reasoning_efforts[1].id, "vendor:adaptive-v2");
     assert!(
       snapshot
         .providers

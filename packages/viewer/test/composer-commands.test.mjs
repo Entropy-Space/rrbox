@@ -55,7 +55,12 @@ test("model suggestions include only ready matches and mark the selection", () =
           model_id: "gpt-5.4",
           display_name: "GPT-5.4",
           availability: "ready",
-          reasoning_efforts: ["none", "low", "medium", "high"],
+          reasoning_efforts: [
+            { id: "none", display_name: "Off", description: "Disable reasoning for this model." },
+            { id: "low", display_name: "Low" },
+            { id: "medium", display_name: "Medium" },
+            { id: "high", display_name: "High" },
+          ],
         },
         {
           provider_id: "openai",
@@ -105,7 +110,12 @@ test("reasoning suggestions follow the active model capability list", () => {
       model_id: "gpt-5.4",
       display_name: "GPT-5.4",
       availability: "ready",
-      reasoning_efforts: ["none", "low", "medium", "high"],
+      reasoning_efforts: [
+        { id: "none", display_name: "Off", description: "Disable reasoning for this model." },
+        { id: "low", display_name: "Low" },
+        { id: "medium", display_name: "Medium" },
+        { id: "high", display_name: "High" },
+      ],
     }],
   }];
   const selection = { provider_id: "openai", model_id: "gpt-5.4" };
@@ -134,9 +144,9 @@ test("reasoning suggestions follow the active model capability list", () => {
     ).map((suggestion) => suggestion.suggestionId),
     ["none"],
   );
-  assert.equal(formatReasoningEffort("default"), "Default");
+  assert.equal(formatReasoningEffort("default"), "Auto");
   assert.equal(formatReasoningEffort("none"), "None");
-  assert.equal(formatReasoningEffort("xhigh"), "XHigh");
+  assert.equal(formatReasoningEffort("xhigh"), "Xhigh");
 });
 
 test("suggestion navigation wraps and recovers from an invalid index", () => {

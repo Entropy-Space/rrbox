@@ -1,4 +1,9 @@
-import type { ModelReasoningEffort } from "@researchbox/model-transport";
+import {
+  parseUpstreamProviders,
+  parseModelReasoningEfforts,
+  type UpstreamProvider,
+  type ModelReasoningEffortOption,
+} from "@researchbox/model-transport";
 import { EMBEDDED_TOKN_PROVIDER_ID, parseToknSettingsSnapshot, type ToknSettingsAdapter, type ToknSettingsSnapshot } from "./tokn.ts";
 export * from "./tokn.ts";
 
@@ -97,11 +102,12 @@ export type ProviderModelConfiguration = {
   max_output_tokens: number | null;
   supports_tools: boolean;
   supports_reasoning: boolean;
-  reasoning_efforts: ModelReasoningEffort[];
+  reasoning_efforts: ModelReasoningEffortOption[];
 };
 
 export type ProviderStoredConfiguration = {
   backend?: "openai_compatible" | "tokn";
+  upstream_providers?: UpstreamProvider[];
   provider_id: string;
   display_name: string;
   preset_id: ProviderPresetId;
@@ -329,6 +335,9 @@ export function publicProviderRuntimeConfiguration(
 ): ProviderRuntimeConfiguration {
   return {
     ...(provider.backend === undefined ? {} : { backend: provider.backend }),
+    ...(provider.upstream_providers === undefined ? {} : {
+      upstream_providers: structuredClone(provider.upstream_providers),
+    }),
     provider_id: provider.provider_id,
     display_name: provider.display_name,
     preset_id: provider.preset_id,
@@ -482,6 +491,9 @@ function parseProviderStoredConfiguration(
   return {
     provider_id: isTokn ? EMBEDDED_TOKN_PROVIDER_ID : requireProviderId(record.provider_id),
     ...(record.backend === undefined ? {} : { backend: record.backend }),
+    ...(isTokn && record.upstream_providers !== undefined ? {
+      upstream_providers: parseUpstreamProviders(record.upstream_providers),
+    } : {}),
     display_name: displayName,
     preset_id: presetId,
     base_url: isTokn ? "" : normalizeProviderBaseUrl(requireString(record, "base_url")),
@@ -514,15 +526,7 @@ function parseProviderModel(value: unknown): ProviderModelConfiguration {
     record,
     "supports_reasoning",
   );
-  if (!Array.isArray(record.reasoning_efforts)) {
-    throw new Error("Provider model reasoning_efforts must be an array.");
-  }
-  const reasoningEfforts = record.reasoning_efforts.map(
-    parseReasoningEffort,
-  );
-  if (new Set(reasoningEfforts).size !== reasoningEfforts.length) {
-    throw new Error("Provider model reasoning efforts must be unique.");
-  }
+  const reasoningEfforts = parseModelReasoningEfforts(record.reasoning_efforts);
   if (!supportsReasoning && reasoningEfforts.length > 0) {
     throw new Error(
       "A non-reasoning provider model cannot define reasoning efforts.",
@@ -537,20 +541,6 @@ function parseProviderModel(value: unknown): ProviderModelConfiguration {
     supports_reasoning: supportsReasoning,
     reasoning_efforts: reasoningEfforts,
   };
-}
-
-function parseReasoningEffort(value: unknown): ModelReasoningEffort {
-  if (
-    value !== "none" &&
-    value !== "minimal" &&
-    value !== "low" &&
-    value !== "medium" &&
-    value !== "high" &&
-    value !== "xhigh"
-  ) {
-    throw new Error("Invalid provider model reasoning effort.");
-  }
-  return value;
 }
 
 function requirePresetId(value: unknown): ProviderPresetId {

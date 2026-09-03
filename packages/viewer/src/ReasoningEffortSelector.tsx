@@ -52,7 +52,7 @@ export function ReasoningEffortSelector({
   const activeOption = options.find((option) => option.isSelected);
   const fallbackTabStop = activeOption?.suggestionId ??
     options[0]?.suggestionId;
-  const activeLabel = formatReasoningEffort(effort);
+  const activeLabel = activeOption?.label ?? formatReasoningEffort(effort);
   const activeDescription = activeOption?.description ??
     "The selected model no longer advertises this reasoning effort.";
 

@@ -224,7 +224,10 @@ test("maps provider-scoped catalog metadata without validating routes", async ()
     supports_tools: true,
     supports_reasoning: true,
     supports_reasoning_effort: true,
-    reasoning_efforts: ["low", "xhigh"],
+    reasoning_efforts: [
+      { id: "low", display_name: "Low" },
+      { id: "xhigh", display_name: "Extra high" },
+    ],
   };
   const catalog = {
     calls: [],

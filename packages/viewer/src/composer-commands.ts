@@ -1,8 +1,10 @@
-import type {
-  ModelSelection,
-  ProviderSummary,
-  ReasoningEffort,
+import {
+  reasoningEffortDisplayName,
+  type ModelSelection,
+  type ProviderSummary,
+  type ReasoningEffort,
 } from "@researchbox/protocol";
+import { modelProviderGroups } from "./model-provider-groups.ts";
 
 export type ComposerCommandId = "model" | "reasoning";
 
@@ -25,6 +27,7 @@ export type ComposerModelSuggestion = {
 
 export type ComposerReasoningSuggestion = {
   suggestionId: ReasoningEffort;
+  label: string;
   title: string;
   description: string;
   isSelected: boolean;
@@ -77,7 +80,7 @@ export function buildComposerModelSuggestions(
   query: string,
 ): ComposerModelSuggestion[] {
   const normalizedQuery = query.trim().toLocaleLowerCase();
-  return providers.flatMap((provider) => {
+  return modelProviderGroups(providers).flatMap((provider) => {
     if (provider.availability !== "ready") return [];
     return provider.models.flatMap((model) => {
       if (model.availability !== "ready") return [];
@@ -116,13 +119,22 @@ export function buildComposerReasoningSuggestions(
   const activeModel = providers
     .find((provider) => provider.provider_id === selection.provider_id)
     ?.models.find((model) => model.model_id === selection.model_id);
-  const availableEfforts: ReasoningEffort[] = [
-    "default",
-    ...(activeModel?.reasoning_efforts ?? []),
+  const availableEfforts: Omit<ComposerReasoningSuggestion, "isSelected">[] = [
+    {
+      suggestionId: "default",
+      label: "Auto",
+      title: "Provider default",
+      description: "Let the selected model choose its reasoning effort.",
+    },
+    ...(activeModel?.reasoning_efforts ?? []).map((option) => ({
+      suggestionId: option.id,
+      label: option.display_name,
+      title: option.display_name,
+      description: option.description ?? `Use ${option.display_name} reasoning effort.`,
+    })),
   ];
   const normalizedQuery = query.trim().toLocaleLowerCase();
   return availableEfforts
-    .map(reasoningSuggestion)
     .filter((suggestion) => {
       if (!normalizedQuery) return true;
       return [
@@ -138,57 +150,7 @@ export function buildComposerReasoningSuggestions(
 }
 
 export function formatReasoningEffort(effort: ReasoningEffort): string {
-  if (effort === "xhigh") return "XHigh";
-  return `${effort.charAt(0).toUpperCase()}${effort.slice(1)}`;
-}
-
-function reasoningSuggestion(
-  effort: ReasoningEffort,
-): Omit<ComposerReasoningSuggestion, "isSelected"> {
-  switch (effort) {
-    case "default":
-      return {
-        suggestionId: effort,
-        title: "Provider default",
-        description: "Let the selected model choose its reasoning effort.",
-      };
-    case "none":
-      return {
-        suggestionId: effort,
-        title: "Disable reasoning",
-        description: "Send an explicit none reasoning effort.",
-      };
-    case "minimal":
-      return {
-        suggestionId: effort,
-        title: "Minimal reasoning",
-        description: "Use the smallest available reasoning budget.",
-      };
-    case "low":
-      return {
-        suggestionId: effort,
-        title: "Low reasoning",
-        description: "Prefer faster responses with less reasoning.",
-      };
-    case "medium":
-      return {
-        suggestionId: effort,
-        title: "Medium reasoning",
-        description: "Balance reasoning depth and response time.",
-      };
-    case "high":
-      return {
-        suggestionId: effort,
-        title: "High reasoning",
-        description: "Spend more time reasoning before responding.",
-      };
-    case "xhigh":
-      return {
-        suggestionId: effort,
-        title: "Extra-high reasoning",
-        description: "Use the model's largest advertised reasoning effort.",
-      };
-  }
+  return effort === "default" ? "Auto" : reasoningEffortDisplayName(effort);
 }
 
 export function moveComposerSuggestion(

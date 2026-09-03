@@ -58,7 +58,11 @@ export async function* streamCompatibleModel(
         inputSchema: tool.parameters,
       };
     }),
-    reasoning: request.reasoning_effort,
+    // Use the compatible-provider string option, not the SDK's generic enum:
+    // the selected model's catalog owns the vocabulary and exact wire ID.
+    providerOptions: request.reasoning_effort === undefined ? undefined : {
+      rrbox: { reasoningEffort: request.reasoning_effort },
+    },
     abortSignal: signal,
     includeRawChunks: true,
   });

@@ -37,7 +37,11 @@ const model = {
   reasoning: true,
   supports_tools: true,
   supports_reasoning_effort: true,
-  reasoning_efforts: ["none", "low", "high"],
+  reasoning_efforts: [
+    { id: "none", display_name: "Off", description: "Disable reasoning for this model." },
+    { id: "low", display_name: "Low" },
+    { id: "high", display_name: "High" },
+  ],
   input: ["text"],
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   contextWindow: 32_000,

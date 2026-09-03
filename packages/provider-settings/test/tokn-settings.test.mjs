@@ -12,6 +12,18 @@ const provider = {
   send_reasoning_content: true, send_session_affinity_headers: true, has_api_key: false,
 };
 
+test("configured upstream identities survive native-to-worker projection without nested secrets", () => {
+  const upstream_providers = [{ provider_id: "deepseek", display_name: "DeepSeek" }];
+  const snapshot = parseProviderSettingsSnapshot({ providers: [{ ...provider,
+    upstream_providers: [{ ...upstream_providers[0], api_key: "private" }],
+  }] });
+  const runtime = parseProviderRuntimeConfiguration(publicProviderRuntimeConfiguration(snapshot.providers[0]));
+  assert.deepEqual(runtime.upstream_providers, upstream_providers);
+  assert.equal(JSON.stringify(runtime).includes("private"), false);
+  assert.throws(() => parseProviderRuntimeConfiguration({ ...provider, upstream_providers: [{ provider_id: "", display_name: "Bad" }] }));
+  assert.throws(() => parseProviderRuntimeConfiguration({ ...provider, upstream_providers: [...upstream_providers, ...upstream_providers] }));
+});
+
 test("embedded backend survives public snapshot and native worker projection without credentials", () => {
   const snapshot = parseProviderSettingsSnapshot({
     providers: [provider], embedded_tokn: {

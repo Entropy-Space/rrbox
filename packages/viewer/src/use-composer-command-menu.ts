@@ -15,7 +15,6 @@ import {
   buildComposerModelSuggestions,
   buildComposerReasoningSuggestions,
   composerCommandQuery,
-  formatReasoningEffort,
   isImeCommitKey,
   matchComposerCommands,
   moveComposerSuggestion,
@@ -195,7 +194,7 @@ export function useComposerCommandMenu({
   const reasoningItems = useMemo<readonly ComposerCommandMenuItem[]>(
     () => reasoningSuggestions.map((suggestion) => ({
       itemId: suggestion.suggestionId,
-      badge: formatReasoningEffort(suggestion.suggestionId),
+      badge: suggestion.label,
       title: suggestion.title,
       description: suggestion.description,
       isCurrent: suggestion.isSelected,

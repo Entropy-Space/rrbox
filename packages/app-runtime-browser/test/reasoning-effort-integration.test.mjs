@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { OpenAiCompatibleModelTransport } from "@researchbox/model-transport";
-import { MemoryProjectStore } from "@researchbox/project-store";
+import { MemoryProjectStore, parseProjectStoreState } from "@researchbox/project-store";
+import { buildComposerModelControlSnapshot, formatComposerEffortLabel } from "../../viewer/src/composer-model-control.ts";
 import { createCommand } from "@researchbox/protocol";
 import {
   attachLlmWorkerHost,
@@ -23,7 +24,13 @@ import {
   MemoryWorkspaceBackend,
 } from "@researchbox/vfs";
 
-test("runs new browser sessions through DSH with selected reasoning effort", async () => {
+test("provider-defined efforts survive discovery, UI, persistence, DSH, and request serialization", async () => {
+  const options = [
+    { id: "ultra", display_name: "Think deeply", description: "A provider-defined budget." },
+    { id: "vendor:adaptive-v2", display_name: "Adaptive" },
+    { id: "high", display_name: "High" },
+  ];
+  let advertisedOptions = options;
   const chatRequests = [];
   const chatHeaders = [];
   const modelTransport = new OpenAiCompatibleModelTransport({
@@ -37,11 +44,12 @@ test("runs new browser sessions through DSH with selected reasoning effort", asy
         return Response.json({
           object: "list",
           data: [{
-            id: "deepseek-v4-flash",
+            id: "fixture-reasoning-model",
             x_tokn_router: {
-              name: "DeepSeek V4 Flash",
+              name: "Fixture reasoning model",
               capabilities: {
                 reasoning: true,
+                reasoning_efforts: advertisedOptions,
                 toolcall: true,
               },
               limit: {
@@ -118,7 +126,7 @@ test("runs new browser sessions through DSH with selected reasoning effort", asy
               provider.provider_id === "local-openai" &&
               provider.availability === "ready" &&
               provider.models.some(
-                (model) => model.model_id === "deepseek-v4-flash",
+                (model) => model.model_id === "fixture-reasoning-model",
               ),
           ),
       ),
@@ -128,7 +136,7 @@ test("runs new browser sessions through DSH with selected reasoning effort", asy
       project_id: initialState.active_project_id,
       session_id: null,
       provider_id: "local-openai",
-      model_id: "deepseek-v4-flash",
+      model_id: "fixture-reasoning-model",
     });
     coreTransport.send(modelSelect);
     await waitForState(events, modelSelect.request_id);
@@ -136,11 +144,26 @@ test("runs new browser sessions through DSH with selected reasoning effort", asy
     const effortSelect = createCommand("reasoning_effort_select", {
       project_id: initialState.active_project_id,
       session_id: null,
-      reasoning_effort: "high",
+      reasoning_effort: "ultra",
     });
     coreTransport.send(effortSelect);
     const selectedState = await waitForState(events, effortSelect.request_id);
-    assert.equal(selectedState.active_reasoning_effort, "high");
+    assert.equal(selectedState.active_reasoning_effort, "ultra");
+    const picker = buildComposerModelControlSnapshot(selectedState.providers, selectedState.active_model, "ultra");
+    assert.deepEqual(picker.effort_options.map((option) => option.suggestionId), ["default", ...options.map((option) => option.id)]);
+    assert.equal(formatComposerEffortLabel("ultra", picker.effort_options), "Think deeply");
+    assert.equal(picker.effort_options[1].description, options[0].description);
+    assert.equal(picker.effort_options[1].isSelected, true);
+
+    // Even familiar levels must be rejected when this model doesn't advertise them.
+    for (const reasoning_effort of ["low", "not-advertised"]) {
+      const invalid = createCommand("reasoning_effort_select", {
+        project_id: initialState.active_project_id, session_id: null, reasoning_effort,
+      });
+      coreTransport.send(invalid);
+      await waitForEvent(events, invalid.request_id, "error");
+      assert.equal(events.find((event) => event.request_id === invalid.request_id && event.type === "error").payload.code, "reasoning_effort_unavailable");
+    }
 
     const prompt = createCommand("prompt", {
       project_id: initialState.active_project_id,
@@ -151,13 +174,16 @@ test("runs new browser sessions through DSH with selected reasoning effort", asy
     await waitForCondition(() => chatRequests.length > 0);
     const promptedState = await waitForState(events, prompt.request_id);
 
-    assert.equal(chatRequests[0].model, "deepseek-v4-flash");
-    assert.equal(chatRequests[0].reasoning_effort, "high");
+    assert.equal(chatRequests[0].model, "fixture-reasoning-model");
+    assert.equal(chatRequests[0].reasoning_effort, "ultra");
 
     const activeSessionId = promptedState.active_session_id;
     assert.ok(activeSessionId);
     const persisted = await projectStore.load();
     assert.equal(persisted.documents[0].runtime_id, "dsh");
+    const reloaded = parseProjectStoreState(JSON.parse(JSON.stringify(persisted)));
+    assert.equal(reloaded.projects[0].new_chat_reasoning_effort, "ultra");
+    assert.equal(reloaded.sessions[0].reasoning_effort, "ultra");
     assert.deepEqual(
       (await sessionBackend.list()).map((header) => String(header.id)),
       [activeSessionId],
@@ -173,6 +199,15 @@ test("runs new browser sessions through DSH with selected reasoning effort", asy
     });
     coreTransport.send(resetEffort);
     await waitForState(events, resetEffort.request_id);
+    const automaticPrompt = createCommand("prompt", {
+      project_id: initialState.active_project_id,
+      session_id: activeSessionId,
+      text: "Use the provider default.",
+    });
+    coreTransport.send(automaticPrompt);
+    await waitForCondition(() => chatRequests.length === 2);
+    await waitForState(events, automaticPrompt.request_id);
+    assert.equal(Object.hasOwn(chatRequests[1], "reasoning_effort"), false);
 
     const commandDraft = createCommand("input_draft_update", {
       project_id: initialState.active_project_id,
@@ -211,14 +246,28 @@ test("runs new browser sessions through DSH with selected reasoning effort", asy
       text: "Think carefully again.",
     });
     coreTransport.send(followUp);
-    await waitForCondition(() => chatRequests.length > 1);
+    await waitForCondition(() => chatRequests.length > 2);
     await waitForState(events, followUp.request_id);
 
-    assert.equal(chatRequests[1].model, "deepseek-v4-flash");
-    assert.equal(chatRequests[1].reasoning_effort, "high");
-    assert.equal(chatHeaders[1].get("session_id"), activeSessionId);
-    assert.equal(chatHeaders[1].get("x-client-request-id"), activeSessionId);
-    assert.equal(chatHeaders[1].get("x-session-affinity"), activeSessionId);
+    assert.equal(chatRequests[2].model, "fixture-reasoning-model");
+    assert.equal(chatRequests[2].reasoning_effort, "high");
+    assert.equal(chatHeaders[2].get("session_id"), activeSessionId);
+    assert.equal(chatHeaders[2].get("x-client-request-id"), activeSessionId);
+    assert.equal(chatHeaders[2].get("x-session-affinity"), activeSessionId);
+
+    advertisedOptions = [];
+    const refresh = createCommand("provider_refresh", { provider_id: "local-openai" });
+    coreTransport.send(refresh);
+    await waitForCondition(() => events.some((event) => event.type === "provider_catalog_snapshot" &&
+      event.payload.providers.some((provider) => provider.provider_id === "local-openai" && provider.availability === "ready" &&
+        provider.models[0]?.reasoning_efforts.length === 0)));
+    const stalePrompt = createCommand("prompt", {
+      project_id: initialState.active_project_id, session_id: activeSessionId, text: "Do not send a stale effort.",
+    });
+    coreTransport.send(stalePrompt);
+    await waitForEvent(events, stalePrompt.request_id, "error");
+    assert.equal(events.find((event) => event.request_id === stalePrompt.request_id && event.type === "error").payload.code, "reasoning_effort_unavailable");
+    assert.equal(chatRequests.length, 3);
     assert.deepEqual(failures, []);
   } finally {
     coreTransport.close();

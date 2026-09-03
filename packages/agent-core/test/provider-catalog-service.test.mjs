@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ProviderCatalogService } from "../src/provider-catalog-service.ts";
+import { parseCoreEvent, PROTOCOL_VERSION } from "../../protocol/src/index.ts";
+import { parseModelDescriptor, parseModelReasoningEfforts } from "../../model-transport/src/model-transport.ts";
 
 const defaultModel = {
   id: "researchbox-mock",
@@ -29,6 +31,33 @@ const providerDefinitions = [
     discover_models: true,
   },
 ];
+
+test("Tokn identity and efforts survive discovery, runtime registration, and the UI protocol", async () => {
+  const upstream_providers = [{ provider_id: "deepseek", display_name: "DeepSeek" }];
+  const catalog = new ProviderCatalogService({
+    model: defaultModel,
+    providers: [{ provider_id: "builtin:tokn", display_name: "Tokn", kind: "tokn", upstream_providers, discover_models: true }],
+    modelCatalog: { async listModels() { return [parseModelDescriptor({
+      ...descriptor("deepseek/deepseek-v4-flash", true), provider_id: "builtin:tokn", upstream_provider_id: "deepseek",
+      supports_reasoning: true, reasoning_efforts: ["none", "low", "high", "max"],
+    })]; } },
+  });
+  assert.deepEqual(provider(catalog, "builtin:tokn").upstream_providers, upstream_providers);
+  await catalog.startRefreshes();
+  const tokn = provider(catalog, "builtin:tokn");
+  const event = {
+    protocol_version: PROTOCOL_VERSION, event_id: "tokn-catalog", type: "provider_catalog_snapshot",
+    payload: catalog.snapshot(),
+  };
+  assert.deepEqual(parseCoreEvent(event), event);
+  const invalid = structuredClone(event);
+  invalid.payload.providers[0].models[0].provider_id = "deepseek";
+  assert.throws(() => parseCoreEvent(invalid), /does not match/);
+  assert.equal(tokn.kind, "tokn");
+  assert.equal(tokn.models[0].upstream_provider_id, "deepseek");
+  assert.deepEqual(tokn.models[0].reasoning_efforts, parseModelReasoningEfforts(["none", "low", "high", "max"]));
+  catalog.close();
+});
 
 test("provider discovery starts independently and coalesces its first refresh", async () => {
   let discoveryCalls = 0;
@@ -64,7 +93,7 @@ test("provider discovery starts independently and coalesces its first refresh", 
   assert.ok(snapshots.at(-1).catalog_revision > snapshots[0].catalog_revision);
 });
 
-test("preserves reasoning-effort support independently from reasoning", async () => {
+test("reasoning flags alone never invent effort choices", async () => {
   const catalog = new ProviderCatalogService({
     model: defaultModel,
     providers: providerDefinitions,
@@ -98,7 +127,8 @@ test("preserves reasoning-effort support independently from reasoning", async ()
   assert.equal(reasoningOnly?.reasoning, true);
   assert.equal(reasoningOnly?.supports_reasoning_effort, false);
   assert.equal(reasoningEffort?.reasoning, true);
-  assert.equal(reasoningEffort?.supports_reasoning_effort, true);
+  assert.equal(reasoningEffort?.supports_reasoning_effort, false);
+  assert.deepEqual(reasoningEffort?.reasoning_efforts, []);
 });
 
 test("keeps manually configured non-tool models unavailable", () => {

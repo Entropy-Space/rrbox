@@ -80,7 +80,10 @@ test("builds independent OpenAI-compatible definitions from provider settings", 
         max_output_tokens: 4_000,
         supports_tools: true,
         supports_reasoning: true,
-        reasoning_efforts: ["low", "high"],
+        reasoning_efforts: [
+          { id: "low", display_name: "Low" },
+          { id: "high", display_name: "High" },
+        ],
       }],
       send_reasoning_content: true,
       send_session_affinity_headers: false,
@@ -102,7 +105,10 @@ test("builds independent OpenAI-compatible definitions from provider settings", 
       reasoning: true,
       supports_tools: true,
       supports_reasoning_effort: true,
-      reasoning_efforts: ["low", "high"],
+      reasoning_efforts: [
+        { id: "low", display_name: "Low" },
+        { id: "high", display_name: "High" },
+      ],
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 32_000,
@@ -128,4 +134,15 @@ test("omits disabled provider settings from the agent catalog", () => {
     providers.map((provider) => provider.provider_id),
     ["researchbox"],
   );
+});
+
+test("embedded Tokn carries configured upstreams into catalog definitions", () => {
+  const upstream_providers = [{ provider_id: "deepseek", display_name: "DeepSeek" }];
+  const definitions = createResearchBoxProviderDefinitions({ providers: [{
+    backend: "tokn", provider_id: "builtin:tokn", display_name: "Tokn · embedded",
+    preset_id: "custom", base_url: "", enabled: true, manual_models: [],
+    send_reasoning_content: true, send_session_affinity_headers: true, upstream_providers,
+  }] });
+  assert.equal(definitions[1].kind, "tokn");
+  assert.deepEqual(definitions[1].upstream_providers, upstream_providers);
 });

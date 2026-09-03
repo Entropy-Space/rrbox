@@ -1,5 +1,6 @@
 import {
   ModelStreamEventSequenceValidator,
+  parseModelRequest,
   type ModelRequest,
   type ModelStreamEvent,
   type ModelTransport,
@@ -18,6 +19,7 @@ export class HttpNdjsonModelTransport implements ModelTransport {
     request: ModelRequest,
     signal: AbortSignal,
   ): AsyncIterable<ModelStreamEvent> {
+    request = parseModelRequest(request);
     const response = await this.fetchRequest(this.endpoint, {
       method: "POST",
       headers: { "content-type": "application/json" },

@@ -31,6 +31,7 @@ import {
   quickModelsForProvider,
   reasoningSliderIndex,
 } from "./composer-model-control.ts";
+import { modelProviderGroups, providerKindLabel } from "./model-provider-groups.ts";
 
 export type ComposerModelControlProps = {
   providers: readonly ProviderSummary[];
@@ -48,10 +49,6 @@ type AdvancedSection = "provider" | "model" | "effort";
 
 const emptyRefreshingProviderIds = new Set<string>();
 const arrowKeys = new Set(["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft"]);
-
-function providerKindLabel(provider: ProviderSummary): string {
-  return provider.kind === "mock" ? "Built in" : "OpenAI compatible";
-}
 
 function providerStatusLabel(provider: ProviderSummary): string | null {
   if (provider.status_message) return provider.status_message;
@@ -95,9 +92,7 @@ export function ComposerModelControl({
   const [view, setView] = useState<MenuView>("quick");
   const [advancedSection, setAdvancedSection] =
     useState<AdvancedSection>("provider");
-  const [browsedProviderId, setBrowsedProviderId] = useState(
-    selection.provider_id,
-  );
+  const [browsedGroupId, setBrowsedGroupId] = useState<string>();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const popoverId = useId();
@@ -108,13 +103,14 @@ export function ComposerModelControl({
     () => buildComposerModelControlSnapshot(providers, selection, effort),
     [effort, providers, selection],
   );
+  const providerGroups = useMemo(() => modelProviderGroups(providers), [providers]);
   const quickModels = useMemo(
     () => quickModelsForProvider(snapshot.selected_provider),
     [snapshot.selected_provider],
   );
-  const browsedProvider = providers.find(
-    (provider) => provider.provider_id === browsedProviderId,
-  ) ?? snapshot.selected_provider ?? providers[0];
+  const browsedProvider = providerGroups.find(
+    (provider) => provider.group_id === browsedGroupId,
+  ) ?? snapshot.selected_provider ?? providerGroups[0];
   const browsedProviderHasSelection =
     browsedProvider?.provider_id === selection.provider_id &&
     browsedProvider.models.some(
@@ -128,7 +124,7 @@ export function ComposerModelControl({
   const effortProgress = snapshot.effort_options.length <= 1
     ? 0
     : (activeEffortIndex / (snapshot.effort_options.length - 1)) * 100;
-  const triggerEffortLabel = formatComposerEffortLabel(effort);
+  const triggerEffortLabel = formatComposerEffortLabel(effort, snapshot.effort_options);
 
   const closeAndRestoreFocus = useCallback(() => {
     setIsOpen(false);
@@ -189,7 +185,7 @@ export function ComposerModelControl({
     }
     setView("quick");
     setAdvancedSection("provider");
-    setBrowsedProviderId(selection.provider_id);
+    setBrowsedGroupId(snapshot.selected_provider?.group_id);
     setIsOpen(true);
   }
 
@@ -307,7 +303,7 @@ export function ComposerModelControl({
                 onClick={() => {
                   setView("advanced");
                   setAdvancedSection("provider");
-                  setBrowsedProviderId(selection.provider_id);
+                  setBrowsedGroupId(snapshot.selected_provider?.group_id);
                 }}
               >
                 Advanced
@@ -414,7 +410,7 @@ export function ComposerModelControl({
                         <option
                           key={option.suggestionId}
                           value={index}
-                          label={formatComposerEffortLabel(option.suggestionId)}
+                          label={option.label}
                         />
                       ))}
                     </datalist>
@@ -434,7 +430,7 @@ export function ComposerModelControl({
                           }
                           key={option.suggestionId}
                         >
-                          {formatComposerEffortLabel(option.suggestionId)}
+                          {option.label}
                         </span>
                       ))}
                     </div>
@@ -488,12 +484,12 @@ export function ComposerModelControl({
               >
                 <div className="composer-model-advanced-heading">
                   <strong>Provider</strong>
-                  <span>{providers.length}</span>
+                  <span>{providerGroups.length}</span>
                 </div>
                 <div className="composer-model-advanced-list">
-                  {providers.map((provider) => {
+                  {providerGroups.map((provider) => {
                     const isBrowsed =
-                      provider.provider_id === browsedProvider?.provider_id;
+                      provider.group_id === browsedProvider?.group_id;
                     const isRefreshing = refreshingProviderIds.has(
                       provider.provider_id,
                     );
@@ -502,7 +498,7 @@ export function ComposerModelControl({
                         className={`composer-provider-row ${
                           isBrowsed ? "selected" : ""
                         }`}
-                        key={provider.provider_id}
+                        key={provider.group_id}
                       >
                         <button
                           className="composer-provider-option"
@@ -510,7 +506,7 @@ export function ComposerModelControl({
                           aria-pressed={isBrowsed}
                           data-model-control-autofocus={isBrowsed}
                           onClick={() => {
-                            setBrowsedProviderId(provider.provider_id);
+                            setBrowsedGroupId(provider.group_id);
                             setAdvancedSection("model");
                           }}
                         >
@@ -526,7 +522,7 @@ export function ComposerModelControl({
                           </span>
                           <ChevronRight size={14} aria-hidden="true" />
                         </button>
-                        {provider.kind === "openai_compatible" && (
+                        {provider.kind !== "mock" && (
                           <button
                             className="composer-provider-refresh"
                             type="button"
@@ -682,7 +678,7 @@ export function ComposerModelControl({
                       >
                         <span>
                           <strong>
-                            {formatComposerEffortLabel(option.suggestionId)}
+                            {option.label}
                           </strong>
                           <small>{option.description}</small>
                         </span>

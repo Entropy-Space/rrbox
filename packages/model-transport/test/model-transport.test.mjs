@@ -19,6 +19,25 @@ const modelRequest = {
   tools: [],
 };
 
+test("the direct NDJSON transport rejects Auto and preserves opaque effort IDs", async () => {
+  const sent = [];
+  const transport = new HttpNdjsonModelTransport("/model", async (_input, init) => {
+    sent.push(JSON.parse(init.body));
+    return new Response('{"type":"done"}\n');
+  });
+  const collect = async (reasoning_effort) => {
+    for await (const event of transport.stream({ ...modelRequest, reasoning_effort }, new AbortController().signal)) {
+      assert.equal(event.type, "done");
+    }
+  };
+  await assert.rejects(collect("default"), /reserved/);
+  assert.equal(sent.length, 0);
+  await collect("ultra");
+  assert.equal(sent[0].reasoning_effort, "ultra");
+  await collect(undefined);
+  assert.equal(Object.hasOwn(sent[1], "reasoning_effort"), false);
+});
+
 test("parses a model request with a serialized conversation and tools", () => {
   const request = parseModelRequest({
     session_id: "session-1",
@@ -61,6 +80,9 @@ test("parses a model request with a serialized conversation and tools", () => {
   assert.equal(request.messages[2]?.role, "tool");
   assert.equal(request.tools[0]?.name, "list_files");
   assert.equal(request.reasoning_effort, "medium");
+  for (const id of ["ultra", "vendor:adaptive-v2", "extreme"]) {
+    assert.equal(parseModelRequest({ ...modelRequest, reasoning_effort: id }).reasoning_effort, id);
+  }
   assert.equal(
     parseModelRequest({ ...modelRequest, reasoning_effort: "none" })
       .reasoning_effort,
@@ -70,9 +92,9 @@ test("parses a model request with a serialized conversation and tools", () => {
     () =>
       parseModelRequest({
         ...modelRequest,
-        reasoning_effort: "extreme",
+        reasoning_effort: "default",
       }),
-    /Invalid reasoning_effort/,
+    /reserved/,
   );
 });
 
@@ -94,14 +116,14 @@ test("model descriptors default reasoning-effort support independently", () => {
       ...descriptor,
       supports_reasoning_effort: true,
     }).reasoning_efforts,
-    ["minimal", "low", "medium", "high", "xhigh"],
+    [],
   );
   assert.deepEqual(
     parseModelDescriptor({
       ...descriptor,
       reasoning_efforts: ["none", "low", "high"],
     }).reasoning_efforts,
-    ["none", "low", "high"],
+    [{ id: "none", display_name: "None" }, { id: "low", display_name: "Low" }, { id: "high", display_name: "High" }],
   );
 });
 

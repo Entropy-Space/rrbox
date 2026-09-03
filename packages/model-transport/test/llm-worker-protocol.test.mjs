@@ -202,7 +202,7 @@ test("rejects malformed nested model events", () => {
 });
 
 test("keeps the LLM protocol version independent and validated", () => {
-  assert.equal(LLM_WORKER_PROTOCOL_VERSION, 6);
+  assert.equal(LLM_WORKER_PROTOCOL_VERSION, 8);
   assert.throws(
     () =>
       parseLlmWorkerCommand({

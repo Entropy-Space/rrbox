@@ -1,4 +1,4 @@
-export const NATIVE_PROVIDER_PROTOCOL_VERSION = 2 as const;
+export const NATIVE_PROVIDER_PROTOCOL_VERSION = 3 as const;
 export const NATIVE_OPENAI_PROVIDER_ID = "local-openai" as const;
 
 export type NativeProviderSessionAffinityHeaderName =

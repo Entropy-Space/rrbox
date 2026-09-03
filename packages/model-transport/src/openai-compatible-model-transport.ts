@@ -203,7 +203,8 @@ function parseRouterReasoningEfforts(
   supportsReasoning: boolean,
 ): ModelReasoningEffortOption[] {
   const configured = capabilities?.reasoning_efforts;
-  if (configured !== undefined) {
+  // Tokn serializes its Rust Option as null when effort support is unknown.
+  if (configured !== undefined && configured !== null) {
     const efforts = parseModelReasoningEfforts(configured);
     if (!supportsReasoning && efforts.length > 0) {
       throw new Error(

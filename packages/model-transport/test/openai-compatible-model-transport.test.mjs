@@ -52,13 +52,18 @@ test("Tokn discovery preserves upstream identity and exact effort metadata witho
       capabilities: { reasoning: true, reasoning_efforts: ["none", "low", "high", "max"] },
     } },
     { id: "reasoning-with-unknown-controls", x_tokn_router: { capabilities: { reasoning: true } } },
+    { id: "reasoning-with-null-controls", x_tokn_router: { capabilities: { reasoning: true, reasoning_efforts: null } } },
   ] }));
   const models = await transport.listModels(new AbortController().signal);
-  assert.equal(models[0].upstream_provider_id, "deepseek");
-  assert.deepEqual(models[0].reasoning_efforts, parseModelReasoningEfforts(["none", "low", "high", "max"]));
-  assert.deepEqual(models[1].reasoning_efforts, []);
-  assert.equal(models[1].supports_reasoning, true);
-  assert.equal(models[1].supports_reasoning_effort, false);
+  const deepseek = models.find((model) => model.model_id === "deepseek/deepseek-v4-flash");
+  assert.equal(deepseek.upstream_provider_id, "deepseek");
+  assert.deepEqual(deepseek.reasoning_efforts, parseModelReasoningEfforts(["none", "low", "high", "max"]));
+  for (const id of ["reasoning-with-null-controls", "reasoning-with-unknown-controls"]) {
+    const model = models.find((candidate) => candidate.model_id === id);
+    assert.deepEqual(model.reasoning_efforts, []);
+    assert.equal(model.supports_reasoning, true);
+    assert.equal(model.supports_reasoning_effort, false);
+  }
 });
 
 test("AI SDK serializes opaque effort IDs verbatim and omits Auto", async () => {

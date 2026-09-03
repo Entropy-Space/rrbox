@@ -48,6 +48,10 @@ fn model_metadata_uses_configured_accounts_and_keeps_advanced_aliases() {
   assert_eq!(metadata["name"], "DeepSeek V4 Flash");
   assert_eq!(metadata["upstream_provider_id"], "deepseek");
   assert_eq!(metadata["capabilities"]["reasoning"], true);
+  assert_eq!(
+    metadata["capabilities"]["reasoning_efforts"],
+    serde_json::json!(["low", "high", "max"])
+  );
   assert!(metadata["limit"]["context"].as_u64().unwrap() > 0);
   assert_eq!(
     models["data"][1]["x_tokn_router"]["upstream_provider_id"],
@@ -150,18 +154,42 @@ async fn executes_in_process_against_a_mock_upstream() {
     }
     let text = String::from_utf8_lossy(&request);
     assert!(text.starts_with("POST /chat/completions "));
-    assert!(text.contains("mock-model"));
-    assert!(!text.contains("llama-cpp/mock-model"));
-    let body = "data: {\"id\":\"mock\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"mock-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"embedded works\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+    let body_start = request
+      .windows(4)
+      .position(|part| part == b"\r\n\r\n")
+      .unwrap()
+      + 4;
+    let request_body: serde_json::Value = serde_json::from_slice(&request[body_start..]).unwrap();
+    assert_eq!(request_body["model"], "deepseek-v4-flash");
+    assert_eq!(request_body["reasoning_effort"], "max");
+    let body = "data: {\"id\":\"mock\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"embedded works\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
     socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
   });
   let root = tempfile::tempdir().unwrap();
   let engine = EmbeddedTokn::new(root.path().into()).unwrap();
-  engine.save(input(&format!("http://{address}"))).unwrap();
+  engine
+    .save(ToknSettingsInput {
+      enabled: true,
+      config_toml: DEFAULT_CONFIG.into(),
+      model_ids: vec!["deepseek/deepseek-v4-flash".into()],
+      credentials_yaml: Some(format!(
+        "version: 1\naccounts:\n  - id: local\n    provider: deepseek\n    base_url: http://{address}\n    api_key: sk-test\n"
+      )),
+    })
+    .unwrap();
   let runtime = engine.client().unwrap();
-  let response = runtime.client.execute(tokn_sdk::Endpoint::ChatCompletions, serde_json::json!({
-    "model": "llama-cpp/mock-model", "messages": [{"role": "user", "content": "hello"}], "stream": true,
-  }), tokn_sdk::RequestOptions::default()).await.unwrap();
+  let response = runtime
+    .client
+    .execute(
+      tokn_sdk::Endpoint::ChatCompletions,
+      serde_json::json!({
+        "model": "deepseek/deepseek-v4-flash", "messages": [{"role": "user", "content": "hello"}],
+        "reasoning_effort": "max", "stream": true,
+      }),
+      tokn_sdk::RequestOptions::default(),
+    )
+    .await
+    .unwrap();
   assert_eq!(response.status, 200);
   let mut stream = response.into_stream().unwrap().into_stream();
   let mut bytes = Vec::new();

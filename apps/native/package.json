@@ -6,8 +6,10 @@
   "scripts": {
     "dev": "vite",
     "dev:ios": "tauri ios dev",
+    "dev:android": "tauri android dev",
     "build": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && vite build",
     "build:ios-sim": "tauri ios build --target aarch64-sim --debug",
+    "build:android-apk": "tauri android build --target aarch64 --debug --apk",
     "preview": "vite preview",
     "tauri": "tauri"
   },

@@ -32,11 +32,13 @@ import {
   reasoningSliderIndex,
 } from "./composer-model-control.ts";
 import { modelProviderGroups, providerKindLabel } from "./model-provider-groups.ts";
+import { ComposerModelPopover } from "./ComposerModelPopover.tsx";
 
 export type ComposerModelControlProps = {
   providers: readonly ProviderSummary[];
   selection: ModelSelection;
   effort: ReasoningEffort;
+  isMobileViewport?: boolean;
   selectionDisabled?: boolean;
   onSelectModel: (providerId: string, modelId: string) => void;
   onSelectEffort: (effort: ReasoningEffort) => void;
@@ -82,6 +84,7 @@ export function ComposerModelControl({
   providers,
   selection,
   effort,
+  isMobileViewport = false,
   selectionDisabled = false,
   onSelectModel,
   onSelectEffort,
@@ -128,11 +131,12 @@ export function ComposerModelControl({
 
   const closeAndRestoreFocus = useCallback(() => {
     setIsOpen(false);
-    requestAnimationFrame(() => triggerRef.current?.focus());
+    requestAnimationFrame(() => triggerRef.current?.focus({ preventScroll: true }));
   }, []);
 
   useEffect(() => {
-    if (!isOpen) return;
+    // The phone dialog owns dismissal and focus trapping in the top layer.
+    if (!isOpen || isMobileViewport) return;
 
     const closeOnOutsidePointer = (event: PointerEvent) => {
       const target = event.target;
@@ -160,7 +164,7 @@ export function ComposerModelControl({
       document.removeEventListener("focusin", closeOnOutsideFocus);
       document.removeEventListener("keydown", closeOnEscape);
     };
-  }, [closeAndRestoreFocus, isOpen]);
+  }, [closeAndRestoreFocus, isMobileViewport, isOpen]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -176,7 +180,7 @@ export function ComposerModelControl({
       target?.focus();
     });
     return () => cancelAnimationFrame(frame);
-  }, [advancedSection, isOpen, view]);
+  }, [advancedSection, isMobileViewport, isOpen, view]);
 
   function toggleMenu() {
     if (isOpen) {
@@ -267,13 +271,14 @@ export function ComposerModelControl({
       </button>
 
       {isOpen && (
-        <div
+        <ComposerModelPopover
+          isMobile={isMobileViewport}
           className={`composer-model-popover ${
             view === "advanced" ? "advanced" : "quick"
           }`}
           id={popoverId}
-          role="dialog"
-          aria-labelledby={headingId}
+          headingId={headingId}
+          onClose={closeAndRestoreFocus}
         >
           <div className="composer-model-popover-header">
             {view === "advanced" ? (
@@ -696,7 +701,7 @@ export function ComposerModelControl({
               </section>
             </div>
           )}
-        </div>
+        </ComposerModelPopover>
       )}
     </div>
   );

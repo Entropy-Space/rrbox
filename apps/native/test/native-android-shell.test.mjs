@@ -24,10 +24,24 @@ test("Android pins a consistent AGP 9.3 and Java-25-compatible Gradle toolchain"
   assert.match(pluginBuild, /com\.android\.tools\.build:gradle:9\.3\.2/u);
   assert.match(wrapper, /gradle-9\.5\.0-bin\.zip/u);
   assert.match(wrapper, /^distributionSha256Sum=[a-f0-9]{64}$/mu);
-  assert.match(properties, /^android\.builtInKotlin=false$/mu);
-  assert.match(properties, /^android\.newDsl=false$/mu);
+  assert.doesNotMatch(properties, /^android\.(builtInKotlin|newDsl)=false$/mu);
+  assert.doesNotMatch(appBuild, /kotlinOptions|org\.jetbrains\.kotlin\.android/u);
+  assert.match(appBuild, /compilerOptions/u);
   assert.match(buildTask, /ExecOperations/u);
   assert.doesNotMatch(buildTask, /project\.exec/u);
+});
+
+test("Android builds Cargo-locked Tauri sources through a local modern-DSL adapter", async () => {
+  const settings = await readAndroid("settings.gradle");
+  const adapter = await readAndroid("tauri-android/build.gradle.kts");
+  assert.match(settings, /apply from: 'tauri\.settings\.gradle'/u);
+  assert.match(settings, /tauriAndroidSourceDir = tauriAndroid\.projectDir/u);
+  assert.match(settings, /tauriAndroid\.projectDir = file\('tauri-android'\)/u);
+  assert.match(adapter, /tauriSourceDir\.resolve\("src\/main\/java"\)/u);
+  assert.match(adapter, /consumerProguardFiles\(tauriSourceDir\.resolve/u);
+  assert.match(adapter, /check\(upstreamBuildHash == "[a-f0-9]{64}"\)/u);
+  assert.match(adapter, /compilerOptions/u);
+  assert.doesNotMatch(adapter, /kotlinOptions|org\.jetbrains\.kotlin\.android/u);
 });
 
 test("Android preserves the package identity and keeps credentials out of backups", async () => {

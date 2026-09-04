@@ -1,3 +1,9 @@
 include ':app'
 
 apply from: 'tauri.settings.gradle'
+
+// Keep Tauri's Cargo-locked source, but build it with our AGP 9-compatible DSL.
+// Never modify the shared Cargo registry checkout.
+def tauriAndroid = project(':tauri-android')
+gradle.ext.tauriAndroidSourceDir = tauriAndroid.projectDir
+tauriAndroid.projectDir = file('tauri-android')

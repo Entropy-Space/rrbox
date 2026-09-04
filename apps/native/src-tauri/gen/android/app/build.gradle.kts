@@ -1,9 +1,9 @@
 import java.util.Properties
 import groovy.json.JsonSlurper
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
   id("com.android.application")
-  id("org.jetbrains.kotlin.android")
   id("rust")
 }
 
@@ -73,11 +73,18 @@ android {
       )
     }
   }
-  kotlinOptions {
-    jvmTarget = "1.8"
+  compileOptions {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
   }
   buildFeatures {
     buildConfig = true
+  }
+}
+
+kotlin {
+  compilerOptions {
+    jvmTarget = JvmTarget.JVM_1_8
   }
 }
 

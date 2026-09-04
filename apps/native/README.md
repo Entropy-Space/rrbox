@@ -173,8 +173,7 @@ and iOS retain `dev.tokn-ai.rrbox`.
 ### Toolchain
 
 - JDK 25, Android Gradle Plugin 9.3.2, and Gradle 9.5.0 (checksum-pinned wrapper).
-- SDK Platform 37 and Build Tools 37.0.0 for the app; SDK Platform 36 for Tauri's
-  Android library, which still sets its own compile SDK.
+- SDK Platform 37 (`platforms;android-37.0`) and Build Tools 37.0.0.
 - NDK 29.0.14206865 and Rust target `aarch64-linux-android`.
 
 Install the SDK packages using Android Studio's SDK Manager or `sdkmanager`,
@@ -189,11 +188,14 @@ export NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865"
 rustup target add aarch64-linux-android
 ```
 
-Tauri's Android library still applies the external Kotlin plugin and legacy
-Android DSL. The project explicitly opts out of AGP 9's built-in Kotlin/new DSL
-until that upstream library migrates. Its Rust build task uses Gradle's injected
-`ExecOperations`, not the removed `Project.exec` API. Do not simply regenerate
-the project and discard these compatibility changes.
+Tauri's upstream Android build script uses Kotlin options removed by the modern
+toolchain. The local `gen/android/tauri-android` build adapter compiles the exact
+Cargo-locked Tauri source and preserves its production dependencies and ProGuard
+rules, without editing the Cargo registry. Both modules use AGP 9's built-in
+Kotlin and modern DSL. A checksum guard requires reviewing the adapter whenever
+the upstream build script changes. The Rust build
+task uses Gradle's injected `ExecOperations`, not the removed `Project.exec`
+API. Do not regenerate the project and discard these compatibility changes.
 
 ### Build and install
 

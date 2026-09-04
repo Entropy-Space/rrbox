@@ -40,7 +40,7 @@ migrated automatically. Browser data at `http://localhost:3000` is separate.
 
 ## Providers
 
-Desktop and iOS share the same AI SDK model adapter. The mock stays in-process;
+Desktop, iOS, and Android share the same AI SDK model adapter. The mock stays in-process;
 custom OpenAI-compatible endpoints use native HTTP; the built-in **Tokn** backend
 calls the pinned Rust `tokn-sdk` directly, without a separate gateway process.
 The typed `MessagePort` broker still permits only model listing and chat
@@ -87,13 +87,13 @@ Each SDK instance receives private app-local config/auth paths. No global tokn
 accounts are automatically imported and no desktop-to-phone sync is performed.
 
 Credentials are currently stored **unencrypted** in private native files, matching
-the existing endpoint storage policy; Keychain integration is not implemented.
+the existing endpoint storage policy; Keychain/Keystore integration is not implemented.
 Saved credentials never return to the WebView. Keep credentials out of routing
 TOML. Account setup uses supplied credentials; interactive OAuth login is not
 implemented in this screen.
 
 Existing custom endpoints remain unchanged, including the legacy
-`http://127.0.0.1:4141/v1` entry. On iPhone, localhost means the phone, not the Mac;
+`http://127.0.0.1:4141/v1` entry. On a phone, localhost means the phone, not the Mac;
 use embedded tokn or a reachable custom endpoint instead.
 
 Run the native app during development from the repository root:
@@ -162,9 +162,98 @@ mobile project template changes, then review the generated diff:
 pnpm --filter @researchbox/native tauri ios init
 ```
 
-The Android project remains uninitialized. Initialize it separately on a
-machine with the Android SDK:
+## Android
+
+The checked-in project at `src-tauri/gen/android` builds the same UI, embedded
+Tokn engine, AI SDK adapter, SQLite storage, and native Python runtime. The first
+APK target is ARM64 phones running Android 7 (API 24) or later. Android's package
+name is `dev.tokn_ai.rrbox` (Tauri normalizes the identifier's hyphen); desktop
+and iOS retain `dev.tokn-ai.rrbox`.
+
+### Toolchain
+
+- JDK 25, Android Gradle Plugin 9.3.2, and Gradle 9.5.0 (checksum-pinned wrapper).
+- SDK Platform 37 and Build Tools 37.0.0 for the app; SDK Platform 36 for Tauri's
+  Android library, which still sets its own compile SDK.
+- NDK 29.0.14206865 and Rust target `aarch64-linux-android`.
+
+Install the SDK packages using Android Studio's SDK Manager or `sdkmanager`,
+reviewing and accepting any required SDK licenses. Point the environment at your
+own SDK and JDK installations; for example, on macOS with Android Studio's
+default SDK location (adjust `ANDROID_HOME` for an existing custom installation):
 
 ```bash
-pnpm --filter @researchbox/native tauri android init
+export JAVA_HOME=$(/usr/libexec/java_home -v 25)
+export ANDROID_HOME="$HOME/Library/Android/sdk"
+export NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865"
+rustup target add aarch64-linux-android
+```
+
+Tauri's Android library still applies the external Kotlin plugin and legacy
+Android DSL. The project explicitly opts out of AGP 9's built-in Kotlin/new DSL
+until that upstream library migrates. Its Rust build task uses Gradle's injected
+`ExecOperations`, not the removed `Project.exec` API. Do not simply regenerate
+the project and discard these compatibility changes.
+
+### Build and install
+
+From the repository root:
+
+```bash
+pnpm build:native:android-apk
+```
+
+CI builds the same ARM64 debug APK and publishes it as the
+`rrbox-android-arm64-debug` workflow artifact for seven days. Each CI run uses
+an ephemeral debug key, so its APK cannot update a locally signed installation
+without uninstalling it first (which deletes that installation's app data).
+
+This packages the static frontend into a debug-signed APK; no Vite server,
+desktop Tokn gateway, Play Console account, or release keystore is needed.
+The APK is written to:
+
+```text
+apps/native/src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+```
+
+Connect an ARM64 Android phone, enable USB debugging, and approve the computer:
+
+```bash
+adb devices
+adb install -r apps/native/src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+adb shell am start -n dev.tokn_ai.rrbox/.MainActivity
+```
+
+Use `pnpm dev:native:android` for live development on a connected device or an
+Android emulator. Add the matching Rust target if using an x86_64 emulator.
+Debug signing is for local testing only. Keep the debug keystore local and use
+a separately managed release key before distributing production builds.
+The APK strips Rust debug symbols to keep sideload size down; the original
+library and symbols remain in Cargo's target directory. Set
+`ORG_GRADLE_PROJECT_keepRustDebugSymbols=true` when native debugging is needed.
+
+### Platform behavior and verification
+
+The application initializes `rustls-platform-verifier` with Android's application
+context before starting the native runtime. Gradle packages its Kotlin component
+from the exact Cargo-locked crate, and release keep rules preserve its JNI entry
+points. This covers both custom endpoints and embedded Tokn HTTPS clients.
+
+Native insets keep the WebView viewport clear of system bars, display cutouts,
+and the keyboard. App backups are disabled; credentials remain device-local and
+unencrypted, just as on the other native targets. Native cleartext HTTP behavior
+is controlled by the Rust transport; the manifest's cleartext setting governs
+the WebView, with release WebView cleartext disabled.
+
+On a device, verify startup, mock chat streaming, project persistence across a
+restart, the full-width model picker, keyboard/rotation behavior, and provider
+listing/chat over HTTPS. A successful APK build alone does not verify these
+runtime paths. Live provider checks require credentials configured on that
+device; desktop credentials are never copied automatically.
+
+Only regenerate when deliberately updating the Tauri Android template, then
+reapply/review the Gradle compatibility, TLS, manifest, and inset customizations:
+
+```bash
+pnpm --filter @researchbox/native tauri android init --skip-targets-install
 ```

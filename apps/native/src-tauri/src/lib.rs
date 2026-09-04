@@ -1,3 +1,5 @@
+#[cfg(target_os = "android")]
+mod android;
 mod commands;
 #[cfg(not(feature = "storage-test-harness"))]
 mod protocol;

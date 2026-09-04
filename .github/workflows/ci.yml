@@ -103,7 +103,7 @@ jobs:
 
       - name: Install Android SDK and NDK packages
         run: |
-          sdkmanager "platforms;android-37.0" \
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" \
             "build-tools;37.0.0" "ndk;29.0.14206865"
           echo "NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
 

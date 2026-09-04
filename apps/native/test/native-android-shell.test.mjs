@@ -38,6 +38,7 @@ test("Android builds Cargo-locked Tauri sources through a local modern-DSL adapt
   assert.match(settings, /tauriAndroidSourceDir = tauriAndroid\.projectDir/u);
   assert.match(settings, /tauriAndroid\.projectDir = file\('tauri-android'\)/u);
   assert.match(adapter, /tauriSourceDir\.resolve\("src\/main\/java"\)/u);
+  assert.match(adapter, /kotlin\.directories\.apply\s*\{\s*clear\(\)\s*add\(tauriSourceDir\.resolve\("src\/main\/java"\)\.path\)/u);
   assert.match(adapter, /consumerProguardFiles\(tauriSourceDir\.resolve/u);
   assert.match(adapter, /check\(upstreamBuildHash == "[a-f0-9]{64}"\)/u);
   assert.match(adapter, /compilerOptions/u);

@@ -30,6 +30,11 @@ android {
         clear()
         add(tauriSourceDir.resolve("src/main/java").path)
       }
+      // Built-in Kotlin no longer takes custom directories from the Java set.
+      kotlin.directories.apply {
+        clear()
+        add(tauriSourceDir.resolve("src/main/java").path)
+      }
       res.directories.apply {
         clear()
         add(tauriSourceDir.resolve("src/main/res").path)

@@ -26,9 +26,18 @@ android {
   sourceSets {
     getByName("main") {
       manifest.srcFile(tauriSourceDir.resolve("src/main/AndroidManifest.xml"))
-      java.setSrcDirs(listOf(tauriSourceDir.resolve("src/main/java")))
-      res.setSrcDirs(listOf(tauriSourceDir.resolve("src/main/res")))
-      assets.setSrcDirs(listOf(tauriSourceDir.resolve("src/main/assets")))
+      java.directories.apply {
+        clear()
+        add(tauriSourceDir.resolve("src/main/java").path)
+      }
+      res.directories.apply {
+        clear()
+        add(tauriSourceDir.resolve("src/main/res").path)
+      }
+      assets.directories.apply {
+        clear()
+        add(tauriSourceDir.resolve("src/main/assets").path)
+      }
     }
   }
   compileOptions {

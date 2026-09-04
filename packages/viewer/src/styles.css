@@ -3953,6 +3953,39 @@ fieldset.provider-editor-fields {
 
 .composer-model-mobile-step {
   display: none;
+  min-height: 42px;
+  flex: 0 0 auto;
+  align-items: center;
+  grid-template-columns: 32px 1fr auto;
+  gap: 8px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.composer-model-mobile-step button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  cursor: pointer;
+  place-items: center;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted-strong);
+}
+
+.composer-model-mobile-step button:hover {
+  background: var(--soft);
+}
+
+.composer-model-mobile-step strong {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.composer-model-mobile-step span {
+  color: var(--muted);
+  font-size: 9px;
 }
 
 .composer-model-advanced-pane {
@@ -4152,39 +4185,6 @@ fieldset.provider-editor-fields {
 
   .composer-model-mobile-step {
     display: grid;
-    min-height: 42px;
-    flex: 0 0 auto;
-    align-items: center;
-    grid-template-columns: 32px 1fr auto;
-    gap: 8px;
-    padding: 5px 10px;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .composer-model-mobile-step button {
-    display: grid;
-    width: 30px;
-    height: 30px;
-    cursor: pointer;
-    place-items: center;
-    border-radius: 7px;
-    background: transparent;
-    color: var(--muted-strong);
-  }
-
-  .composer-model-mobile-step button:hover {
-    background: var(--soft);
-  }
-
-  .composer-model-mobile-step strong {
-    color: var(--ink);
-    font-size: 12px;
-    font-weight: 650;
-  }
-
-  .composer-model-mobile-step span {
-    color: var(--muted);
-    font-size: 9px;
   }
 
   .composer-model-advanced-pane {
@@ -4206,6 +4206,133 @@ fieldset.provider-editor-fields {
   .composer-model-mobile-arrow {
     display: block;
   }
+}
+
+/* A modal dialog escapes the composer's size containment and stacking context. */
+.composer-model-popover.composer-model-sheet {
+  position: fixed;
+  inset: auto env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  width: auto;
+  max-width: none;
+  max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 12px);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 20px 20px 0 0;
+  color: var(--ink);
+}
+
+.composer-model-sheet::backdrop {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.composer-model-sheet .composer-model-popover-header {
+  min-height: 60px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 8px 12px 8px 16px;
+}
+
+.composer-model-sheet .composer-model-popover-header > strong {
+  overflow: hidden;
+  font-size: 16px;
+  text-align: left;
+  text-overflow: ellipsis;
+}
+
+.composer-model-sheet .composer-model-popover-kicker,
+.composer-model-sheet .composer-model-header-action.back {
+  display: none;
+}
+
+.composer-model-sheet .composer-model-header-action {
+  min-height: 44px;
+  font-size: 13px;
+}
+
+.composer-model-sheet .composer-model-advanced-view {
+  display: flex;
+  height: min(440px, 60dvh);
+  min-height: 0;
+  flex-direction: column;
+}
+
+.composer-model-sheet .composer-model-mobile-step {
+  display: grid;
+  grid-template-columns: 44px 1fr auto;
+}
+
+.composer-model-sheet .composer-model-mobile-step button,
+.composer-model-sheet .composer-provider-refresh {
+  width: 44px;
+  height: 44px;
+  flex-basis: 44px;
+}
+
+.composer-model-sheet .composer-model-advanced-pane {
+  display: none;
+  flex: 1 1 auto;
+  border-left: 0;
+}
+
+.composer-model-sheet [data-active-section="provider"] .composer-model-advanced-pane.provider,
+.composer-model-sheet [data-active-section="model"] .composer-model-advanced-pane.model,
+.composer-model-sheet [data-active-section="effort"] .composer-model-advanced-pane.effort {
+  display: flex;
+}
+
+.composer-model-sheet .composer-model-mobile-arrow {
+  display: block;
+}
+
+.composer-model-sheet .composer-model-option,
+.composer-model-sheet .composer-effort-option,
+.composer-model-sheet .composer-provider-option {
+  min-height: 52px;
+}
+
+.composer-model-sheet .composer-model-option strong,
+.composer-model-sheet .composer-effort-option strong,
+.composer-model-sheet .composer-provider-option strong {
+  font-size: 15px;
+}
+
+.composer-model-sheet .composer-model-option small,
+.composer-model-sheet .composer-effort-option small,
+.composer-model-sheet .composer-provider-option small,
+.composer-model-sheet .composer-model-empty,
+.composer-model-sheet .composer-model-notice,
+.composer-model-sheet .composer-effort-slider > p,
+.composer-model-sheet .composer-effort-fixed > p {
+  font-size: 12px;
+}
+
+.composer-model-sheet .composer-effort-slider input[type="range"] {
+  height: 44px;
+}
+
+.composer-model-sheet .composer-effort-labels span {
+  font-size: 11px;
+}
+
+.composer-model-sheet-footer {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+}
+
+.composer-model-sheet-footer button {
+  width: 100%;
+  min-height: 44px;
+  border-radius: 10px;
+  background: var(--soft);
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.composer-model-sheet-footer button:hover {
+  background: var(--soft-hover);
 }
 
 .reasoning-effort-header {

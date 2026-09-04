@@ -832,6 +832,7 @@ export function ResearchBoxViewer({
                         <Plus size={19} />
                       </button>
                       <ComposerModelControl
+                        isMobileViewport={isMobileViewport}
                         providers={coreState.providers}
                         selection={coreState.active_model}
                         effort={coreState.active_reasoning_effort}

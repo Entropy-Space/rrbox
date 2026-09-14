@@ -92,6 +92,14 @@ Saved credentials never return to the WebView. Keep credentials out of routing
 TOML. Account setup uses supplied credentials; interactive OAuth login is not
 implemented in this screen.
 
+## Skills
+
+The shared DSH runtime includes the bundled `research-brief` skill on desktop,
+iOS, Android, and the browser app. Ask for a matching research task and the
+model can load it through DSH's `skill` tool, or invoke it explicitly in the
+composer with `/research-brief`. This first integration has no management UI or
+device-local skill imports; the bundled definition is read-only.
+
 Existing custom endpoints remain unchanged, including the legacy
 `http://127.0.0.1:4141/v1` entry. On a phone, localhost means the phone, not the Mac;
 use embedded tokn or a reachable custom endpoint instead.

@@ -4,6 +4,8 @@ import { LlmAdapter } from "@deepseek-ai/dsh-llm";
 import {
   createDshrboxCore,
   dshrboxToolCallBlockId,
+  RESEARCH_BRIEF_SKILL_CONTENT,
+  RESEARCH_BRIEF_SKILL_NAME,
 } from "../src/index.ts";
 
 class ScriptedAdapter extends LlmAdapter {
@@ -44,6 +46,42 @@ class ScriptedAdapter extends LlmAdapter {
       type: "usage",
       usage: { inputTokens: 1, outputTokens: text.length },
     };
+    yield { type: "finish", reason: { kind: "stop" } };
+  }
+}
+
+class SkillProbeAdapter extends LlmAdapter {
+  requests = [];
+
+  async *stream(options) {
+    this.requests.push(options);
+    if (this.requests.length === 1) {
+      yield { type: "block-start", index: 0, blockType: "tool-call" };
+      yield {
+        type: "tool-call-delta",
+        index: 0,
+        id: "load-research-brief",
+        name: "skill",
+        argumentsDelta: JSON.stringify({ name: RESEARCH_BRIEF_SKILL_NAME }),
+      };
+      yield {
+        type: "block-end",
+        index: 0,
+        block: {
+          type: "tool-call",
+          id: "load-research-brief",
+          name: "skill",
+          arguments: JSON.stringify({ name: RESEARCH_BRIEF_SKILL_NAME }),
+        },
+      };
+      yield { type: "finish", reason: { kind: "tool-calls" } };
+      return;
+    }
+
+    const text = "Skill instructions observed.";
+    yield { type: "block-start", index: 0, blockType: "text" };
+    yield { type: "text-delta", index: 0, text };
+    yield { type: "block-end", index: 0, block: { type: "text", text } };
     yield { type: "finish", reason: { kind: "stop" } };
   }
 }
@@ -93,6 +131,54 @@ test("refuses an overlapping run without a platform-specific policy", async () =
     );
     core.runtime.cancel();
     await activeRun;
+  } finally {
+    await core.dispose();
+  }
+});
+
+test("discovers, loads, and explicitly invokes the bundled skill", async () => {
+  const adapter = new SkillProbeAdapter();
+  const core = await createDshrboxCore({
+    llm_adapter: adapter,
+    model: "skill-probe-model",
+    provider: "skill-probe-provider",
+    session_id: "skill-probe-session",
+  });
+  try {
+    const catalog = await core.context.skills.list();
+    const summary = catalog.find(
+      (skill) => skill.name === RESEARCH_BRIEF_SKILL_NAME,
+    );
+    assert.equal(summary?.source, "bundled");
+    assert.deepEqual(summary?.invocation, {
+      modelInvocable: true,
+      userInvocable: true,
+    });
+    assert.equal(
+      (await core.context.skills.get(RESEARCH_BRIEF_SKILL_NAME))?.content,
+      RESEARCH_BRIEF_SKILL_CONTENT,
+    );
+
+    await core.runtime.run("Create a research brief.");
+    assert.equal(adapter.requests.length, 2);
+    assert.ok(
+      adapter.requests[0].tools.some((tool) => tool.name === "skill"),
+    );
+    assert.ok(adapter.requests[0].messages.some(
+      (message) => message.source.kind === "skill-catalog",
+    ));
+    const toolResult = adapter.requests[1].messages.find(
+      (message) => message.source.kind === "tool",
+    );
+    assert.match(JSON.stringify(toolResult), /# Research brief/u);
+
+    await core.runtime.run("/research-brief Compare these notes.");
+    assert.equal(adapter.requests.length, 3);
+    const explicitInvocation = adapter.requests[2].messages.findLast(
+      (message) => message.source.kind === "skill-invocation",
+    );
+    assert.equal(explicitInvocation?.source.name, RESEARCH_BRIEF_SKILL_NAME);
+    assert.match(JSON.stringify(explicitInvocation), /# Research brief/u);
   } finally {
     await core.dispose();
   }

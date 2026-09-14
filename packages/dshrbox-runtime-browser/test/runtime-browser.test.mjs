@@ -5,6 +5,7 @@ import {
   DSH_BROWSER_COMPATIBILITY,
 } from "../src/index.ts";
 import { installDisposableSymbols } from "../src/disposable-symbols.ts";
+import { createHash } from "../src/browser-shims/node-crypto.ts";
 import { ProbeLlmAdapter } from "./fixtures/probe-adapter.ts";
 import { runDshrboxBrowserProbe } from "./fixtures/probe.ts";
 
@@ -52,6 +53,14 @@ test("declares the constrained browser async-context contract", () => {
     max_live_agents: 1,
     max_parallel_tool_calls: 1,
   });
+});
+
+test("provides the SHA-256 surface used by DSH skill catalogs", () => {
+  assert.equal(
+    createHash("sha256").update("abc").digest("hex"),
+    "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+  );
+  assert.throws(() => createHash("sha512"), /Unsupported hash algorithm/u);
 });
 
 test("fixes browser tool execution to the safe serial limit", async () => {

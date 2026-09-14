@@ -12,18 +12,19 @@
     "build": "vite build --config vite.browser-probe.config.ts"
   },
   "dependencies": {
-    "@dshrbox/core": "workspace:*"
+    "@dshrbox/core": "workspace:*",
+    "@noble/hashes": "2.4.0"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-llm": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-session": "0.1.1-rc.2",
     "@dshrbox/event-projector": "workspace:*",
     "@dshrbox/model-adapter": "workspace:*",
     "@dshrbox/session-persistence": "workspace:*",
     "@dshrbox/session-runtime": "workspace:*",
     "@dshrbox/workspace": "workspace:*",
-    "@deepseek-ai/dsh-llm": "0.1.1-rc.2",
-    "@deepseek-ai/dsh-session": "0.1.1-rc.2",
-    "@researchbox/model-transport": "workspace:*",
     "@researchbox/agent-core": "workspace:*",
+    "@researchbox/model-transport": "workspace:*",
     "@researchbox/project-store": "workspace:*",
     "@researchbox/protocol": "workspace:*",
     "@researchbox/vfs": "workspace:*",

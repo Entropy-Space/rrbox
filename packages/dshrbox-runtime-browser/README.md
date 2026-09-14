@@ -9,6 +9,11 @@ implementations. The `node:async_hooks` replacement supports one foreground
 async chain, so this package fixes tool parallelism to one. The core runtime
 also owns one live agent and rejects overlapping runs.
 
+The `node:crypto` replacement implements the SHA-256 `createHash` surface used
+by DSH's native skill catalog. It delegates hashing to the pinned,
+browser-compatible `@noble/hashes` implementation and rejects other algorithms
+or encodings instead of pretending to provide Node's complete crypto module.
+
 DSH rc.2 uses explicit-resource-management helpers and computed
 `[Symbol.dispose]` methods. Older JavaScriptCore releases do not expose
 `Symbol.dispose` or `Symbol.asyncDispose`, so browser worker entries import

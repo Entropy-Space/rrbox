@@ -13,10 +13,17 @@ import SessionStore, {
   SessionId,
   type SessionEvent,
 } from "@deepseek-ai/dsh-session";
+import SkillRegistry from "@deepseek-ai/dsh-skill";
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
+import * as SkillTool from "@deepseek-ai/dsh-tool-skill";
 import ToolRuntime from "@deepseek-ai/dsh-tools";
+import { DshrboxBundledSkills } from "./bundled-skills.ts";
 
 export { dshrboxToolCallBlockId } from "./identity.ts";
+export {
+  RESEARCH_BRIEF_SKILL_CONTENT,
+  RESEARCH_BRIEF_SKILL_NAME,
+} from "./bundled-skills.ts";
 
 export type { SessionEvent } from "@deepseek-ai/dsh-session";
 
@@ -186,6 +193,9 @@ export async function createDshrboxCore(
         ? {}
         : { maxParallelToolCalls: max_parallel_tool_calls }),
     });
+    await context.plugin(SkillRegistry);
+    await context.plugin(DshrboxBundledSkills);
+    await context.plugin(SkillTool);
     for (const registration of plugins) {
       await context.plugin(registration.plugin, registration.config);
     }

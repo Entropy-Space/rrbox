@@ -64,6 +64,7 @@ class ResumableWorkspaceTransport {
           "remove_file",
           "replace_text",
           "search_files",
+          "skill",
           "write_file",
         ],
       );
@@ -1248,11 +1249,10 @@ test("copies an unmarked legacy session into DSH on its first write", async () =
   );
   assert.ok(persisted.meta.seedLength > 0);
   const continuedRequest = transport.requests.at(-1);
-  assert.deepEqual(
-    continuedRequest.messages.filter((message) => message.role === "user")
-      .map((message) => message.content),
-    ["Create a legacy session.", "Continue through the DSH runtime."],
-  );
+  assertModelUserMessages(continuedRequest, [
+    "Create a legacy session.",
+    "Continue through the DSH runtime.",
+  ]);
   assert.ok(
     continuedRequest.messages.some(
       (message) =>
@@ -1463,12 +1463,10 @@ test("resumes a materialized DSH migration after host finalization fails", async
     session_id: restored.active_session_id,
     text: "Continue after recovery.",
   }));
-  assert.deepEqual(
-    transport.requests.at(-1).messages
-      .filter((message) => message.role === "user")
-      .map((message) => message.content),
-    ["Create durable legacy history.", "Continue after recovery."],
-  );
+  assertModelUserMessages(transport.requests.at(-1), [
+    "Create durable legacy history.",
+    "Continue after recovery.",
+  ]);
   await resumed.dispose();
 });
 
@@ -1685,6 +1683,18 @@ function* toolCallEvents(toolCall, contentIndex = 0) {
     content_index: contentIndex,
     tool_call: structuredClone(toolCall),
   };
+}
+
+function assertModelUserMessages(request, expectedConversation) {
+  const userMessages = request.messages
+    .filter((message) => message.role === "user")
+    .map((message) => message.content);
+  assert.deepEqual(
+    userMessages.slice(0, expectedConversation.length),
+    expectedConversation,
+  );
+  assert.equal(userMessages.length, expectedConversation.length + 1);
+  assert.match(userMessages.at(-1), /<available_skills>[\s\S]*`research-brief`/u);
 }
 
 function assertMutationResult(request, toolCallId, changeKind) {
